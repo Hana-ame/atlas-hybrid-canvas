@@ -1,4 +1,4 @@
-import { memo, useEffect } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { Handle, NodeResizer, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import { Copy, Globe, Lock, Play, RotateCcw, Settings2, Trash2, Unlock } from 'lucide-react';
 import type {
@@ -60,6 +60,10 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
     busyButtonKey,
   } = data as WidgetNodeData;
 
+  // 默认单击/按住整卡可拖动，双击标题或正文才进入编辑态！
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [editingBody, setEditingBody] = useState(false);
+
   const updateNodeInternals = useUpdateNodeInternals();
   const inputPorts = entity.inputPorts && entity.inputPorts.length > 0 ? entity.inputPorts : DEFAULT_INPUT_PORTS;
   const outputPorts = entity.outputPorts && entity.outputPorts.length > 0 ? entity.outputPorts : DEFAULT_OUTPUT_PORTS;
@@ -68,6 +72,14 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
   useEffect(() => {
     updateNodeInternals(entity.id);
   }, [entity.id, portSignature, entity.width, entity.height, updateNodeInternals]);
+
+  // 取消选中时自动退出编辑态
+  useEffect(() => {
+    if (!selected) {
+      setEditingTitle(false);
+      setEditingBody(false);
+    }
+  }, [selected]);
 
   const rawContents = entity.effectiveVars?.contents;
   const flowItems: ContentFlowItem[] = Array.isArray(rawContents) ? (rawContents as ContentFlowItem[]) : [];
@@ -81,7 +93,7 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
       return (
         <div
           key={`txt-${idx}`}
-          className={inRow ? 'flex-1' : 'w-full'}
+          className={`select-none ${inRow ? 'flex-1' : 'w-full'}`}
           style={{
             textAlign: block.align ?? 'left',
             color: block.color || '#334155',
@@ -169,8 +181,8 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
   return (
     <div
       className={`group relative flex h-full w-full flex-col rounded-lg border bg-white/95 shadow-sm transition-shadow hover:shadow-md ${
-        selected ? 'ring-2 ring-blue-500/40' : ''
-      } ${entity.locked ? 'ring-1 ring-slate-300' : ''}`}
+        entity.locked ? 'cursor-default ring-1 ring-slate-300' : 'cursor-grab active:cursor-grabbing'
+      } ${selected ? 'ring-2 ring-blue-500/40' : ''}`}
       style={{
         width: entity.width,
         minHeight: entity.height,
@@ -213,25 +225,43 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
         />
       ))}
 
-      {/* 顶栏 */}
-      <div className="flex items-center justify-between gap-1.5 border-b border-slate-100 px-2.5 py-1.5">
-        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+      {/* 顶栏：默认整栏可拖动，双击标题进入编辑 */}
+      <div className="flex items-center justify-between gap-1.5 border-b border-slate-100 px-2.5 py-2">
+        <div
+          className="flex min-w-0 flex-1 items-center gap-1.5"
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            setEditingTitle(true);
+          }}
+          title="按住拖动 · 双击编辑标题"
+        >
           {entity.category && (
             <span
-              className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold text-white"
+              className="shrink-0 select-none rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold text-white"
               style={{ backgroundColor: entity.color }}
             >
               {entity.category}
             </span>
           )}
-          <input
-            type="text"
-            value={entity.title}
-            onMouseDown={(e) => e.stopPropagation()}
-            onPointerDown={(e) => e.stopPropagation()}
-            onChange={(e) => onEditTitle(entity.id, e.target.value)}
-            className="nodrag nopan nowheel min-w-0 flex-1 truncate rounded bg-transparent px-1 py-0.5 text-xs font-bold text-slate-900 outline-none focus:bg-slate-100"
-          />
+          {editingTitle ? (
+            <input
+              type="text"
+              autoFocus
+              value={entity.title}
+              onMouseDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+              onChange={(e) => onEditTitle(entity.id, e.target.value)}
+              onBlur={() => setEditingTitle(false)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === 'Escape') setEditingTitle(false);
+              }}
+              className="nodrag nopan nowheel min-w-0 flex-1 rounded border border-blue-400 bg-white px-1.5 py-0.5 text-xs font-bold text-slate-900 outline-none"
+            />
+          ) : (
+            <span className="min-w-0 flex-1 select-none truncate px-0.5 text-xs font-bold text-slate-900">
+              {entity.title}
+            </span>
+          )}
         </div>
 
         <div className="nodrag nopan flex shrink-0 items-center gap-0.5">
@@ -302,7 +332,7 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
         </div>
       </div>
 
-      {/* 主体区：若脚本产出了 vars.contents 则渲染声明式流式 UI，否则渲染默认正文+按钮 */}
+      {/* 主体区：默认整块正文可拖动，双击进入多行编辑 */}
       <div className="flex flex-1 flex-col gap-2 px-3 py-2.5">
         {hasScriptContents ? (
           <div className="flex flex-col gap-2">
@@ -318,18 +348,36 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
           </div>
         ) : (
           <>
-            <textarea
-              value={entity.body}
-              onMouseDown={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
-              onChange={(e) => onEditBody(entity.id, e.target.value)}
-              rows={3}
-              placeholder="点击输入正文…"
-              className="nodrag nopan nowheel w-full flex-1 resize-y rounded border border-transparent bg-transparent text-xs leading-relaxed text-slate-600 focus:border-slate-300 focus:bg-slate-50 focus:outline-none"
-            />
+            {editingBody ? (
+              <textarea
+                autoFocus
+                value={entity.body}
+                onMouseDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                onChange={(e) => onEditBody(entity.id, e.target.value)}
+                onBlur={() => setEditingBody(false)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') setEditingBody(false);
+                }}
+                rows={4}
+                placeholder="输入正文内容（按 Esc 或点外部完成）…"
+                className="nodrag nopan nowheel w-full flex-1 resize-y rounded border border-blue-400 bg-white p-1.5 text-xs leading-relaxed text-slate-700 outline-none"
+              />
+            ) : (
+              <div
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  setEditingBody(true);
+                }}
+                title="按住拖动 · 双击编辑正文"
+                className="min-h-[44px] flex-1 select-none whitespace-pre-wrap break-words rounded px-0.5 py-0.5 text-xs leading-relaxed text-slate-600 hover:bg-slate-50/70"
+              >
+                {entity.body || <span className="text-slate-400">双击编辑正文…</span>}
+              </div>
+            )}
 
             {varEntries.length > 0 && (
-              <div className="flex flex-wrap gap-1">
+              <div className="flex select-none flex-wrap gap-1">
                 {varEntries.map(([k, v]) => (
                   <span
                     key={k}

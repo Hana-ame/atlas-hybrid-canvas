@@ -1,4 +1,4 @@
-import { memo, useRef, type ChangeEvent } from 'react';
+import { memo, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { ImagePlus, Trash2 } from 'lucide-react';
 import type { CanvasAnnotation } from '../core/types';
@@ -25,6 +25,11 @@ function hexToRgba(hex: string | undefined, opacity: number): string {
 function AnnotationNodeInner({ data, selected }: NodeProps) {
   const { annotation, onUpdateAnnotation, onDeleteAnnotation } = data as AnnotationNodeData;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [editingText, setEditingText] = useState(false);
+
+  useEffect(() => {
+    if (!selected) setEditingText(false);
+  }, [selected]);
   const isImage = annotation.kind === 'image';
   const bgOpacity = annotation.bgOpacity ?? 0.85;
   const bgCss = hexToRgba(annotation.bgColor, bgOpacity);
@@ -177,19 +182,40 @@ function AnnotationNodeInner({ data, selected }: NodeProps) {
             <span className="text-xs text-slate-400">点击上方「换图」选择插图</span>
           )}
         </div>
-      ) : (
+      ) : editingText ? (
         <textarea
+          autoFocus
           value={annotation.text}
           onMouseDown={(e) => e.stopPropagation()}
           onPointerDown={(e) => e.stopPropagation()}
           onChange={(e) => onUpdateAnnotation(annotation.id, { text: e.target.value })}
-          className="nodrag nopan nowheel h-full w-full resize-none rounded-lg bg-transparent p-2.5 leading-snug outline-none"
+          onBlur={() => setEditingText(false)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setEditingText(false);
+          }}
+          className="nodrag nopan nowheel h-full w-full resize-none rounded-lg bg-transparent p-2.5 leading-snug outline-none ring-2 ring-blue-500/60"
           style={{
             fontSize: annotation.fontSize,
             fontWeight: annotation.weight === 'bold' ? 700 : 400,
             color: annotation.color,
           }}
         />
+      ) : (
+        <div
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            setEditingText(true);
+          }}
+          title="按住任意处拖动 · 双击编辑文字"
+          className="h-full w-full cursor-grab select-none overflow-hidden whitespace-pre-wrap break-words rounded-lg p-2.5 leading-snug active:cursor-grabbing"
+          style={{
+            fontSize: annotation.fontSize,
+            fontWeight: annotation.weight === 'bold' ? 700 : 400,
+            color: annotation.color,
+          }}
+        >
+          {annotation.text || '双击输入文字…'}
+        </div>
       )}
     </div>
   );
