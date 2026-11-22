@@ -1,3 +1,10 @@
+/**
+ * @file layeredStore.ts
+ * @description 双层状态存储与合并引擎（权威底座 BaseBlueprint + 个人本地叠加层 LocalOverlayState）。
+ * - 所有运行时 vars、个人拖拽/编辑补丁与脚本触发的背景覆盖均通过异步 IndexedDB 持久化；
+ * - 合并时采用字段级稀疏覆盖，并自动丢弃后端已删除实体的孤儿缓存。
+ */
+
 import { idbGet, idbSet } from './idbStorage';
 import type {
   BaseBlueprint,

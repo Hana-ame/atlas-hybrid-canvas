@@ -1,3 +1,9 @@
+/**
+ * @file widgetTemplates.ts
+ * @description 内置 13+ 蓝图控件/注释模板库与 IndexedDB 自定义模板持久化管理。
+ * 涵盖知识地图、策划与世界观、工程与运维、注释与基础四大分类，支持用户将任意控件一键存为自定义模板。
+ */
+
 import { idbGet, idbSet } from './idbStorage';
 import type { BlueprintNode, BlueprintTemplate } from './types';
 

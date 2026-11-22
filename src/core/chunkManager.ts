@@ -1,3 +1,9 @@
+/**
+ * @file chunkManager.ts
+ * @description 512×512 无限坐标空间哈希分区索引器（源自 AtlasCanvas）。
+ * 支持正负无限世界坐标映射到整数 Chunk 坐标 (cx, cy)、跨分区实体追踪、视锥可见分区查询与脏标记管理。
+ */
+
 import type { AABB, BlueprintNode, CanvasAnnotation, ChunkCoord, ChunkKey } from './types';
 
 export interface ChunkRecord {

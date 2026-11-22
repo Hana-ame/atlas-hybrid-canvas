@@ -1,3 +1,12 @@
+/**
+ * @file WidgetNode.tsx
+ * @description React Flow 控件节点组件。
+ * 交互规范：
+ * - 默认按住卡片任意非按钮区域均可直接拖动，双击标题或正文进入原地编辑（Esc/失焦退出）；
+ * - 支持多入/出箭头端口动态排布（变动后自动调用 useUpdateNodeInternals 刷新锚点）；
+ * - 当 entity.script 产出 vars.contents 时，自动切换为声明式流式 UI（文本、按钮、原生输入框与水平行）。
+ */
+
 import { memo, useEffect, useState } from 'react';
 import { Handle, NodeResizer, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import { Copy, Globe, Lock, Play, RotateCcw, Settings2, Trash2, Unlock } from 'lucide-react';

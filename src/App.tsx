@@ -1,3 +1,14 @@
+/**
+ * @file App.tsx
+ * @description Atlas Hybrid Canvas 顶层工作台容器。
+ * 核心职责：
+ * 1. 维护权威底座（BaseBlueprint）与个人叠加层（LocalOverlayState，IndexedDB 异步持久化）；
+ * 2. 使用 React Flow v12 受控状态 + applyNodeChanges 保持节点 measured/dragging 稳定，根治拖动频闪；
+ * 3. 通过粗粒度 viewportBucketKey 与迟滞 LOD（<32% / >38%）协调上层 DOM 与底层 Canvas 瓦片交接；
+ * 4. 统一调度 Web Worker 控件脚本（vars.contents / widgets.create / emit / broadcast / canvas 改背景）；
+ * 5. 提供左侧所见即所得拖放模板库、右侧属性脚本编辑器及带 X-Blueprint-Save-Key 鉴权的保存弹窗。
+ */
+
 import {
   useCallback,
   useEffect,

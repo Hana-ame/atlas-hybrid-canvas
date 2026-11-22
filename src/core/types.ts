@@ -1,3 +1,14 @@
+/**
+ * @file types.ts
+ * @description Atlas Hybrid Canvas 全局核心数据模型定义。
+ *
+ * 严格区分四类核心概念：
+ * 1. Chunk（512×512 空间分区）：底层空间哈希网格与离屏瓦片缓存单元；
+ * 2. BlueprintNode（控件节点）：近/中景由 React Flow 渲染为原生 DOM，全景由底层瓦片接管；
+ * 3. CanvasAnnotation（背景注释层）：分为「文本框（text）」与「等比插图（image）」两类，平时点击穿透；
+ * 4. LocalOverlayState（个人本地叠加层）：运行时 vars、字段级节点补丁与脚本触发的背景覆盖，全量存 IndexedDB。
+ */
+
 export type ChunkKey = `${number},${number}`;
 
 export interface AABB {

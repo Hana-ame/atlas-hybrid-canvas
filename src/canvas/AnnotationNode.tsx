@@ -1,3 +1,10 @@
+/**
+ * @file AnnotationNode.tsx
+ * @description 背景注释编辑态组件（仅在开启「注释层：可拖动编辑」时挂载）。
+ * 支持「文本框（text）」与「等比插图（image）」两类组件，提供顶部悬浮色板、底色块、本地换图与 NodeResizer，
+ * 默认整框可拖、双击进入文字编辑，关闭编辑模式后自动卸载并烘焙回底层穿透 Canvas 瓦片。
+ */
+
 import { memo, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { ImagePlus, Trash2 } from 'lucide-react';

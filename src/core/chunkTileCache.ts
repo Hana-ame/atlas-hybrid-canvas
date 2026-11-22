@@ -1,3 +1,10 @@
+/**
+ * @file chunkTileCache.ts
+ * @description 离屏 Canvas 瓦片 LRU 缓存池（源自 AtlasCanvas）。
+ * 将静态背景注释与全景简化色块按固定 LOD 分辨率烘焙为 HTMLCanvasElement 缓存，
+ * 使大空间平移缩放降维为 O(visibleChunks) 次 drawImage 贴图。
+ */
+
 import type { ChunkRecord } from './chunkManager';
 import type { ChunkKey, LODLevel } from './types';
 
