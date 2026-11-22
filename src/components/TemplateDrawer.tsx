@@ -167,15 +167,27 @@ export function TemplateDrawer({
 
               {/* WYSIWYG 控件预览正文与按钮 */}
               {isAnn ? (
-                <div
-                  className="mt-1.5 truncate font-bold"
-                  style={{
-                    color: ap?.color || '#0F766E',
-                    fontSize: Math.min(15, Math.max(12, (ap?.fontSize || 16) * 0.65)),
-                  }}
-                >
-                  {ap?.text || tpl.description}
-                </div>
+                ap?.kind === 'image' && ap.imageUrl ? (
+                  <div className="mt-1.5 flex h-24 w-full items-center justify-center overflow-hidden rounded bg-white/80 p-1">
+                    <img
+                      src={ap.imageUrl}
+                      alt={tpl.name}
+                      draggable={false}
+                      className="pointer-events-none h-full w-full object-contain"
+                    />
+                  </div>
+                ) : (
+                  <div
+                    className="mt-1.5 line-clamp-2 whitespace-pre-line rounded px-2 py-1 font-bold"
+                    style={{
+                      color: ap?.color || '#0F766E',
+                      backgroundColor: ap?.bgColor && ap.bgColor !== 'transparent' ? ap.bgColor : 'transparent',
+                      fontSize: Math.min(14, Math.max(11, (ap?.fontSize || 16) * 0.68)),
+                    }}
+                  >
+                    {ap?.text || tpl.description}
+                  </div>
+                )
               ) : (
                 <div className="px-2.5 py-2">
                   <div className="line-clamp-2 whitespace-pre-line text-[11px] leading-relaxed text-slate-500">

@@ -14,6 +14,11 @@ export interface ChunkCoord {
 
 export type LODLevel = 'macro' | 'meso' | 'micro';
 
+export interface NodePortSpec {
+  id: string;
+  label?: string;
+}
+
 export interface WidgetButtonSpec {
   id: string;
   label: string;
@@ -24,16 +29,39 @@ export interface WidgetButtonSpec {
   proxyMethod?: 'GET' | 'POST';
 }
 
-export interface NodePortSpec {
-  id: string;
-  label?: string;
+export interface ContentTextBlock {
+  type: 'text';
+  text: string;
+  align?: 'left' | 'center' | 'right';
+  color?: string;
+  fontSize?: number;
+  bold?: boolean;
 }
 
+export interface ContentButtonBlock {
+  type: 'button';
+  id: string;
+  label: string;
+  variant?: 'primary' | 'secondary' | 'success' | 'danger';
+  width?: number;
+  height?: number;
+  disabled?: boolean;
+}
+
+export interface ContentInputBlock {
+  type: 'input' | 'textarea';
+  id: string;
+  bind?: string;
+  placeholder?: string;
+  multiline?: boolean;
+  width?: number;
+  height?: number;
+}
+
+export type ContentLeafBlock = ContentTextBlock | ContentButtonBlock | ContentInputBlock;
+export type ContentFlowItem = ContentLeafBlock | ContentLeafBlock[];
+
 export interface BlueprintNode {
-  /** 可配置多个入箭头端口（默认在左侧均匀排布） */
-  inputPorts?: NodePortSpec[];
-  /** 可配置多个出箭头端口（默认在右侧均匀排布） */
-  outputPorts?: NodePortSpec[];
   id: string;
   x: number;
   y: number;
@@ -43,20 +71,33 @@ export interface BlueprintNode {
   body: string;
   category?: string;
   color: string;
+  /** 统一脚本：可动态产出 vars.contents（含文本/按钮/输入框/行排布），支持 on/onSubmit/emit/broadcast/widgets/canvas */
+  script?: string;
+  /** 锁定后不可拖拽，但内部按钮与输入框仍可正常交互 */
+  locked?: boolean;
   defaultVars: Record<string, unknown>;
   buttons?: WidgetButtonSpec[];
+  inputPorts?: NodePortSpec[];
+  outputPorts?: NodePortSpec[];
   rev: number;
   cid: string;
 }
 
+export type AnnotationKind = 'text' | 'image';
+
 export interface CanvasAnnotation {
   id: string;
+  kind: AnnotationKind;
   x: number;
   y: number;
   width: number;
+  height: number;
   text: string;
   fontSize: number;
   color: string;
+  bgColor?: string;
+  bgOpacity?: number;
+  imageUrl?: string;
   weight?: 'normal' | 'bold';
   nonInteractive: boolean;
   rev: number;
@@ -84,9 +125,6 @@ export interface BaseBlueprint {
   edges: Record<string, BlueprintEdge>;
 }
 
-/**
- * 个人本地叠加层（仅保存在当前浏览器 IndexedDB）
- */
 export interface LocalNodePatch {
   title?: string;
   body?: string;
@@ -96,14 +134,25 @@ export interface LocalNodePatch {
   width?: number;
   height?: number;
   color?: string;
+  script?: string;
+  locked?: boolean;
   buttons?: WidgetButtonSpec[];
   inputPorts?: NodePortSpec[];
   outputPorts?: NodePortSpec[];
 }
 
+export interface LocalAnnotationOverride {
+  text?: string;
+  color?: string;
+  bgColor?: string;
+  bgOpacity?: number;
+  imageUrl?: string;
+}
+
 export interface LocalOverlayState {
   runtimeVars: Record<string, Record<string, unknown>>;
   nodePatches: Record<string, LocalNodePatch>;
+  annotationOverrides: Record<string, LocalAnnotationOverride>;
   trustedRemoteScripts: Record<string, boolean>;
 }
 
@@ -122,8 +171,6 @@ export interface BlueprintTemplate {
   group: TemplateGroup;
   kind: 'node' | 'annotation';
   color: string;
-  /** kind === 'node' 时的预设 */
   nodePreset?: Omit<BlueprintNode, 'id' | 'x' | 'y' | 'rev' | 'cid'>;
-  /** kind === 'annotation' 时的预设 */
   annotationPreset?: Omit<CanvasAnnotation, 'id' | 'x' | 'y' | 'rev' | 'cid'>;
 }

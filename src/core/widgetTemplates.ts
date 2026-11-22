@@ -266,6 +266,42 @@ export const BUILTIN_TEMPLATES: BlueprintTemplate[] = [
     },
   },
 
+  {
+    id: 'tpl-script-spawner',
+    name: '跨控件联动控制台（脚本）',
+    description: '内置输入框+回车发送+动态造子控件+emit消息通信',
+    group: '工程与运维',
+    kind: 'node',
+    color: '#2563EB',
+    nodePreset: {
+      width: 380,
+      height: 210,
+      title: '联动控制台',
+      body: '',
+      category: '联动',
+      color: '#2563EB',
+      defaultVars: { draft: '', count: 0 },
+      script: `vars.contents = [
+  { type: 'text', text: '输入消息后按回车广播给全画布脚本控件', align: 'center', color: '#1E40AF', fontSize: 12, bold: true },
+  [
+    { type: 'input', id: 'bcInput', bind: 'draft', placeholder: '输入广播内容（回车发送）...' },
+    { type: 'button', id: 'bcSend', label: '广播', width: 64, variant: 'primary' }
+  ],
+  { type: 'text', text: vars.status || '等待广播…', fontSize: 11, color: '#475569' }
+];
+async function doBroadcast(raw) {
+  const txt = String(raw ?? vars.draft ?? '').trim();
+  if (!txt) { vars.status = '内容不能为空'; return; }
+  await broadcast('ping', { text: txt });
+  vars.draft = '';
+  vars.count = (Number(vars.count) || 0) + 1;
+  vars.status = '已广播 #' + vars.count + '：' + txt;
+}
+on('bcSend', async () => doBroadcast(vars.draft));
+onSubmit('bcInput', async (v) => doBroadcast(v));`,
+    },
+  },
+
   // 四、注释与基础
   {
     id: 'tpl-blank-widget',
@@ -286,33 +322,62 @@ export const BUILTIN_TEMPLATES: BlueprintTemplate[] = [
     },
   },
   {
-    id: 'tpl-ann-header',
-    name: '区域大标题注释（穿透）',
-    description: '32px 粗体地图分区标牌，缩远全景依然清晰',
+    id: 'tpl-ann-textbox',
+    name: '背景文本框（色块）',
+    description: '支持设文字颜色与色块底色，也能被控件脚本动态变色',
     group: '注释与基础',
     kind: 'annotation',
-    color: '#0F766E',
+    color: '#B45309',
     annotationPreset: {
-      width: 520,
-      text: '新区域大标题 · 点击编辑模式可拖动修改',
-      fontSize: 30,
-      color: '#0F766E',
+      kind: 'text',
+      width: 360,
+      height: 110,
+      text: '色块文本框\n支持多行自动换行不拉伸，开启注释编辑可随时调色',
+      fontSize: 16,
+      color: '#78350F',
+      bgColor: '#FEF3C7',
+      bgOpacity: 0.9,
       weight: 'bold',
       nonInteractive: true,
     },
   },
   {
-    id: 'tpl-ann-note',
-    name: '背景图注说明（穿透）',
-    description: '16px 轻量说明文字，烘焙进瓦片绝不误触',
+    id: 'tpl-ann-header',
+    name: '区域大标题（透明穿透）',
+    description: '30px 粗体地图分区标牌，缩远全景依然清晰',
     group: '注释与基础',
     kind: 'annotation',
-    color: '#475569',
+    color: '#0F766E',
     annotationPreset: {
-      width: 440,
-      text: '背景注释：用于标记设计边界、连线含义或阅读顺序',
-      fontSize: 16,
-      color: '#475569',
+      kind: 'text',
+      width: 480,
+      height: 68,
+      text: '新区域大标题 · 拖动定位',
+      fontSize: 28,
+      color: '#0F766E',
+      bgColor: 'transparent',
+      bgOpacity: 0,
+      weight: 'bold',
+      nonInteractive: true,
+    },
+  },
+  {
+    id: 'tpl-ann-image',
+    name: '背景插图（等比不拉伸）',
+    description: '所见即所得插图组件，支持换本地图与设背景色块',
+    group: '注释与基础',
+    kind: 'annotation',
+    color: '#2563EB',
+    annotationPreset: {
+      kind: 'image',
+      width: 320,
+      height: 200,
+      text: '示例背景插图',
+      fontSize: 14,
+      color: '#1E293B',
+      bgColor: '#FFFFFF',
+      bgOpacity: 0.9,
+      imageUrl: "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 320 200'%3E%3Crect width='320' height='200' rx='14' fill='%23EFF6FF'/%3E%3Ccircle cx='90' cy='78' r='28' fill='%232563EB' fill-opacity='0.2' stroke='%232563EB' stroke-width='3'/%3E%3Crect x='170' y='52' width='104' height='52' rx='8' fill='%230F766E' fill-opacity='0.18' stroke='%230F766E' stroke-width='3'/%3E%3Cpath d='M118 78 L168 78' stroke='%23475569' stroke-width='3' stroke-dasharray='6 4'/%3E%3Ctext x='160' y='156' text-anchor='middle' font-family='sans-serif' font-size='16' font-weight='700' fill='%231E293B'%3E示例背景插图（等比缩放不拉伸）%3C/text%3E%3C/svg%3E",
       weight: 'normal',
       nonInteractive: true,
     },

@@ -99,7 +99,7 @@ export class ChunkManager {
     }
 
     for (const ann of Object.values(annotations)) {
-      const estHeight = Math.max(40, ann.fontSize * 3);
+      const estHeight = Math.max(40, ann.height || ann.fontSize * 3);
       const range = getChunkCoordRange(
         {
           minX: ann.x,

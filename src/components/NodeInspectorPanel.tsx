@@ -6,6 +6,7 @@ interface NodeInspectorPanelProps {
   node: EffectiveBlueprintNode | null;
   onClose: () => void;
   onPatchNode: (nodeId: string, patch: Partial<EffectiveBlueprintNode>) => void;
+  onRunScriptRefresh: (nodeId: string) => void;
   onUpdateDefaultVar: (nodeId: string, key: string, value: string) => void;
   onDeleteDefaultVar: (nodeId: string, key: string) => void;
   onDuplicateNode: (nodeId: string) => void;
@@ -29,6 +30,7 @@ export function NodeInspectorPanel({
   node,
   onClose,
   onPatchNode,
+  onRunScriptRefresh,
   onUpdateDefaultVar,
   onDeleteDefaultVar,
   onDuplicateNode,
@@ -142,6 +144,27 @@ vars.updatedAt = lib.now();`,
               className="w-full rounded-md border border-slate-200 p-2 text-xs leading-relaxed text-slate-800 outline-none focus:border-blue-500"
             />
           </div>
+        </div>
+
+        {/* 统一脚本（Code-as-UI：vars.contents / on / onSubmit / widgets / emit / canvas） */}
+        <div className="border-t border-slate-100 pt-3">
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="font-semibold text-slate-800">统一脚本 (vars.contents / 跨控件联动)</span>
+            <button
+              type="button"
+              onClick={() => onRunScriptRefresh(node.id)}
+              className="rounded bg-emerald-700 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-emerald-800"
+            >
+              运行并刷新 UI
+            </button>
+          </div>
+          <textarea
+            rows={6}
+            value={node.script ?? ''}
+            onChange={(e) => onPatchNode(node.id, { script: e.target.value })}
+            placeholder="支持 vars.contents / on(id, fn) / onSubmit(inp, fn) / widgets.create / emit / broadcast / canvas.setAnnotationBg"
+            className="w-full rounded-md border border-slate-200 bg-slate-900 p-2 font-mono text-[11px] leading-relaxed text-emerald-300 outline-none focus:border-blue-500"
+          />
         </div>
 
         {/* 入/出箭头端口配置 */}

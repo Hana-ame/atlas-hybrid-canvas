@@ -1,7 +1,9 @@
 import { idbGet, idbSet } from './idbStorage';
 import type {
   BaseBlueprint,
+  CanvasAnnotation,
   EffectiveBlueprintNode,
+  LocalAnnotationOverride,
   LocalNodePatch,
   LocalOverlayState,
 } from './types';
@@ -12,6 +14,7 @@ export function createEmptyOverlay(): LocalOverlayState {
   return {
     runtimeVars: {},
     nodePatches: {},
+    annotationOverrides: {},
     trustedRemoteScripts: {},
   };
 }
@@ -23,6 +26,7 @@ export async function loadLocalOverlay(): Promise<LocalOverlayState> {
     return {
       runtimeVars: parsed.runtimeVars ?? {},
       nodePatches: parsed.nodePatches ?? {},
+      annotationOverrides: parsed.annotationOverrides ?? {},
       trustedRemoteScripts: parsed.trustedRemoteScripts ?? {},
     };
   } catch {
@@ -34,10 +38,6 @@ export async function saveLocalOverlay(overlay: LocalOverlayState): Promise<void
   await idbSet(OVERLAY_STORAGE_KEY, overlay);
 }
 
-/**
- * 合并权威底座（Base）与个人本地叠加层（Local Overlay）
- * 自动清理后端已删除节点的孤儿本地缓存
- */
 export function resolveEffectiveNodes(
   base: BaseBlueprint,
   overlay: LocalOverlayState
@@ -64,8 +64,26 @@ export function resolveEffectiveNodes(
 }
 
 /**
- * 将用户的字段级本地补丁合并回权威底座（显式“发布到后端”时调用）
+ * 合并后端权威注释层与控件脚本动态触发的本地背景覆盖
  */
+export function resolveEffectiveAnnotations(
+  base: BaseBlueprint,
+  overlay: LocalOverlayState
+): Record<string, CanvasAnnotation> {
+  const result: Record<string, CanvasAnnotation> = {};
+  const overrides = overlay.annotationOverrides ?? {};
+  for (const [id, ann] of Object.entries(base.annotations)) {
+    const ov: LocalAnnotationOverride | undefined = overrides[id];
+    result[id] = {
+      ...ann,
+      kind: ann.kind ?? 'text',
+      height: ann.height ?? Math.max(48, ann.fontSize * 2.5),
+      ...(ov ?? {}),
+    };
+  }
+  return result;
+}
+
 export function applyOverlayToBase(
   base: BaseBlueprint,
   overlay: LocalOverlayState,
@@ -82,9 +100,21 @@ export function applyOverlayToBase(
       cid: selfCid,
     };
   }
+  const nextAnns = { ...base.annotations };
+  for (const [id, ov] of Object.entries(overlay.annotationOverrides ?? {})) {
+    const existing = nextAnns[id];
+    if (!existing) continue;
+    nextAnns[id] = {
+      ...existing,
+      ...ov,
+      rev: existing.rev + 1,
+      cid: selfCid,
+    };
+  }
   return {
     ...base,
     version: base.version + 1,
     nodes: nextNodes,
+    annotations: nextAnns,
   };
 }

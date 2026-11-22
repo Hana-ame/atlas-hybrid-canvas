@@ -22,11 +22,60 @@ interface ChunkUnderlayCanvasProps {
 const MAX_BAKES_PER_FRAME = 6;
 const MAX_BAKE_MS = 6;
 
-function truncateTextToWidth(
+function hexToRgba(hex: string | undefined, opacity: number): string | null {
+  if (!hex || hex === 'transparent' || opacity <= 0) return null;
+  const clean = hex.replace('#', '');
+  if (clean.length !== 6) return hex;
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+}
+
+function drawRoundedRect(
   ctx: CanvasRenderingContext2D,
-  text: string,
-  maxWidth: number
-): string {
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number
+): void {
+  const radius = Math.min(r, w * 0.5, h * 0.5);
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.closePath();
+}
+
+/** 多行按宽换行（绝不压扁拉伸字体） */
+function wrapTextLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
+  if (!text) return [];
+  const paragraphs = text.split('\n');
+  const lines: string[] = [];
+  for (const para of paragraphs) {
+    if (!para) {
+      lines.push('');
+      continue;
+    }
+    let cur = '';
+    for (const ch of para) {
+      const next = cur + ch;
+      if (cur && ctx.measureText(next).width > maxWidth) {
+        lines.push(cur);
+        cur = ch;
+      } else {
+        cur = next;
+      }
+    }
+    if (cur) lines.push(cur);
+  }
+  return lines;
+}
+
+function truncateTextToWidth(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string {
   if (maxWidth <= 8 || !text) return '';
   if (ctx.measureText(text).width <= maxWidth) return text;
   const ellipsis = '…';
@@ -38,8 +87,7 @@ function truncateTextToWidth(
   let best = 1;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
-    const w = ctx.measureText(text.slice(0, mid)).width + ellipsisW;
-    if (w <= maxWidth) {
+    if (ctx.measureText(text.slice(0, mid)).width + ellipsisW <= maxWidth) {
       best = mid;
       lo = mid + 1;
     } else {
@@ -49,17 +97,13 @@ function truncateTextToWidth(
   return text.slice(0, best) + ellipsis;
 }
 
-/**
- * 零 React 重渲染的底层 Canvas 2D 瓦片与注释层：
- * 直接订阅 React Flow 的 Zustand store.subscribe()，在 d3-zoom 修改 transform 的同一微任务/绘制帧内
- * 同步重绘 Canvas，彻底消除 React 状态延迟与整树重渲染引起的拖动频闪。
- */
 function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const store = useStoreApi();
   const propsRef = useRef(props);
   propsRef.current = props;
 
+  const imgCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
   const drawRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -68,6 +112,61 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
     let lastTy = NaN;
     let lastZoom = NaN;
     let lastVersion = -1;
+
+    const getLoadedImage = (url: string): HTMLImageElement | null => {
+      const cache = imgCacheRef.current;
+      let img = cache.get(url);
+      if (!img) {
+        img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+          propsRef.current.tileCache.clear();
+          draw(true);
+        };
+        img.src = url;
+        cache.set(url, img);
+      }
+      return img.complete && img.naturalWidth > 0 ? img : null;
+    };
+
+    const drawAnnotation = (bctx: CanvasRenderingContext2D, ann: CanvasAnnotation) => {
+      const h = ann.height || Math.max(48, ann.fontSize * 2.5);
+      const fill = hexToRgba(ann.bgColor, ann.bgOpacity ?? 0.85);
+      if (fill) {
+        bctx.fillStyle = fill;
+        drawRoundedRect(bctx, ann.x, ann.y, ann.width, h, 8);
+        bctx.fill();
+      }
+
+      if (ann.kind === 'image' && ann.imageUrl) {
+        const img = getLoadedImage(ann.imageUrl);
+        if (img) {
+          // 严格按自然宽高比 contain 绘制，绝不拉伸变形！
+          const pad = 8;
+          const availW = Math.max(8, ann.width - pad * 2);
+          const availH = Math.max(8, h - pad * 2);
+          const scale = Math.min(availW / img.naturalWidth, availH / img.naturalHeight);
+          const drawW = img.naturalWidth * scale;
+          const drawH = img.naturalHeight * scale;
+          const dx = ann.x + pad + (availW - drawW) * 0.5;
+          const dy = ann.y + pad + (availH - drawH) * 0.5;
+          bctx.drawImage(img, dx, dy, drawW, drawH);
+        }
+        return;
+      }
+
+      const pad = 10;
+      bctx.fillStyle = ann.color;
+      bctx.font = `${ann.weight === 'bold' ? '700' : '400'} ${ann.fontSize}px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif`;
+      bctx.textBaseline = 'top';
+      const lines = wrapTextLines(bctx, ann.text, Math.max(24, ann.width - pad * 2));
+      const lineHeight = ann.fontSize * 1.38;
+      for (let i = 0; i < lines.length; i++) {
+        const ly = ann.y + pad + i * lineHeight;
+        if (ly + ann.fontSize > ann.y + h + 4) break;
+        bctx.fillText(lines[i], ann.x + pad, ly);
+      }
+    };
 
     const draw = (force = false) => {
       const canvas = canvasRef.current;
@@ -122,7 +221,6 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
       };
 
       const cs = p.chunkManager.chunkSize;
-      // 1) 512x512 Chunk 分区线与坐标水印
       if (p.showChunkGrid) {
         const minCx = Math.floor(worldBounds.minX / cs);
         const maxCx = Math.floor(worldBounds.maxX / cs);
@@ -152,10 +250,9 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
         }
       }
 
-      // 2) 可见 Chunk 离屏瓦片烘焙与绘制
       const visibleChunks = p.chunkManager.queryVisibleChunks(worldBounds);
       const tileScale = p.lod === 'macro' ? 0.35 : p.lod === 'meso' ? 0.65 : 1.0;
-      const drawAnnotationsInTile = p.lod !== 'macro' && !p.annotationEditMode;
+      const drawAnnotationsInTile = !p.annotationEditMode;
       let bakesThisFrame = 0;
       let hasPendingBakes = false;
       const bakeStart = performance.now();
@@ -164,7 +261,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
         if (p.lod !== 'macro' && (!drawAnnotationsInTile || chunk.annotationIds.size === 0)) {
           continue;
         }
-        if (p.lod === 'macro' && chunk.nodeIds.size === 0) {
+        if (p.lod === 'macro' && chunk.nodeIds.size === 0 && chunk.annotationIds.size === 0) {
           continue;
         }
 
@@ -180,10 +277,17 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
                 for (const annId of chunk.annotationIds) {
                   const ann = p.annotations[annId];
                   if (!ann) continue;
-                  bctx.fillStyle = ann.color;
-                  bctx.font = `${ann.weight === 'bold' ? '700' : '400'} ${ann.fontSize}px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif`;
-                  bctx.textBaseline = 'top';
-                  bctx.fillText(ann.text, ann.x, ann.y, ann.width);
+                  // Macro 下背景色块和插图进瓦片，文字标题留在下面大字层清晰绘制
+                  if (p.lod === 'macro' && ann.kind === 'text') {
+                    const fill = hexToRgba(ann.bgColor, ann.bgOpacity ?? 0.85);
+                    if (fill) {
+                      bctx.fillStyle = fill;
+                      drawRoundedRect(bctx, ann.x, ann.y, ann.width, ann.height || 56, 8);
+                      bctx.fill();
+                    }
+                  } else {
+                    drawAnnotation(bctx, ann);
+                  }
                 }
               }
 
@@ -212,7 +316,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
         }
       }
 
-      // 3) 全景（macro）屏幕像素补偿大字标题与区域标牌
+      // 全景（macro）清晰大字层
       if (p.lod === 'macro') {
         const seenNodes = new Set<string>();
         const seenAnns = new Set<string>();
@@ -255,18 +359,19 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
             if (seenAnns.has(annId)) continue;
             seenAnns.add(annId);
             const ann = p.annotations[annId];
-            if (!ann) continue;
+            if (!ann || ann.kind === 'image') continue;
 
             const annWorldFontPx = Math.max(ann.fontSize, targetAnnScreenPx / zoom);
             ctx.font = `700 ${annWorldFontPx}px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif`;
-            const label = truncateTextToWidth(ctx, ann.text, Math.max(ann.width, cs - 24));
+            const firstLine = (ann.text || '').split('\n')[0];
+            const label = truncateTextToWidth(ctx, firstLine, Math.max(ann.width, cs - 24));
             if (!label) continue;
 
             ctx.strokeStyle = 'rgba(248, 250, 252, 0.95)';
             ctx.lineWidth = 4 / zoom;
-            ctx.strokeText(label, ann.x, ann.y);
+            ctx.strokeText(label, ann.x + 8, ann.y + 8);
             ctx.fillStyle = ann.color;
-            ctx.fillText(label, ann.x, ann.y);
+            ctx.fillText(label, ann.x + 8, ann.y + 8);
           }
         }
       }
@@ -283,7 +388,6 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
 
     drawRef.current = () => draw(true);
 
-    // 直接订阅 React Flow 内部 transform 变化，零 React 重渲染同步绘制！
     const unsubscribe = store.subscribe(() => {
       draw(false);
     });
@@ -299,10 +403,9 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
     };
   }, [store]);
 
-  // 仅当外部状态（renderVersion / lod / showChunkGrid / annotationEditMode）变化时主动重绘一次
   useEffect(() => {
     drawRef.current?.();
-  }, [props.renderVersion, props.lod, props.showChunkGrid, props.annotationEditMode]);
+  }, [props.renderVersion, props.lod, props.showChunkGrid, props.annotationEditMode, props.annotations]);
 
   return (
     <canvas

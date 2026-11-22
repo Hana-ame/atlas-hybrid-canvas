@@ -1,11 +1,21 @@
 import { memo, useEffect } from 'react';
 import { Handle, NodeResizer, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
-import { Copy, Globe, Play, RotateCcw, Settings2, Trash2 } from 'lucide-react';
-import type { EffectiveBlueprintNode, NodePortSpec, WidgetButtonSpec } from '../core/types';
+import { Copy, Globe, Lock, Play, RotateCcw, Settings2, Trash2, Unlock } from 'lucide-react';
+import type {
+  ContentFlowItem,
+  ContentLeafBlock,
+  EffectiveBlueprintNode,
+  NodePortSpec,
+  WidgetButtonSpec,
+} from '../core/types';
 
 export interface WidgetNodeData extends Record<string, unknown> {
   entity: EffectiveBlueprintNode;
   onRunButton: (nodeId: string, btn: WidgetButtonSpec) => void;
+  onRunScriptClick: (nodeId: string, buttonId: string) => void;
+  onScriptInputChange: (nodeId: string, bindKey: string, value: string) => void;
+  onScriptInputSubmit: (nodeId: string, inputId: string, value: string) => void;
+  onToggleLock: (nodeId: string) => void;
   onResetLocal: (nodeId: string) => void;
   onEditTitle: (nodeId: string, nextTitle: string) => void;
   onEditBody: (nodeId: string, nextBody: string) => void;
@@ -36,6 +46,10 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
   const {
     entity,
     onRunButton,
+    onRunScriptClick,
+    onScriptInputChange,
+    onScriptInputSubmit,
+    onToggleLock,
     onResetLocal,
     onEditTitle,
     onEditBody,
@@ -51,18 +65,112 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
   const outputPorts = entity.outputPorts && entity.outputPorts.length > 0 ? entity.outputPorts : DEFAULT_OUTPUT_PORTS;
   const portSignature = `${inputPorts.map((p) => p.id).join(',')}|${outputPorts.map((p) => p.id).join(',')}`;
 
-  // 端口增删后主动刷新 React Flow 内部 Handle 坐标缓存，防止连线错位
   useEffect(() => {
     updateNodeInternals(entity.id);
   }, [entity.id, portSignature, entity.width, entity.height, updateNodeInternals]);
 
-  const varEntries = Object.entries(entity.effectiveVars || {});
+  const rawContents = entity.effectiveVars?.contents;
+  const flowItems: ContentFlowItem[] = Array.isArray(rawContents) ? (rawContents as ContentFlowItem[]) : [];
+  const hasScriptContents = flowItems.length > 0;
+  const varEntries = Object.entries(entity.effectiveVars || {}).filter(([k]) => k !== 'contents');
+
+  const renderLeafBlock = (block: ContentLeafBlock, idx: number, inRow: boolean) => {
+    if (!block || typeof block !== 'object') return null;
+
+    if (block.type === 'text') {
+      return (
+        <div
+          key={`txt-${idx}`}
+          className={inRow ? 'flex-1' : 'w-full'}
+          style={{
+            textAlign: block.align ?? 'left',
+            color: block.color || '#334155',
+            fontSize: block.fontSize ?? 12,
+            fontWeight: block.bold ? 700 : 400,
+            lineHeight: 1.45,
+          }}
+        >
+          {String(block.text ?? '')}
+        </div>
+      );
+    }
+
+    if (block.type === 'button') {
+      const btnKey = `${entity.id}:script:${block.id}`;
+      const isBusy = busyButtonKey === btnKey;
+      const cls = VARIANT_CLASSES[block.variant ?? 'primary'] ?? VARIANT_CLASSES.primary;
+      return (
+        <button
+          key={`btn-${block.id}-${idx}`}
+          type="button"
+          disabled={Boolean(block.disabled) || isBusy}
+          onMouseDown={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRunScriptClick(entity.id, block.id);
+          }}
+          style={block.width ? { width: block.width } : undefined}
+          className={`nodrag nopan inline-flex items-center justify-center gap-1 rounded px-2.5 py-1.5 text-xs font-medium transition disabled:opacity-50 ${
+            inRow && !block.width ? 'flex-1' : ''
+          } ${cls}`}
+        >
+          <Play className="h-3 w-3 shrink-0" />
+          <span className="truncate">{isBusy ? '执行中…' : block.label}</span>
+        </button>
+      );
+    }
+
+    if (block.type === 'input' || block.type === 'textarea') {
+      const bindKey = block.bind || block.id;
+      const val = entity.effectiveVars?.[bindKey] !== undefined ? String(entity.effectiveVars[bindKey]) : '';
+      const isMultiline = block.type === 'textarea' || Boolean(block.multiline);
+      if (isMultiline) {
+        return (
+          <textarea
+            key={`inp-${block.id}-${idx}`}
+            value={val}
+            rows={2}
+            placeholder={block.placeholder || '输入内容…'}
+            onMouseDown={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+            onChange={(e) => onScriptInputChange(entity.id, bindKey, e.target.value)}
+            className={`nodrag nopan nowheel rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800 outline-none focus:border-blue-500 ${
+              inRow ? 'flex-1' : 'w-full'
+            }`}
+          />
+        );
+      }
+      return (
+        <input
+          key={`inp-${block.id}-${idx}`}
+          type="text"
+          value={val}
+          placeholder={block.placeholder || '输入文字按回车提交…'}
+          onMouseDown={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          onChange={(e) => onScriptInputChange(entity.id, bindKey, e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              onScriptInputSubmit(entity.id, block.id, val);
+            }
+          }}
+          className={`nodrag nopan nowheel rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 outline-none focus:border-blue-500 ${
+            inRow ? 'min-w-0 flex-1' : 'w-full'
+          }`}
+        />
+      );
+    }
+
+    return null;
+  };
 
   return (
     <div
       className={`group relative flex h-full w-full flex-col rounded-lg border bg-white/95 shadow-sm transition-shadow hover:shadow-md ${
         selected ? 'ring-2 ring-blue-500/40' : ''
-      }`}
+      } ${entity.locked ? 'ring-1 ring-slate-300' : ''}`}
       style={{
         width: entity.width,
         minHeight: entity.height,
@@ -71,8 +179,8 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
       }}
     >
       <NodeResizer
-        isVisible={Boolean(selected)}
-        minWidth={200}
+        isVisible={Boolean(selected) && !entity.locked}
+        minWidth={220}
         minHeight={120}
         lineClassName="!border-blue-500"
         handleClassName="!h-2.5 !w-2.5 !rounded-sm !border-blue-600 !bg-white"
@@ -81,7 +189,6 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
         }}
       />
 
-      {/* 多个独立入箭头端口（左侧等距排布） */}
       {inputPorts.map((port, idx) => (
         <Handle
           key={port.id}
@@ -94,7 +201,6 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
         />
       ))}
 
-      {/* 多个独立出箭头端口（右侧等距排布） */}
       {outputPorts.map((port, idx) => (
         <Handle
           key={port.id}
@@ -107,7 +213,7 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
         />
       ))}
 
-      {/* 顶栏：可直接改标题 + 右侧操作按钮 */}
+      {/* 顶栏 */}
       <div className="flex items-center justify-between gap-1.5 border-b border-slate-100 px-2.5 py-1.5">
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           {entity.category && (
@@ -132,7 +238,7 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
           {(entity.hasLocalOverride || entity.hasRuntimeVars) && (
             <button
               type="button"
-              title="此节点含个人本地修改或运行态 vars，点击还原为后端默认"
+              title="还原为后端默认"
               onClick={(e) => {
                 e.stopPropagation();
                 onResetLocal(entity.id);
@@ -145,7 +251,22 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
           )}
           <button
             type="button"
-            title="编辑属性 / 端口 / 按钮 / 脚本"
+            title={entity.locked ? '已锁定位置（点此解锁拖动）' : '锁定控件位置（防止误拖）'}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleLock(entity.id);
+            }}
+            className={`rounded p-1 ${
+              entity.locked
+                ? 'bg-slate-100 text-slate-800'
+                : 'text-slate-400 hover:bg-slate-100 hover:text-slate-700'
+            }`}
+          >
+            {entity.locked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
+          </button>
+          <button
+            type="button"
+            title="编辑属性 / 统一脚本 / 端口 / 按钮"
             onClick={(e) => {
               e.stopPropagation();
               onOpenInspector(entity.id);
@@ -165,73 +286,91 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
           >
             <Copy className="h-3.5 w-3.5" />
           </button>
-          <button
-            type="button"
-            title="删除控件"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDeleteNode(entity.id);
-            }}
-            className="hidden rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 group-hover:inline-flex"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
+          {!entity.locked && (
+            <button
+              type="button"
+              title="删除控件"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDeleteNode(entity.id);
+              }}
+              className="hidden rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 group-hover:inline-flex"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
       </div>
 
-      {/* 正文与交互区 */}
-      <div className="flex flex-1 flex-col px-3 py-2">
-        <textarea
-          value={entity.body}
-          onMouseDown={(e) => e.stopPropagation()}
-          onPointerDown={(e) => e.stopPropagation()}
-          onChange={(e) => onEditBody(entity.id, e.target.value)}
-          rows={3}
-          placeholder="点击输入正文…"
-          className="nodrag nopan nowheel w-full flex-1 resize-y rounded border border-transparent bg-transparent text-xs leading-relaxed text-slate-600 focus:border-slate-300 focus:bg-slate-50 focus:outline-none"
-        />
-
-        {varEntries.length > 0 && (
-          <div className="mt-1.5 flex flex-wrap gap-1">
-            {varEntries.map(([k, v]) => (
-              <span
-                key={k}
-                className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-700"
-              >
-                {k}={typeof v === 'object' ? JSON.stringify(v) : String(v)}
-              </span>
-            ))}
+      {/* 主体区：若脚本产出了 vars.contents 则渲染声明式流式 UI，否则渲染默认正文+按钮 */}
+      <div className="flex flex-1 flex-col gap-2 px-3 py-2.5">
+        {hasScriptContents ? (
+          <div className="flex flex-col gap-2">
+            {flowItems.map((item, idx) =>
+              Array.isArray(item) ? (
+                <div key={`row-${idx}`} className="flex items-center gap-1.5">
+                  {item.map((leaf, cidx) => renderLeafBlock(leaf, cidx, true))}
+                </div>
+              ) : (
+                renderLeafBlock(item, idx, false)
+              )
+            )}
           </div>
-        )}
+        ) : (
+          <>
+            <textarea
+              value={entity.body}
+              onMouseDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+              onChange={(e) => onEditBody(entity.id, e.target.value)}
+              rows={3}
+              placeholder="点击输入正文…"
+              className="nodrag nopan nowheel w-full flex-1 resize-y rounded border border-transparent bg-transparent text-xs leading-relaxed text-slate-600 focus:border-slate-300 focus:bg-slate-50 focus:outline-none"
+            />
 
-        {entity.buttons && entity.buttons.length > 0 && (
-          <div className="mt-2.5 flex flex-wrap gap-1.5">
-            {entity.buttons.map((btn) => {
-              const btnKey = `${entity.id}:${btn.id}`;
-              const isBusy = busyButtonKey === btnKey;
-              const cls = VARIANT_CLASSES[btn.variant ?? 'primary'] ?? VARIANT_CLASSES.primary;
-              return (
-                <button
-                  key={btn.id}
-                  type="button"
-                  disabled={isBusy}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRunButton(entity.id, btn);
-                  }}
-                  className={`nodrag nopan inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium disabled:opacity-50 ${cls}`}
-                >
-                  {btn.actionType === 'proxy_http' ? (
-                    <Globe className="h-3 w-3" />
-                  ) : (
-                    <Play className="h-3 w-3" />
-                  )}
-                  {isBusy ? '执行中…' : btn.label}
-                </button>
-              );
-            })}
-          </div>
+            {varEntries.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {varEntries.map(([k, v]) => (
+                  <span
+                    key={k}
+                    className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-700"
+                  >
+                    {k}={typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {entity.buttons && entity.buttons.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {entity.buttons.map((btn) => {
+                  const btnKey = `${entity.id}:${btn.id}`;
+                  const isBusy = busyButtonKey === btnKey;
+                  const cls = VARIANT_CLASSES[btn.variant ?? 'primary'] ?? VARIANT_CLASSES.primary;
+                  return (
+                    <button
+                      key={btn.id}
+                      type="button"
+                      disabled={isBusy}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRunButton(entity.id, btn);
+                      }}
+                      className={`nodrag nopan inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium disabled:opacity-50 ${cls}`}
+                    >
+                      {btn.actionType === 'proxy_http' ? (
+                        <Globe className="h-3 w-3" />
+                      ) : (
+                        <Play className="h-3 w-3" />
+                      )}
+                      {isBusy ? '执行中…' : btn.label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

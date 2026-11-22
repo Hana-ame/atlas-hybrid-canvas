@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
 import express from 'express';
 import path from 'node:path';
@@ -27,6 +28,7 @@ async function startServer() {
   app.disable('x-powered-by');
   app.use(express.json({ limit: '2mb' }));
 
+  const blueprintSaveKey = (process.env.BLUEPRINT_SAVE_KEY || '').trim();
   const upstreamBaseUrl = (process.env.PROXY_UPSTREAM_BASE_URL || '').trim();
   const allowedHosts = parseAllowedHosts(process.env.PROXY_ALLOWED_HOSTS);
   const proxyApiKey = (process.env.PROXY_API_KEY || '').trim();
@@ -47,7 +49,30 @@ async function startServer() {
     });
   });
 
+  const verifySaveKey = (provided: string): boolean => {
+    if (!blueprintSaveKey || !provided) return false;
+    const a = Buffer.from(provided, 'utf8');
+    const b = Buffer.from(blueprintSaveKey, 'utf8');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  };
+
   app.post('/api/blueprint/publish', (req, res) => {
+    if (!blueprintSaveKey) {
+      res.status(403).json({
+        ok: false,
+        error: '服务端未配置 BLUEPRINT_SAVE_KEY，已禁止保存；普通用户仅可通过控件内置 API 访问后端',
+      });
+      return;
+    }
+    const providedKey = String(req.header('x-blueprint-save-key') || '').trim();
+    if (!verifySaveKey(providedKey)) {
+      res.status(401).json({
+        ok: false,
+        error: '保存密钥（Save Key）错误或缺失；无密钥仅可使用控件内预设 API，本地修改已保留在浏览器',
+      });
+      return;
+    }
     const body = req.body as { blueprint?: Record<string, unknown> } | null;
     if (!body || !body.blueprint || typeof body.blueprint !== 'object') {
       res.status(400).json({ ok: false, error: '无效的蓝图数据' });

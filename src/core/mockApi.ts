@@ -51,6 +51,7 @@ function parseAllowedHosts(raw: string | undefined): string[] {
 }
 
 const ALLOWED_HOSTS = parseAllowedHosts(import.meta.env.VITE_PROXY_ALLOWED_HOSTS);
+const MOCK_SAVE_KEY = (import.meta.env.VITE_MOCK_SAVE_KEY || 'atlas-demo-key').trim();
 const ALLOWED_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD']);
 const MAX_RESPONSE_CHARS = 256 * 1024;
 const PROXY_TIMEOUT_MS = 10_000;
@@ -171,6 +172,16 @@ async function route(url: URL, req: Request): Promise<Response | null> {
 
   if (pathname === '/api/blueprint/publish') {
     if (req.method !== 'POST') return json({ ok: false, error: 'Method Not Allowed' }, 405);
+    const providedKey = (req.headers.get('x-blueprint-save-key') || '').trim();
+    if (!MOCK_SAVE_KEY || providedKey !== MOCK_SAVE_KEY) {
+      return json(
+        {
+          ok: false,
+          error: '保存密钥错误（演示密钥：atlas-demo-key）；无密钥仅可使用控件内置 API 访问后端',
+        },
+        401,
+      );
+    }
     let payload: { blueprint?: unknown } | null = null;
     try {
       payload = (await req.json()) as { blueprint?: unknown };

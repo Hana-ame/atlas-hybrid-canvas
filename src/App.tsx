@@ -26,7 +26,8 @@ import {
   Layers,
   Plus,
   RotateCcw,
-  UploadCloud,
+  KeyRound,
+  Save,
   Zap,
 } from 'lucide-react';
 import { AnnotationNode, type AnnotationNodeData } from './canvas/AnnotationNode';
@@ -40,10 +41,11 @@ import {
   applyOverlayToBase,
   createEmptyOverlay,
   loadLocalOverlay,
+  resolveEffectiveAnnotations,
   resolveEffectiveNodes,
   saveLocalOverlay,
 } from './core/layeredStore';
-import { runInIsolatedWorker } from './core/scriptSandbox';
+import { runInIsolatedWorker, type PeerWidgetSnapshot, type ScriptTriggerEvent } from './core/scriptSandbox';
 import { createSeedBlueprint, spawnStressChunks } from './core/seedBlueprint';
 import {
   BUILTIN_TEMPLATES,
@@ -97,6 +99,10 @@ function HybridCanvasWorkspace() {
   const [templateDrawerOpen, setTemplateDrawerOpen] = useState(true);
   const [inspectingNodeId, setInspectingNodeId] = useState<string | null>(null);
   const [busyButtonKey, setBusyButtonKey] = useState<string | null>(null);
+  const [saveModalOpen, setSaveModalOpen] = useState(false);
+  const [saveKeyInput, setSaveKeyInput] = useState('');
+  const [saveKeyError, setSaveKeyError] = useState<string | null>(null);
+  const [isSavingBase, setIsSavingBase] = useState(false);
   const [statusLog, setStatusLog] = useState<string>('就绪：直接从左侧拖出控件放到画布，拖动过程零频闪');
   const [renderVersion, setRenderVersion] = useState(0);
   const [chunkSyncTick, setChunkSyncTick] = useState(0);
@@ -131,12 +137,18 @@ function HybridCanvasWorkspace() {
   );
 
   const effectiveNodes = useMemo(() => resolveEffectiveNodes(base, overlay), [base, overlay]);
+  const effectiveAnnotations = useMemo(
+    () => resolveEffectiveAnnotations(base, overlay),
+    [base, overlay]
+  );
   const effectiveNodesRef = useRef(effectiveNodes);
   effectiveNodesRef.current = effectiveNodes;
+  const effectiveAnnotationsRef = useRef(effectiveAnnotations);
+  effectiveAnnotationsRef.current = effectiveAnnotations;
 
   if (!chunkManagerRef.current) {
     const cm = new ChunkManager(512);
-    cm.rebuild(effectiveNodes, base.annotations);
+    cm.rebuild(effectiveNodes, effectiveAnnotations);
     chunkManagerRef.current = cm;
   }
 
@@ -164,10 +176,10 @@ function HybridCanvasWorkspace() {
       return;
     }
     if (draggingNodeIdsRef.current.size > 0) return;
-    chunkManagerRef.current?.rebuild(effectiveNodesRef.current, base.annotations);
+    chunkManagerRef.current?.rebuild(effectiveNodesRef.current, effectiveAnnotationsRef.current);
     tileCacheRef.current.clear();
     setRenderVersion((v) => v + 1);
-  }, [base.version, base.annotations, lod, annotationEditMode, chunkSyncTick]);
+  }, [base.version, effectiveAnnotations, lod, annotationEditMode, chunkSyncTick]);
 
   // 启动时从 IndexedDB 恢复本地叠加层、自定义模板与已发布底座
   useEffect(() => {
@@ -301,13 +313,26 @@ function HybridCanvasWorkspace() {
           setStatusLog(`沙箱拦截/报错：${res.error}`);
           return;
         }
-        setOverlay((prev) => ({
-          ...prev,
-          runtimeVars: {
-            ...prev.runtimeVars,
-            [nodeId]: res.updatedVars,
-          },
-        }));
+        setOverlay((prev) => {
+          const nextAnnOverrides = { ...(prev.annotationOverrides ?? {}) };
+          for (const op of res.annotationOps) {
+            nextAnnOverrides[op.id] = {
+              ...(nextAnnOverrides[op.id] ?? {}),
+              ...op.patch,
+            };
+          }
+          return {
+            ...prev,
+            runtimeVars: {
+              ...prev.runtimeVars,
+              [nodeId]: res.updatedVars,
+            },
+            annotationOverrides: nextAnnOverrides,
+          };
+        });
+        if (res.annotationOps.length > 0) {
+          setChunkSyncTick((t) => t + 1);
+        }
         setStatusLog(res.logs.length > 0 ? `Worker 输出：${res.logs.join(' | ')}` : `已更新本地 vars (${entity.title})`);
       } else if (btn.actionType === 'proxy_http' && btn.proxyUrl) {
         const resp = await fetch('/api/proxy', {
@@ -333,6 +358,256 @@ function HybridCanvasWorkspace() {
     }
   }, []);
 
+
+  const buildPeerSnapshots = useCallback(
+    (sourceNodes: Record<string, EffectiveBlueprintNode>): Record<string, PeerWidgetSnapshot> => {
+      const peers: Record<string, PeerWidgetSnapshot> = {};
+      for (const n of Object.values(sourceNodes)) {
+        peers[n.id] = {
+          id: n.id,
+          title: n.title,
+          label: n.title,
+          x: n.x,
+          y: n.y,
+          width: n.width,
+          height: n.height,
+          color: n.color,
+          vars: { ...n.effectiveVars },
+        };
+      }
+      return peers;
+    },
+    []
+  );
+
+  // 统一脚本调度器：支持 render / click / submit / message，递归处理 widgets.create/connect/remove 与 emit/broadcast
+  const executeUnifiedWidgetScript = useCallback(
+    async (
+      nodeId: string,
+      trigger: ScriptTriggerEvent,
+      overrideVars?: Record<string, unknown>,
+      depth = 0
+    ) => {
+      if (depth > 4) return;
+      const entity = effectiveNodesRef.current[nodeId];
+      if (!entity || !entity.script) return;
+
+      const peers = buildPeerSnapshots(effectiveNodesRef.current);
+      const selfEntity = peers[nodeId];
+      const inputVars = overrideVars ?? entity.effectiveVars;
+      const res = await runInIsolatedWorker(entity.script, inputVars, {
+        selfEntity,
+        peers,
+        trigger,
+      });
+
+      if (!res.ok) {
+        setStatusLog(`脚本错误 (${entity.title})：${res.error}`);
+        return;
+      }
+
+      // 1) 更新自身 runtimeVars 与画板背景注释覆盖
+      setOverlay((prev) => {
+        const nextAnnOverrides = { ...(prev.annotationOverrides ?? {}) };
+        for (const op of res.annotationOps) {
+          nextAnnOverrides[op.id] = { ...(nextAnnOverrides[op.id] ?? {}), ...op.patch };
+        }
+        return {
+          ...prev,
+          runtimeVars: {
+            ...prev.runtimeVars,
+            [nodeId]: res.updatedVars,
+          },
+          annotationOverrides: nextAnnOverrides,
+        };
+      });
+
+      // 2) 处理 widgets.create / connect / remove 指令
+      const newlyCreatedScripts: Array<{ id: string; vars: Record<string, unknown>; script: string }> = [];
+      if (res.widgetOps.length > 0) {
+        setBase((prev) => {
+          const nextNodes = { ...prev.nodes };
+          const nextEdges = { ...prev.edges };
+          for (const op of res.widgetOps) {
+            if (op.op === 'create') {
+              nextNodes[op.id] = {
+                id: op.id,
+                x: op.x,
+                y: op.y,
+                width: op.width,
+                height: op.height,
+                title: op.title,
+                body: op.body || '',
+                category: op.category || '子控件',
+                color: op.color,
+                script: op.script,
+                defaultVars: op.vars || {},
+                rev: 1,
+                cid: SELF_CID,
+              };
+              if (op.script) {
+                newlyCreatedScripts.push({ id: op.id, vars: op.vars || {}, script: op.script });
+              }
+              if (op.connect) {
+                const eid = `edge-${nodeId}-${op.id}-${Date.now()}`;
+                nextEdges[eid] = {
+                  id: eid,
+                  source: nodeId,
+                  target: op.id,
+                  sourceHandle: 'out-1',
+                  targetHandle: 'in-1',
+                  label: typeof op.connect === 'string' ? op.connect : undefined,
+                  color: op.color,
+                  rev: 1,
+                  cid: SELF_CID,
+                };
+              }
+            } else if (op.op === 'connect') {
+              const eid = `edge-${op.fromId}-${op.toId}-${Date.now()}`;
+              nextEdges[eid] = {
+                id: eid,
+                source: op.fromId,
+                target: op.toId,
+                sourceHandle: 'out-1',
+                targetHandle: 'in-1',
+                label: op.label,
+                color: '#2563EB',
+                rev: 1,
+                cid: SELF_CID,
+              };
+            } else if (op.op === 'remove') {
+              delete nextNodes[op.id];
+              for (const [eid, e] of Object.entries(nextEdges)) {
+                if (e.source === op.id || e.target === op.id) delete nextEdges[eid];
+              }
+            }
+          }
+          return { ...prev, version: prev.version + 1, nodes: nextNodes, edges: nextEdges };
+        });
+      }
+
+      if (res.annotationOps.length > 0 || res.widgetOps.length > 0) {
+        setChunkSyncTick((t) => t + 1);
+      }
+
+      // 新建的带脚本子控件立刻跑一次 render 产出它们的 vars.contents
+      for (const child of newlyCreatedScripts) {
+        const childRes = await runInIsolatedWorker(child.script, child.vars, {
+          selfEntity: {
+            id: child.id,
+            title: child.id,
+            label: child.id,
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 175,
+            color: '#059669',
+            vars: child.vars,
+          },
+          peers,
+          trigger: { kind: 'render' },
+        });
+        if (childRes.ok) {
+          setOverlay((prev) => ({
+            ...prev,
+            runtimeVars: { ...prev.runtimeVars, [child.id]: childRes.updatedVars },
+          }));
+        }
+      }
+
+      // 3) 处理跨控件 emit / broadcast 事件投递
+      for (const em of res.emitOps) {
+        const targets =
+          em.targetId === '*'
+            ? Object.values(effectiveNodesRef.current)
+                .filter((n) => n.id !== nodeId && Boolean(n.script))
+                .map((n) => n.id)
+            : [em.targetId];
+        for (const tid of targets) {
+          await executeUnifiedWidgetScript(
+            tid,
+            {
+              kind: 'message',
+              event: em.event,
+              payload: em.payload,
+              fromId: nodeId,
+              fromTitle: entity.title,
+            },
+            undefined,
+            depth + 1
+          );
+        }
+      }
+    },
+    [buildPeerSnapshots]
+  );
+
+  // 初始化所有带 script 的控件，首次自动渲染其 vars.contents
+  const renderedScriptsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const node of Object.values(effectiveNodes)) {
+      if (node.script && !Array.isArray(node.effectiveVars?.contents) && !renderedScriptsRef.current.has(node.id)) {
+        renderedScriptsRef.current.add(node.id);
+        void executeUnifiedWidgetScript(node.id, { kind: 'render' });
+      }
+    }
+  }, [effectiveNodes, executeUnifiedWidgetScript]);
+
+  const handleRunScriptClick = useCallback(
+    async (nodeId: string, buttonId: string) => {
+      const key = `${nodeId}:script:${buttonId}`;
+      setBusyButtonKey(key);
+      try {
+        await executeUnifiedWidgetScript(nodeId, { kind: 'click', buttonId });
+      } finally {
+        setBusyButtonKey(null);
+      }
+    },
+    [executeUnifiedWidgetScript]
+  );
+
+  const handleScriptInputChange = useCallback((nodeId: string, bindKey: string, value: string) => {
+    setOverlay((prev) => ({
+      ...prev,
+      runtimeVars: {
+        ...prev.runtimeVars,
+        [nodeId]: {
+          ...(prev.runtimeVars[nodeId] ?? effectiveNodesRef.current[nodeId]?.effectiveVars ?? {}),
+          [bindKey]: value,
+        },
+      },
+    }));
+  }, []);
+
+  const handleScriptInputSubmit = useCallback(
+    async (nodeId: string, inputId: string, value: string) => {
+      await executeUnifiedWidgetScript(nodeId, { kind: 'submit', inputId, value });
+    },
+    [executeUnifiedWidgetScript]
+  );
+
+  const handleToggleLock = useCallback((nodeId: string) => {
+    const cur = effectiveNodesRef.current[nodeId];
+    if (!cur) return;
+    const nextLocked = !cur.locked;
+    setOverlay((prev) => ({
+      ...prev,
+      nodePatches: {
+        ...prev.nodePatches,
+        [nodeId]: { ...(prev.nodePatches[nodeId] ?? {}), locked: nextLocked },
+      },
+    }));
+    setStatusLog(nextLocked ? `已锁定「${cur.title}」（防误拖，按钮与输入框仍可操作）` : `已解锁「${cur.title}」`);
+  }, []);
+
+  const handleRunScriptRefresh = useCallback(
+    (nodeId: string) => {
+      void executeUnifiedWidgetScript(nodeId, { kind: 'render' });
+      setStatusLog('已重新执行控件统一脚本并刷新 UI');
+    },
+    [executeUnifiedWidgetScript]
+  );
+
   const handleResetNodeLocal = useCallback((nodeId: string) => {
     setOverlay((prev) => {
       const nextRuntime = { ...prev.runtimeVars };
@@ -341,6 +616,7 @@ function HybridCanvasWorkspace() {
       delete nextPatches[nodeId];
       return { ...prev, runtimeVars: nextRuntime, nodePatches: nextPatches };
     });
+    renderedScriptsRef.current.delete(nodeId);
     setChunkSyncTick((t) => t + 1);
     setStatusLog('已将该节点重置为后端权威默认值');
   }, []);
@@ -359,6 +635,8 @@ function HybridCanvasWorkspace() {
           ...(patch.width !== undefined ? { width: patch.width } : {}),
           ...(patch.height !== undefined ? { height: patch.height } : {}),
           ...(patch.buttons !== undefined ? { buttons: patch.buttons } : {}),
+          ...(patch.script !== undefined ? { script: patch.script } : {}),
+          ...(patch.locked !== undefined ? { locked: patch.locked } : {}),
           ...(patch.inputPorts !== undefined ? { inputPorts: patch.inputPorts } : {}),
           ...(patch.outputPorts !== undefined ? { outputPorts: patch.outputPorts } : {}),
         },
@@ -562,7 +840,7 @@ function HybridCanvasWorkspace() {
 
       if (annotationEditMode) {
         for (const aid of visibleAnnIds) {
-          const ann = base.annotations[aid];
+          const ann = effectiveAnnotations[aid];
           if (!ann) continue;
           const rfId = `ann-node:${ann.id}`;
           const existing = prevMap.get(rfId);
@@ -591,12 +869,17 @@ function HybridCanvasWorkspace() {
           ...(existing ?? {}),
           id: entity.id,
           type: 'widget',
+          draggable: !entity.locked,
           // 拖动过程中绝对保留 React Flow 自己的 position 与 measured，彻底杜绝闪烁消失！
           position: isDragging && existing ? existing.position : { x: entity.x, y: entity.y },
           zIndex: 10,
           data: {
             entity,
             onRunButton: handleRunButton,
+            onRunScriptClick: handleRunScriptClick,
+            onScriptInputChange: handleScriptInputChange,
+            onScriptInputSubmit: handleScriptInputSubmit,
+            onToggleLock: handleToggleLock,
             onResetLocal: handleResetNodeLocal,
             onEditTitle: handleEditTitle,
             onEditBody: handleEditBody,
@@ -615,9 +898,13 @@ function HybridCanvasWorkspace() {
     lod,
     viewportBucketKey,
     effectiveNodes,
-    base.annotations,
+    effectiveAnnotations,
     annotationEditMode,
     handleRunButton,
+    handleRunScriptClick,
+    handleScriptInputChange,
+    handleScriptInputSubmit,
+    handleToggleLock,
     handleResetNodeLocal,
     handleEditTitle,
     handleEditBody,
@@ -748,21 +1035,39 @@ function HybridCanvasWorkspace() {
     setStatusLog('已删除连线');
   }, []);
 
-  const handlePublishToBackend = async () => {
+  const handleSaveToBackend = async () => {
+    const key = saveKeyInput.trim();
+    if (!key) {
+      setSaveKeyError('请输入保存密钥（无密钥仅可使用控件内置 API 访问后端）');
+      return;
+    }
+    setIsSavingBase(true);
+    setSaveKeyError(null);
     const merged = applyOverlayToBase(base, overlay, SELF_CID);
-    setBase(merged);
-    setOverlay((prev) => ({ ...prev, nodePatches: {} }));
-    setChunkSyncTick((t) => t + 1);
     try {
       const res = await fetch('/api/blueprint/publish', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Blueprint-Save-Key': key,
+        },
         body: JSON.stringify({ blueprint: merged }),
       });
-      const json = (await res.json()) as { ok: boolean; serverRevision?: number };
-      setStatusLog(json.ok ? `已发布为后端新权威底座 (rev #${json.serverRevision})` : '发布失败');
+      const json = (await res.json()) as { ok: boolean; serverRevision?: number; error?: string };
+      if (!res.ok || !json.ok) {
+        setSaveKeyError(json.error || `保存被拒绝 (HTTP ${res.status})`);
+        setStatusLog(`保存失败：${json.error || res.status}`);
+        return;
+      }
+      setBase(merged);
+      setOverlay((prev) => ({ ...prev, nodePatches: {}, annotationOverrides: {} }));
+      setChunkSyncTick((t) => t + 1);
+      setSaveModalOpen(false);
+      setStatusLog(`已通过密钥校验并保存到后端 (rev #${json.serverRevision})`);
     } catch {
-      setStatusLog('已在本地更新权威底座（未连接后端服务）');
+      setSaveKeyError('无法连接到后端保存接口，当前修改仍安全保留在本地 IndexedDB');
+    } finally {
+      setIsSavingBase(false);
     }
   };
 
@@ -853,6 +1158,7 @@ function HybridCanvasWorkspace() {
           <button
             type="button"
             onClick={() => {
+              renderedScriptsRef.current.clear();
               setOverlay(createEmptyOverlay());
               setChunkSyncTick((t) => t + 1);
               setStatusLog('已清空所有个人本地叠加层，恢复后端权威默认值');
@@ -865,11 +1171,14 @@ function HybridCanvasWorkspace() {
 
           <button
             type="button"
-            onClick={handlePublishToBackend}
+            onClick={() => {
+              setSaveKeyError(null);
+              setSaveModalOpen(true);
+            }}
             className="inline-flex items-center gap-1 rounded-md bg-slate-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-slate-700"
           >
-            <UploadCloud className="h-3.5 w-3.5" />
-            发布底座
+            <Save className="h-3.5 w-3.5" />
+            保存（需 Key）
           </button>
         </div>
       </div>
@@ -888,6 +1197,7 @@ function HybridCanvasWorkspace() {
         node={inspectingNode}
         onClose={() => setInspectingNodeId(null)}
         onPatchNode={handlePatchNode}
+        onRunScriptRefresh={handleRunScriptRefresh}
         onUpdateDefaultVar={handleUpdateDefaultVar}
         onDeleteDefaultVar={handleDeleteDefaultVar}
         onDuplicateNode={handleDuplicateNode}
@@ -933,7 +1243,7 @@ function HybridCanvasWorkspace() {
           chunkManager={chunkManagerRef.current}
           tileCache={tileCacheRef.current}
           nodes={effectiveNodes}
-          annotations={base.annotations}
+          annotations={effectiveAnnotations}
           lod={lod}
           showChunkGrid={showChunkGrid}
           annotationEditMode={annotationEditMode}
@@ -941,6 +1251,66 @@ function HybridCanvasWorkspace() {
         />
         <Controls position="bottom-right" />
       </ReactFlow>
+      {/* 保存密钥验证弹窗 */}
+      {saveModalOpen && (
+        <div
+          className="pointer-events-auto fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-[2px]"
+          onClick={() => setSaveModalOpen(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 text-slate-900">
+              <KeyRound className="h-5 w-5 text-blue-700" />
+              <h3 className="text-sm font-bold">保存到后端（需要管理员密钥）</h3>
+            </div>
+            <p className="mt-2 text-xs leading-relaxed text-slate-600">
+              将你的本地画布修改保存为后端公共版本需要校验 <code className="rounded bg-slate-100 px-1 font-mono">X-Blueprint-Save-Key</code>。没有密钥的访客只能通过控件内预设好的 API 按钮访问后端，个人修改仅保存在本地 IndexedDB。
+            </p>
+
+            <div className="mt-3">
+              <label className="mb-1 block text-xs font-semibold text-slate-700">保存密钥 (Save Key)</label>
+              <input
+                type="password"
+                autoFocus
+                value={saveKeyInput}
+                onChange={(e) => setSaveKeyInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void handleSaveToBackend();
+                }}
+                placeholder="输入 BLUEPRINT_SAVE_KEY（静态演示密钥：atlas-demo-key）"
+                className="w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-xs text-slate-900 outline-none focus:border-blue-600"
+              />
+            </div>
+
+            {saveKeyError && (
+              <div className="mt-2.5 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                {saveKeyError}
+              </div>
+            )}
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setSaveModalOpen(false)}
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={isSavingBase}
+                onClick={() => void handleSaveToBackend()}
+                className="inline-flex items-center gap-1 rounded-md bg-slate-900 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+              >
+                <Save className="h-3.5 w-3.5" />
+                {isSavingBase ? '校验并保存中…' : '校验 Key 并保存'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
