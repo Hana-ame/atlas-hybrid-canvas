@@ -28,7 +28,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          # 不启用 cache: npm —— 它要求 lockfile 存在才能算缓存 key，
+          # 而本仓库首次可能没有 package-lock.json，会在 setup 阶段直接失败。
 
       # Pages 项目页在 /<repo>/ 子路径下，资源前缀必须匹配
       - name: Resolve base path
