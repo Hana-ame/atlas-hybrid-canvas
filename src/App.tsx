@@ -1,18 +1,39 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+} from 'react';
 import {
   ReactFlow,
   ReactFlowProvider,
   Controls,
+  MarkerType,
+  applyNodeChanges,
   useReactFlow,
-  useViewport,
-  type Node,
+  useStore,
+  useStoreApi,
+  type Connection,
   type Edge,
+  type EdgeChange,
+  type Node,
   type NodeChange,
 } from '@xyflow/react';
-import { Layers, Plus, RotateCcw, UploadCloud, Zap } from 'lucide-react';
+import {
+  LayoutGrid,
+  Layers,
+  Plus,
+  RotateCcw,
+  UploadCloud,
+  Zap,
+} from 'lucide-react';
 import { AnnotationNode, type AnnotationNodeData } from './canvas/AnnotationNode';
 import { ChunkUnderlayCanvas } from './canvas/ChunkUnderlayCanvas';
 import { WidgetNode, type WidgetNodeData } from './canvas/WidgetNode';
+import { NodeInspectorPanel } from './components/NodeInspectorPanel';
+import { TEMPLATE_DRAG_MIME, TemplateDrawer } from './components/TemplateDrawer';
 import { ChunkManager } from './core/chunkManager';
 import { ChunkTileCache } from './core/chunkTileCache';
 import {
@@ -24,9 +45,18 @@ import {
 } from './core/layeredStore';
 import { runInIsolatedWorker } from './core/scriptSandbox';
 import { createSeedBlueprint, spawnStressChunks } from './core/seedBlueprint';
+import {
+  BUILTIN_TEMPLATES,
+  loadCustomTemplates,
+  nodeToCustomTemplate,
+  saveCustomTemplates,
+} from './core/widgetTemplates';
 import type {
   BaseBlueprint,
+  BlueprintNode,
+  BlueprintTemplate,
   CanvasAnnotation,
+  EffectiveBlueprintNode,
   LocalOverlayState,
   LODLevel,
   WidgetButtonSpec,
@@ -44,26 +74,61 @@ const LOD_LABELS: Record<LODLevel, string> = {
   macro: '全景瓦片',
 };
 
+function ZoomBadge({ lod }: { lod: LODLevel }) {
+  const zoomPct = useStore((s) => Math.round(s.transform[2] * 100));
+  return (
+    <span className="ml-1 font-mono text-xs font-bold text-slate-800">
+      <span className={lod === 'macro' ? 'text-teal-700' : 'text-blue-700'}>
+        {LOD_LABELS[lod]}
+      </span>{' '}
+      ({zoomPct}%)
+    </span>
+  );
+}
+
 function HybridCanvasWorkspace() {
   const [base, setBase] = useState<BaseBlueprint>(() => createSeedBlueprint());
   const [overlay, setOverlay] = useState<LocalOverlayState>(() => createEmptyOverlay());
+  const [customTemplates, setCustomTemplates] = useState<BlueprintTemplate[]>([]);
   const overlayHydratedRef = useRef(false);
+
   const [showChunkGrid, setShowChunkGrid] = useState(true);
   const [annotationEditMode, setAnnotationEditMode] = useState(false);
-  const [placingAnnotation, setPlacingAnnotation] = useState(false);
+  const [templateDrawerOpen, setTemplateDrawerOpen] = useState(true);
+  const [inspectingNodeId, setInspectingNodeId] = useState<string | null>(null);
   const [busyButtonKey, setBusyButtonKey] = useState<string | null>(null);
-  const [statusLog, setStatusLog] = useState<string>('就绪：所有运行态 vars 与拖拽修改仅保存在本地 IndexedDB');
+  const [statusLog, setStatusLog] = useState<string>('就绪：直接从左侧拖出控件放到画布，拖动过程零频闪');
   const [renderVersion, setRenderVersion] = useState(0);
   const [chunkSyncTick, setChunkSyncTick] = useState(0);
 
-  // 迟滞区间 LOD（缩小 < 0.32 切全景瓦片；放大 > 0.38 切回 React Flow DOM，防临界闪屏）
+  // 关键修复：使用 React Flow 原生受控 nodes 状态 + applyNodeChanges，
+  // 彻底保留 React Flow v12 内部的 measured / dragging / selected 状态，消除拖动控件时高频消失再出现！
+  const [rfNodes, setRfNodes] = useState<Node[]>([]);
+
   const [lod, setLod] = useState<LODLevel>('micro');
-  const vp = useViewport();
   const rf = useReactFlow();
+  const rfStore = useStoreApi();
+
+  const viewportBucketKey = useStore((s) => {
+    const [tx, ty, zoom] = s.transform;
+    const w = s.width || 1280;
+    const h = s.height || 800;
+    const cs = 512;
+    const minCx = Math.floor((-tx / zoom - 256) / cs);
+    const maxCx = Math.floor(((w - tx) / zoom + 256) / cs);
+    const minCy = Math.floor((-ty / zoom - 256) / cs);
+    const maxCy = Math.floor(((h - ty) / zoom + 256) / cs);
+    return `${minCx},${maxCx},${minCy},${maxCy}`;
+  });
 
   const chunkManagerRef = useRef<ChunkManager | null>(null);
   const tileCacheRef = useRef(new ChunkTileCache(160));
   const draggingNodeIdsRef = useRef<Set<string>>(new Set());
+
+  const allTemplates = useMemo(
+    () => [...customTemplates, ...BUILTIN_TEMPLATES],
+    [customTemplates]
+  );
 
   const effectiveNodes = useMemo(() => resolveEffectiveNodes(base, overlay), [base, overlay]);
   const effectiveNodesRef = useRef(effectiveNodes);
@@ -75,27 +140,21 @@ function HybridCanvasWorkspace() {
     chunkManagerRef.current = cm;
   }
 
+  // 迟滞区间 LOD 监听
   useEffect(() => {
-    setLod((prev) => {
-      if (prev !== 'macro' && vp.zoom < 0.32) return 'macro';
-      if (prev === 'macro' && vp.zoom > 0.38) return vp.zoom < 0.72 ? 'meso' : 'micro';
-      if (prev !== 'macro') return vp.zoom < 0.72 ? 'meso' : 'micro';
-      return prev;
-    });
-  }, [vp.zoom]);
-
-  // Esc 退出“点击放置注释”模式
-  useEffect(() => {
-    if (!placingAnnotation) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setPlacingAnnotation(false);
-        setStatusLog('已取消放置注释');
-      }
+    const syncLod = (zoom: number) => {
+      setLod((prev) => {
+        if (prev !== 'macro' && zoom < 0.32) return 'macro';
+        if (prev === 'macro' && zoom > 0.38) return zoom < 0.72 ? 'meso' : 'micro';
+        if (prev !== 'macro') return zoom < 0.72 ? 'meso' : 'micro';
+        return prev;
+      });
     };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [placingAnnotation]);
+    syncLod(rfStore.getState().transform[2]);
+    return rfStore.subscribe((state) => {
+      syncLod(state.transform[2]);
+    });
+  }, [rfStore]);
 
   // 仅在底座更新、注释变更、切换 LOD、切换注释编辑态或拖拽松手时重建 Chunk 索引与瓦片缓存
   const isFirstEffectRef = useRef(true);
@@ -110,14 +169,18 @@ function HybridCanvasWorkspace() {
     setRenderVersion((v) => v + 1);
   }, [base.version, base.annotations, lod, annotationEditMode, chunkSyncTick]);
 
-  // 启动时从 IndexedDB 异步恢复个人本地叠加层，并尝试拉取后端/Mock 权威底座
+  // 启动时从 IndexedDB 恢复本地叠加层、自定义模板与已发布底座
   useEffect(() => {
     let active = true;
     void (async () => {
-      const savedOverlay = await loadLocalOverlay();
+      const [savedOverlay, savedTpls] = await Promise.all([
+        loadLocalOverlay(),
+        loadCustomTemplates(),
+      ]);
       if (!active) return;
       overlayHydratedRef.current = true;
       setOverlay(savedOverlay);
+      setCustomTemplates(savedTpls);
       setChunkSyncTick((t) => t + 1);
 
       try {
@@ -129,7 +192,7 @@ function HybridCanvasWorkspace() {
           }
         }
       } catch {
-        // 未连接后端时继续使用默认种子蓝图
+        // 离线或无后端时继续使用种子蓝图
       }
     })();
     return () => {
@@ -137,7 +200,6 @@ function HybridCanvasWorkspace() {
     };
   }, []);
 
-  // 防抖异步写入 IndexedDB，不阻塞拖拽与渲染主线程
   useEffect(() => {
     if (!overlayHydratedRef.current) return;
     const timer = window.setTimeout(() => {
@@ -145,6 +207,86 @@ function HybridCanvasWorkspace() {
     }, 250);
     return () => window.clearTimeout(timer);
   }, [overlay]);
+
+  // 实例化任意模板到指定世界坐标
+  const instantiateTemplateAt = useCallback((tpl: BlueprintTemplate, worldX: number, worldY: number) => {
+    const x = Math.round(worldX);
+    const y = Math.round(worldY);
+    if (tpl.kind === 'annotation' && tpl.annotationPreset) {
+      const id = `ann-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+      setBase((prev) => ({
+        ...prev,
+        version: prev.version + 1,
+        annotations: {
+          ...prev.annotations,
+          [id]: {
+            ...tpl.annotationPreset!,
+            id,
+            x,
+            y,
+            rev: 1,
+            cid: SELF_CID,
+          },
+        },
+      }));
+      setStatusLog(`已在 (${x}, ${y}) 放入「${tpl.name}」`);
+      return;
+    }
+
+    if (tpl.kind === 'node' && tpl.nodePreset) {
+      const id = `node-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+      const newNode: BlueprintNode = {
+        ...tpl.nodePreset,
+        id,
+        x,
+        y,
+        defaultVars: { ...tpl.nodePreset.defaultVars },
+        buttons: tpl.nodePreset.buttons ? tpl.nodePreset.buttons.map((b) => ({ ...b })) : [],
+        rev: 1,
+        cid: SELF_CID,
+      };
+      setBase((prev) => ({
+        ...prev,
+        version: prev.version + 1,
+        nodes: { ...prev.nodes, [id]: newNode },
+      }));
+      setStatusLog(`已放入「${tpl.name}」，可直接拖动或改字`);
+    }
+  }, []);
+
+  const handleCreateTemplateCenter = useCallback(
+    (tpl: BlueprintTemplate) => {
+      const [tx, ty, zoom] = rfStore.getState().transform;
+      const offset = Math.round((Math.random() - 0.5) * 60);
+      const centerX = (window.innerWidth * 0.55 - tx) / zoom - 140 + offset;
+      const centerY = (window.innerHeight * 0.5 - ty) / zoom - 80 + offset;
+      instantiateTemplateAt(tpl, centerX, centerY);
+    },
+    [rfStore, instantiateTemplateAt]
+  );
+
+  // 画布接收从左侧模板库拖出的控件（所见即所得 Drop！）
+  const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: DragEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      const tplId =
+        e.dataTransfer.getData(TEMPLATE_DRAG_MIME) || e.dataTransfer.getData('text/plain');
+      if (!tplId) return;
+      const tpl = allTemplates.find((t) => t.id === tplId);
+      if (!tpl) return;
+
+      const worldPos = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      const halfW = tpl.nodePreset ? tpl.nodePreset.width * 0.5 : 140;
+      const halfH = tpl.nodePreset ? 24 : 16;
+      instantiateTemplateAt(tpl, worldPos.x - halfW, worldPos.y - halfH);
+    },
+    [allTemplates, rf, instantiateTemplateAt]
+  );
 
   const handleRunButton = useCallback(async (nodeId: string, btn: WidgetButtonSpec) => {
     const entity = effectiveNodesRef.current[nodeId];
@@ -203,14 +345,157 @@ function HybridCanvasWorkspace() {
     setStatusLog('已将该节点重置为后端权威默认值');
   }, []);
 
-  const handleEditBody = useCallback((nodeId: string, nextBody: string) => {
+  const handlePatchNode = useCallback((nodeId: string, patch: Partial<EffectiveBlueprintNode>) => {
     setOverlay((prev) => ({
       ...prev,
       nodePatches: {
         ...prev.nodePatches,
-        [nodeId]: { ...(prev.nodePatches[nodeId] ?? {}), body: nextBody },
+        [nodeId]: {
+          ...(prev.nodePatches[nodeId] ?? {}),
+          ...(patch.title !== undefined ? { title: patch.title } : {}),
+          ...(patch.body !== undefined ? { body: patch.body } : {}),
+          ...(patch.category !== undefined ? { category: patch.category } : {}),
+          ...(patch.color !== undefined ? { color: patch.color } : {}),
+          ...(patch.width !== undefined ? { width: patch.width } : {}),
+          ...(patch.height !== undefined ? { height: patch.height } : {}),
+          ...(patch.buttons !== undefined ? { buttons: patch.buttons } : {}),
+          ...(patch.inputPorts !== undefined ? { inputPorts: patch.inputPorts } : {}),
+          ...(patch.outputPorts !== undefined ? { outputPorts: patch.outputPorts } : {}),
+        },
       },
     }));
+  }, []);
+
+  const handleEditTitle = useCallback(
+    (nodeId: string, nextTitle: string) => handlePatchNode(nodeId, { title: nextTitle }),
+    [handlePatchNode]
+  );
+
+  const handleEditBody = useCallback(
+    (nodeId: string, nextBody: string) => handlePatchNode(nodeId, { body: nextBody }),
+    [handlePatchNode]
+  );
+
+  const handleResizeNode = useCallback(
+    (nodeId: string, width: number, height: number) => {
+      handlePatchNode(nodeId, { width, height });
+      setChunkSyncTick((t) => t + 1);
+    },
+    [handlePatchNode]
+  );
+
+  const handleUpdateDefaultVar = useCallback((nodeId: string, key: string, rawVal: string) => {
+    let parsed: unknown = rawVal;
+    if (rawVal === 'true') parsed = true;
+    else if (rawVal === 'false') parsed = false;
+    else if (rawVal !== '' && Number.isFinite(Number(rawVal))) parsed = Number(rawVal);
+
+    setBase((prev) => {
+      const cur = prev.nodes[nodeId];
+      if (!cur) return prev;
+      return {
+        ...prev,
+        version: prev.version + 1,
+        nodes: {
+          ...prev.nodes,
+          [nodeId]: {
+            ...cur,
+            defaultVars: { ...cur.defaultVars, [key]: parsed },
+            rev: cur.rev + 1,
+            cid: SELF_CID,
+          },
+        },
+      };
+    });
+  }, []);
+
+  const handleDeleteDefaultVar = useCallback((nodeId: string, key: string) => {
+    setBase((prev) => {
+      const cur = prev.nodes[nodeId];
+      if (!cur) return prev;
+      const nextVars = { ...cur.defaultVars };
+      delete nextVars[key];
+      return {
+        ...prev,
+        version: prev.version + 1,
+        nodes: {
+          ...prev.nodes,
+          [nodeId]: { ...cur, defaultVars: nextVars, rev: cur.rev + 1, cid: SELF_CID },
+        },
+      };
+    });
+  }, []);
+
+  const handleDuplicateNode = useCallback((nodeId: string) => {
+    const src = effectiveNodesRef.current[nodeId];
+    if (!src) return;
+    const newId = `node-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+    const copy: BlueprintNode = {
+      id: newId,
+      x: Math.round(src.x + 36),
+      y: Math.round(src.y + 36),
+      width: src.width,
+      height: src.height,
+      title: `${src.title} (副本)`,
+      body: src.body,
+      category: src.category,
+      color: src.color,
+      defaultVars: { ...src.effectiveVars },
+      buttons: src.buttons ? src.buttons.map((b) => ({ ...b })) : [],
+      rev: 1,
+      cid: SELF_CID,
+    };
+    setBase((prev) => ({
+      ...prev,
+      version: prev.version + 1,
+      nodes: { ...prev.nodes, [newId]: copy },
+    }));
+    setInspectingNodeId(newId);
+    setStatusLog(`已复制控件「${src.title}」`);
+  }, []);
+
+  const handleDeleteNode = useCallback((nodeId: string) => {
+    setBase((prev) => {
+      const nextNodes = { ...prev.nodes };
+      delete nextNodes[nodeId];
+      const nextEdges: typeof prev.edges = {};
+      for (const [eid, edge] of Object.entries(prev.edges)) {
+        if (edge.source !== nodeId && edge.target !== nodeId) {
+          nextEdges[eid] = edge;
+        }
+      }
+      return { ...prev, version: prev.version + 1, nodes: nextNodes, edges: nextEdges };
+    });
+    setOverlay((prev) => {
+      const nextRuntime = { ...prev.runtimeVars };
+      const nextPatches = { ...prev.nodePatches };
+      delete nextRuntime[nodeId];
+      delete nextPatches[nodeId];
+      return { ...prev, runtimeVars: nextRuntime, nodePatches: nextPatches };
+    });
+    setInspectingNodeId((cur) => (cur === nodeId ? null : cur));
+    setStatusLog('已删除控件及其关联连线');
+  }, []);
+
+  const handleSaveAsTemplate = useCallback((node: EffectiveBlueprintNode) => {
+    const name = window.prompt('为这个自定义模板起个名字：', node.title);
+    if (!name) return;
+    const tpl = nodeToCustomTemplate(node, name);
+    setCustomTemplates((prev) => {
+      const next = [tpl, ...prev];
+      void saveCustomTemplates(next);
+      return next;
+    });
+    setTemplateDrawerOpen(true);
+    setStatusLog(`已保存到「我的模板」并写入 IndexedDB：${tpl.name}`);
+  }, []);
+
+  const handleDeleteCustomTemplate = useCallback((tplId: string) => {
+    setCustomTemplates((prev) => {
+      const next = prev.filter((t) => t.id !== tplId);
+      void saveCustomTemplates(next);
+      return next;
+    });
   }, []);
 
   const handleUpdateAnnotation = useCallback((id: string, patch: Partial<CanvasAnnotation>) => {
@@ -237,16 +522,20 @@ function HybridCanvasWorkspace() {
     setStatusLog('已删除背景注释');
   }, []);
 
-  // 近/中景时挂载可见 Chunk 的控件节点；若开启“注释编辑模式”，额外挂载可拖拽注释节点
-  const rfNodes: Node[] = useMemo(() => {
-    if (lod === 'macro' || !chunkManagerRef.current) return [];
-    const width = window.innerWidth || 1280;
-    const height = window.innerHeight || 800;
+  // 关键防闪烁同步：将可见 Chunk 的节点增量合入 rfNodes，严格保留每个已有节点的 measured / dragging / selected！
+  useEffect(() => {
+    if (lod === 'macro' || !chunkManagerRef.current) {
+      setRfNodes((prev) => (prev.length === 0 ? prev : []));
+      return;
+    }
+
+    const [minCx, maxCx, minCy, maxCy] = viewportBucketKey.split(',').map(Number);
+    const cs = 512;
     const worldBounds = {
-      minX: -vp.x / vp.zoom - 256,
-      minY: -vp.y / vp.zoom - 256,
-      maxX: (width - vp.x) / vp.zoom + 256,
-      maxY: (height - vp.y) / vp.zoom + 256,
+      minX: minCx * cs,
+      minY: minCy * cs,
+      maxX: (maxCx + 1) * cs,
+      maxY: (maxCy + 1) * cs,
     };
     const visibleChunks = chunkManagerRef.current.queryVisibleChunks(worldBounds);
     const visibleIds = new Set<string>();
@@ -265,54 +554,76 @@ function HybridCanvasWorkspace() {
       }
     }
 
-    const list: Node[] = [];
-    if (annotationEditMode) {
-      for (const aid of visibleAnnIds) {
-        const ann = base.annotations[aid];
-        if (!ann) continue;
-        list.push({
-          id: `ann-node:${ann.id}`,
-          type: 'annotation',
-          position: { x: ann.x, y: ann.y },
-          zIndex: 0,
+    setRfNodes((prev) => {
+      const prevMap = new Map<string, Node>();
+      for (const n of prev) prevMap.set(n.id, n);
+
+      const next: Node[] = [];
+
+      if (annotationEditMode) {
+        for (const aid of visibleAnnIds) {
+          const ann = base.annotations[aid];
+          if (!ann) continue;
+          const rfId = `ann-node:${ann.id}`;
+          const existing = prevMap.get(rfId);
+          const isDragging = existing?.dragging || draggingNodeIdsRef.current.has(rfId);
+          next.push({
+            ...(existing ?? {}),
+            id: rfId,
+            type: 'annotation',
+            position: isDragging && existing ? existing.position : { x: ann.x, y: ann.y },
+            zIndex: 0,
+            data: {
+              annotation: ann,
+              onUpdateAnnotation: handleUpdateAnnotation,
+              onDeleteAnnotation: handleDeleteAnnotation,
+            } satisfies AnnotationNodeData,
+          });
+        }
+      }
+
+      for (const id of visibleIds) {
+        const entity = effectiveNodes[id];
+        if (!entity) continue;
+        const existing = prevMap.get(entity.id);
+        const isDragging = existing?.dragging || draggingNodeIdsRef.current.has(entity.id);
+        next.push({
+          ...(existing ?? {}),
+          id: entity.id,
+          type: 'widget',
+          // 拖动过程中绝对保留 React Flow 自己的 position 与 measured，彻底杜绝闪烁消失！
+          position: isDragging && existing ? existing.position : { x: entity.x, y: entity.y },
+          zIndex: 10,
           data: {
-            annotation: ann,
-            onUpdateAnnotation: handleUpdateAnnotation,
-            onDeleteAnnotation: handleDeleteAnnotation,
-          } satisfies AnnotationNodeData,
+            entity,
+            onRunButton: handleRunButton,
+            onResetLocal: handleResetNodeLocal,
+            onEditTitle: handleEditTitle,
+            onEditBody: handleEditBody,
+            onResizeNode: handleResizeNode,
+            onOpenInspector: setInspectingNodeId,
+            onDuplicateNode: handleDuplicateNode,
+            onDeleteNode: handleDeleteNode,
+            busyButtonKey,
+          } satisfies WidgetNodeData,
         });
       }
-    }
 
-    for (const id of visibleIds) {
-      const entity = effectiveNodes[id];
-      if (!entity) continue;
-      list.push({
-        id: entity.id,
-        type: 'widget',
-        position: { x: entity.x, y: entity.y },
-        zIndex: 10,
-        data: {
-          entity,
-          onRunButton: handleRunButton,
-          onResetLocal: handleResetNodeLocal,
-          onEditBody: handleEditBody,
-          busyButtonKey,
-        } satisfies WidgetNodeData,
-      });
-    }
-    return list;
+      return next;
+    });
   }, [
     lod,
-    vp.x,
-    vp.y,
-    vp.zoom,
+    viewportBucketKey,
     effectiveNodes,
     base.annotations,
     annotationEditMode,
     handleRunButton,
     handleResetNodeLocal,
+    handleEditTitle,
     handleEditBody,
+    handleResizeNode,
+    handleDuplicateNode,
+    handleDeleteNode,
     handleUpdateAnnotation,
     handleDeleteAnnotation,
     busyButtonKey,
@@ -321,107 +632,121 @@ function HybridCanvasWorkspace() {
 
   const rfEdges: Edge[] = useMemo(() => {
     if (lod === 'macro') return [];
-    return Object.values(base.edges).map((e) => ({
-      id: e.id,
-      source: e.source,
-      target: e.target,
-      label: e.label,
-      animated: Boolean(e.dashed),
-      style: { stroke: e.color || '#64748B', strokeWidth: 2 },
-    }));
+    return Object.values(base.edges).map((e) => {
+      const stroke = e.color || '#64748B';
+      return {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        sourceHandle: e.sourceHandle ?? undefined,
+        targetHandle: e.targetHandle ?? undefined,
+        label: e.label,
+        animated: Boolean(e.dashed),
+        style: { stroke, strokeWidth: 2 },
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          width: 18,
+          height: 18,
+          color: stroke,
+        },
+      };
+    });
   }, [lod, base.edges]);
 
-  // 拖拽节点写入个人叠加层；拖拽注释（编辑模式下）直接更新注释坐标
+  // 关键修复：onNodesChange 直接交给 applyNodeChanges 处理拖动/测量/选中，
+  // 拖动过程中不触碰 overlay/base，只在松手（dragging === false）时一次性落盘，0 闪烁！
   const onNodesChange = useCallback((changes: NodeChange[]) => {
-    const widgetMoves: Array<{ id: string; x: number; y: number }> = [];
-    const annMoves: Array<{ id: string; x: number; y: number }> = [];
-    let anyDragEnded = false;
+    setRfNodes((prev) => {
+      const updated = applyNodeChanges(changes, prev);
 
-    for (const ch of changes) {
-      if (ch.type === 'position') {
-        if (ch.dragging === true) {
-          draggingNodeIdsRef.current.add(ch.id);
-        }
-        if (ch.position) {
-          const x = ch.dragging === false ? Math.round(ch.position.x) : ch.position.x;
-          const y = ch.dragging === false ? Math.round(ch.position.y) : ch.position.y;
-          if (ch.id.startsWith('ann-node:')) {
-            annMoves.push({ id: ch.id.slice('ann-node:'.length), x, y });
-          } else {
-            widgetMoves.push({ id: ch.id, x, y });
+      const widgetFinals: Array<{ id: string; x: number; y: number }> = [];
+      const annFinals: Array<{ id: string; x: number; y: number }> = [];
+
+      for (const ch of changes) {
+        if (ch.type === 'position') {
+          if (ch.dragging === true) {
+            draggingNodeIdsRef.current.add(ch.id);
+          } else if (ch.dragging === false) {
+            draggingNodeIdsRef.current.delete(ch.id);
+            const node = updated.find((n) => n.id === ch.id);
+            const pos = ch.position ?? node?.position;
+            if (pos) {
+              const x = Math.round(pos.x);
+              const y = Math.round(pos.y);
+              if (ch.id.startsWith('ann-node:')) {
+                annFinals.push({ id: ch.id.slice('ann-node:'.length), x, y });
+              } else {
+                widgetFinals.push({ id: ch.id, x, y });
+              }
+            }
           }
         }
-        if (ch.dragging === false) {
-          draggingNodeIdsRef.current.delete(ch.id);
-          anyDragEnded = true;
-        }
       }
-    }
 
-    if (widgetMoves.length > 0) {
-      setOverlay((prev) => {
-        const nextPatches = { ...prev.nodePatches };
-        for (const u of widgetMoves) {
-          nextPatches[u.id] = {
-            ...(nextPatches[u.id] ?? {}),
-            x: u.x,
-            y: u.y,
-          };
-        }
-        return { ...prev, nodePatches: nextPatches };
-      });
-    }
+      if (widgetFinals.length > 0) {
+        queueMicrotask(() => {
+          setOverlay((o) => {
+            const nextPatches = { ...o.nodePatches };
+            for (const u of widgetFinals) {
+              nextPatches[u.id] = { ...(nextPatches[u.id] ?? {}), x: u.x, y: u.y };
+            }
+            return { ...o, nodePatches: nextPatches };
+          });
+          setChunkSyncTick((t) => t + 1);
+        });
+      }
 
-    if (annMoves.length > 0) {
-      setBase((prev) => {
-        const nextAnns = { ...prev.annotations };
-        for (const u of annMoves) {
-          const cur = nextAnns[u.id];
-          if (cur) nextAnns[u.id] = { ...cur, x: u.x, y: u.y };
-        }
-        return { ...prev, annotations: nextAnns };
-      });
-    }
+      if (annFinals.length > 0) {
+        queueMicrotask(() => {
+          setBase((b) => {
+            const nextAnns = { ...b.annotations };
+            for (const u of annFinals) {
+              const cur = nextAnns[u.id];
+              if (cur) nextAnns[u.id] = { ...cur, x: u.x, y: u.y };
+            }
+            return { ...b, annotations: nextAnns };
+          });
+          setChunkSyncTick((t) => t + 1);
+        });
+      }
 
-    if (anyDragEnded) {
-      setChunkSyncTick((t) => t + 1);
-    }
+      return updated;
+    });
   }, []);
 
-  // 点击画布空白处放置新背景注释（支持任意位置选点！）
-  const handlePaneClick = useCallback(
-    (event: ReactMouseEvent) => {
-      if (!placingAnnotation) return;
-      const worldPos = rf.screenToFlowPosition({ x: event.clientX, y: event.clientY });
-      const text = window.prompt('输入不可交互背景注释文本：', '新分区注释：仅供视觉引导');
-      setPlacingAnnotation(false);
-      if (!text) return;
-
-      const id = `ann-${Date.now()}`;
-      setBase((prev) => ({
-        ...prev,
-        version: prev.version + 1,
-        annotations: {
-          ...prev.annotations,
-          [id]: {
-            id,
-            x: Math.round(worldPos.x),
-            y: Math.round(worldPos.y),
-            width: 420,
-            text,
-            fontSize: 18,
-            color: '#0F766E',
-            weight: 'bold',
-            nonInteractive: true,
-            rev: 1,
-            cid: SELF_CID,
-          },
+  const onConnect = useCallback((conn: Connection) => {
+    if (!conn.source || !conn.target) return;
+    const id = `edge-${conn.source}-${conn.target}-${Date.now()}`;
+    setBase((prev) => ({
+      ...prev,
+      version: prev.version + 1,
+      edges: {
+        ...prev.edges,
+        [id]: {
+          id,
+          source: conn.source!,
+          target: conn.target!,
+          sourceHandle: conn.sourceHandle ?? undefined,
+          targetHandle: conn.targetHandle ?? undefined,
+          color: '#2563EB',
+          rev: 1,
+          cid: SELF_CID,
         },
-      }));
-      setStatusLog(`已在 (${Math.round(worldPos.x)}, ${Math.round(worldPos.y)}) 添加背景注释`);
-    },
-    [placingAnnotation, rf]
-  );
+      },
+    }));
+    setStatusLog('已建立节点连线（选中连线按 Delete 可删除）');
+  }, []);
+
+  const onEdgesChange = useCallback((changes: EdgeChange[]) => {
+    const removed = changes.filter((c) => c.type === 'remove').map((c) => c.id);
+    if (removed.length === 0) return;
+    setBase((prev) => {
+      const nextEdges = { ...prev.edges };
+      for (const id of removed) delete nextEdges[id];
+      return { ...prev, version: prev.version + 1, edges: nextEdges };
+    });
+    setStatusLog('已删除连线');
+  }, []);
 
   const handlePublishToBackend = async () => {
     const merged = applyOverlayToBase(base, overlay, SELF_CID);
@@ -447,100 +772,129 @@ function HybridCanvasWorkspace() {
     setTimeout(() => rf.fitView({ padding: 0.15, duration: 400 }), 80);
   };
 
+  const inspectingNode = inspectingNodeId ? effectiveNodes[inspectingNodeId] ?? null : null;
+
   return (
-    <div className={`relative h-full w-full overflow-hidden ${placingAnnotation ? 'cursor-crosshair' : ''}`}>
+    <div
+      className="relative h-full w-full overflow-hidden"
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
       {/* 顶栏精简控制台 */}
-      <div className="pointer-events-auto absolute top-3 left-3 z-20 flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white/90 px-3 py-2 shadow-sm backdrop-blur">
-        <span className="font-mono text-xs font-bold text-slate-900">
-          视图:{' '}
-          <span className={lod === 'macro' ? 'text-teal-700' : 'text-blue-700'}>
-            {LOD_LABELS[lod]}
-          </span>{' '}
-          ({Math.round(vp.zoom * 100)}%)
-        </span>
-        <span className="font-mono text-xs text-slate-500">
-          总节点 {Object.keys(effectiveNodes).length} · DOM挂载 {rfNodes.length} · 瓦片 {tileCacheRef.current.size}
-        </span>
+      <div className="pointer-events-auto absolute top-3 left-3 right-3 z-20 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white/92 px-3 py-2 shadow-sm backdrop-blur">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setTemplateDrawerOpen((v) => !v)}
+            className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-semibold text-white ${
+              templateDrawerOpen ? 'bg-blue-700 hover:bg-blue-800' : 'bg-slate-900 hover:bg-slate-700'
+            }`}
+          >
+            <LayoutGrid className="h-3.5 w-3.5" />
+            模板库 ({allTemplates.length})
+          </button>
 
-        <button
-          type="button"
-          onClick={() => {
-            setPlacingAnnotation((v) => {
-              const next = !v;
-              setStatusLog(next ? '请直接点击画布任意位置放置注释（按 Esc 取消）' : '已取消放置注释');
-              return next;
-            });
-          }}
-          className={`inline-flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium text-white ${
-            placingAnnotation ? 'bg-amber-600 hover:bg-amber-700' : 'bg-teal-700 hover:bg-teal-800'
-          }`}
-        >
-          <Plus className="h-3.5 w-3.5" />
-          {placingAnnotation ? '点画布选位置…(Esc取消)' : '点选放置注释'}
-        </button>
+          <button
+            type="button"
+            onClick={() => handleCreateTemplateCenter(BUILTIN_TEMPLATES[9])}
+            className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 hover:bg-slate-50"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            快速新建控件
+          </button>
 
-        <button
-          type="button"
-          onClick={handleSpawnStress}
-          className="inline-flex items-center gap-1 rounded bg-blue-700 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-800"
-        >
-          <Zap className="h-3.5 w-3.5" />
-          生成压测大地图
-        </button>
+          <button
+            type="button"
+            onClick={() => {
+              setAnnotationEditMode((v) => {
+                const next = !v;
+                setStatusLog(
+                  next
+                    ? '已解锁注释层：现在可以拖动、改字、调字号或删除背景注释'
+                    : '已锁定注释层：背景注释恢复点击穿透并烘焙进底层瓦片'
+                );
+                return next;
+              });
+            }}
+            className={`rounded-md border px-2.5 py-1 text-xs font-medium ${
+              annotationEditMode
+                ? 'border-amber-500 bg-amber-50 text-amber-900'
+                : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            {annotationEditMode ? '注释层：可拖动编辑' : '注释层：已锁定穿透'}
+          </button>
 
-        <button
-          type="button"
-          onClick={() => setShowChunkGrid((v) => !v)}
-          className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
-        >
-          <Layers className="h-3.5 w-3.5" />
-          {showChunkGrid ? '隐藏 Chunk 网格' : '显示 Chunk 网格'}
-        </button>
+          <ZoomBadge lod={lod} />
+          <span className="font-mono text-[11px] text-slate-500">
+            总节点 {Object.keys(effectiveNodes).length} · DOM {rfNodes.length} · 瓦片 {tileCacheRef.current.size}
+          </span>
+        </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            setAnnotationEditMode((v) => {
-              const next = !v;
-              setStatusLog(
-                next
-                  ? '已解锁注释层：现在可以拖动、改字、调字号或删除背景注释'
-                  : '已锁定注释层：背景注释恢复点击穿透并烘焙进底层瓦片'
-              );
-              return next;
-            });
-          }}
-          className={`rounded border px-2 py-1 text-xs ${
-            annotationEditMode
-              ? 'border-amber-500 bg-amber-50 text-amber-900'
-              : 'border-slate-300 bg-white text-slate-700'
-          }`}
-        >
-          {annotationEditMode ? '注释模式：可拖动编辑' : '注释模式：已锁定穿透'}
-        </button>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setShowChunkGrid((v) => !v)}
+            className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+          >
+            <Layers className="h-3.5 w-3.5" />
+            {showChunkGrid ? '隐藏网格' : '显示网格'}
+          </button>
 
-        <button
-          type="button"
-          onClick={() => {
-            setOverlay(createEmptyOverlay());
-            setChunkSyncTick((t) => t + 1);
-            setStatusLog('已清空所有个人本地叠加层，恢复后端权威默认值');
-          }}
-          className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
-        >
-          <RotateCcw className="h-3.5 w-3.5" />
-          重置本地状态
-        </button>
+          <button
+            type="button"
+            onClick={handleSpawnStress}
+            className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-800 hover:bg-blue-100"
+          >
+            <Zap className="h-3.5 w-3.5" />
+            压测大地图
+          </button>
 
-        <button
-          type="button"
-          onClick={handlePublishToBackend}
-          className="inline-flex items-center gap-1 rounded bg-slate-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-slate-700"
-        >
-          <UploadCloud className="h-3.5 w-3.5" />
-          发布为后端底座
-        </button>
+          <button
+            type="button"
+            onClick={() => {
+              setOverlay(createEmptyOverlay());
+              setChunkSyncTick((t) => t + 1);
+              setStatusLog('已清空所有个人本地叠加层，恢复后端权威默认值');
+            }}
+            className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            重置本地
+          </button>
+
+          <button
+            type="button"
+            onClick={handlePublishToBackend}
+            className="inline-flex items-center gap-1 rounded-md bg-slate-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-slate-700"
+          >
+            <UploadCloud className="h-3.5 w-3.5" />
+            发布底座
+          </button>
+        </div>
       </div>
+
+      {/* 左侧所见即所得模板库抽屉（直接拖入画布） */}
+      <TemplateDrawer
+        open={templateDrawerOpen}
+        templates={allTemplates}
+        onClose={() => setTemplateDrawerOpen(false)}
+        onCreateCenter={handleCreateTemplateCenter}
+        onDeleteCustomTemplate={handleDeleteCustomTemplate}
+      />
+
+      {/* 右侧控件属性与脚本编辑器 */}
+      <NodeInspectorPanel
+        node={inspectingNode}
+        onClose={() => setInspectingNodeId(null)}
+        onPatchNode={handlePatchNode}
+        onUpdateDefaultVar={handleUpdateDefaultVar}
+        onDeleteDefaultVar={handleDeleteDefaultVar}
+        onDuplicateNode={handleDuplicateNode}
+        onDeleteNode={handleDeleteNode}
+        onResetLocal={handleResetNodeLocal}
+        onSaveAsTemplate={handleSaveAsTemplate}
+      />
 
       {/* 底部状态日志条 */}
       <div className="pointer-events-none absolute bottom-3 left-1/2 z-20 -translate-x-1/2 rounded-full border border-slate-200 bg-white/90 px-4 py-1.5 text-xs text-slate-700 shadow-sm backdrop-blur">
@@ -553,10 +907,26 @@ function HybridCanvasWorkspace() {
         edges={rfEdges}
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
-        onPaneClick={handlePaneClick}
+        onEdgesChange={onEdgesChange}
+        onConnect={onConnect}
+        onEdgeDoubleClick={(_ev, edge) => {
+          const cur = base.edges[edge.id];
+          if (!cur) return;
+          const nextLabel = window.prompt('修改连线标签文字（留空清除）：', cur.label ?? '');
+          if (nextLabel === null) return;
+          setBase((prev) => ({
+            ...prev,
+            version: prev.version + 1,
+            edges: {
+              ...prev.edges,
+              [edge.id]: { ...cur, label: nextLabel.trim() || undefined, rev: cur.rev + 1, cid: SELF_CID },
+            },
+          }));
+        }}
+        onPaneClick={() => setInspectingNodeId(null)}
         minZoom={0.12}
         maxZoom={2.5}
-        defaultViewport={{ x: 80, y: 80, zoom: 0.9 }}
+        defaultViewport={{ x: 360, y: 90, zoom: 0.88 }}
         style={{ background: 'transparent' }}
       >
         <ChunkUnderlayCanvas

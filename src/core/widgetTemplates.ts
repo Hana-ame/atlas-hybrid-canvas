@@ -1,0 +1,352 @@
+import { idbGet, idbSet } from './idbStorage';
+import type { BlueprintNode, BlueprintTemplate } from './types';
+
+const CUSTOM_TEMPLATES_KEY = 'atlas-hybrid-custom-templates-v1';
+
+export const BUILTIN_TEMPLATES: BlueprintTemplate[] = [
+  // 一、知识地图
+  {
+    id: 'tpl-knowledge-card',
+    name: '知识概念卡',
+    description: '记录核心概念、参考要点与复习熟练度计数',
+    group: '知识地图',
+    kind: 'node',
+    color: '#2563EB',
+    nodePreset: {
+      width: 280,
+      height: 175,
+      title: '新知识概念',
+      body: '核心定义：\n关键要点：\n关联主题：',
+      category: '知识',
+      color: '#2563EB',
+      defaultVars: { reviewCount: 0, mastery: '学习中' },
+      buttons: [
+        {
+          id: 'btn-review',
+          label: '复习 +1',
+          variant: 'primary',
+          actionType: 'script',
+          code: `const n = lib.inc('reviewCount', 1);\nvars.mastery = n >= 3 ? '已掌握' : '巩固中';\nvars.lastReview = lib.now();`,
+        },
+      ],
+    },
+  },
+  {
+    id: 'tpl-milestone',
+    name: '任务 / 里程碑卡',
+    description: '带完成进度与状态一键切换的计划节点',
+    group: '知识地图',
+    kind: 'node',
+    color: '#059669',
+    nodePreset: {
+      width: 280,
+      height: 175,
+      title: '阶段里程碑',
+      body: '- [ ] 目标拆解\n- [ ] 关键交付物\n- [ ] 验收标准',
+      category: '任务',
+      color: '#059669',
+      defaultVars: { progress: 0, state: '待开始' },
+      buttons: [
+        {
+          id: 'btn-step',
+          label: '进度 +25%',
+          variant: 'success',
+          actionType: 'script',
+          code: `const p = Math.min(100, lib.inc('progress', 25));\nvars.progress = p;\nvars.state = p >= 100 ? '已完成' : '进行中';`,
+        },
+        {
+          id: 'btn-reset-p',
+          label: '清零',
+          variant: 'secondary',
+          actionType: 'script',
+          code: `vars.progress = 0;\nvars.state = '待开始';`,
+        },
+      ],
+    },
+  },
+  {
+    id: 'tpl-decision',
+    name: '对比决策卡',
+    description: '用于方案取舍、利弊记录与团队投票计数',
+    group: '知识地图',
+    kind: 'node',
+    color: '#7C3AED',
+    nodePreset: {
+      width: 290,
+      height: 180,
+      title: '方案对比与结论',
+      body: '优点：\n缺点 / 风险：\n当前结论：',
+      category: '决策',
+      color: '#7C3AED',
+      defaultVars: { agree: 0, reject: 0 },
+      buttons: [
+        {
+          id: 'btn-agree',
+          label: '赞成 +1',
+          variant: 'success',
+          actionType: 'script',
+          code: `lib.inc('agree', 1);`,
+        },
+        {
+          id: 'btn-reject',
+          label: '反对 +1',
+          variant: 'danger',
+          actionType: 'script',
+          code: `lib.inc('reject', 1);`,
+        },
+      ],
+    },
+  },
+
+  // 二、策划与世界观
+  {
+    id: 'tpl-world-zone',
+    name: '世界观 / 区域设定',
+    description: '大地图策划区域、势力分布与审阅状态',
+    group: '策划与世界观',
+    kind: 'node',
+    color: '#0F766E',
+    nodePreset: {
+      width: 290,
+      height: 185,
+      title: '未命名区域设定',
+      body: '地貌与氛围：\n主导势力：\n核心冲突 / 探索奖励：',
+      category: '世界观',
+      color: '#0F766E',
+      defaultVars: { dangerLv: 1, review: '草稿' },
+      buttons: [
+        {
+          id: 'btn-lv',
+          label: '危险等级 +1',
+          variant: 'secondary',
+          actionType: 'script',
+          code: `lib.inc('dangerLv', 1);`,
+        },
+        {
+          id: 'btn-pass',
+          label: '标记终稿',
+          variant: 'success',
+          actionType: 'script',
+          code: `vars.review = '终稿';\nvars.approvedAt = lib.now();`,
+        },
+      ],
+    },
+  },
+  {
+    id: 'tpl-quest-node',
+    name: '剧情 / 关卡节点',
+    description: '串联主线支线、触发条件与通关奖励',
+    group: '策划与世界观',
+    kind: 'node',
+    color: '#D97706',
+    nodePreset: {
+      width: 280,
+      height: 180,
+      title: '第 X 章 · 关卡事件',
+      body: '触发条件：\n核心玩法 / 剧情转折：\n分支走向：',
+      category: '剧情',
+      color: '#D97706',
+      defaultVars: { exp: 500, tested: false },
+      buttons: [
+        {
+          id: 'btn-test',
+          label: '标记已白盒测试',
+          variant: 'primary',
+          actionType: 'script',
+          code: `vars.tested = true;\nvars.testedAt = lib.now();`,
+        },
+      ],
+    },
+  },
+  {
+    id: 'tpl-character',
+    name: '角色 / NPC 档案',
+    description: '含基础属性变量与一键模拟升级计算',
+    group: '策划与世界观',
+    kind: 'node',
+    color: '#BE123C',
+    nodePreset: {
+      width: 280,
+      height: 185,
+      title: '角色名 · 阵营',
+      body: '性格标签：\n核心动机：\n与其他角色关系：',
+      category: '角色',
+      color: '#BE123C',
+      defaultVars: { lv: 1, hp: 100, atk: 18 },
+      buttons: [
+        {
+          id: 'btn-levelup',
+          label: '模拟升级 +1',
+          variant: 'primary',
+          actionType: 'script',
+          code: `const lv = lib.inc('lv', 1);\nvars.hp = 100 + (lv - 1) * 25;\nvars.atk = 18 + (lv - 1) * 5;`,
+        },
+      ],
+    },
+  },
+
+  // 三、工程与运维
+  {
+    id: 'tpl-api-service',
+    name: '微服务 / API 节点',
+    description: '带服务端代理探活按钮与响应状态记录',
+    group: '工程与运维',
+    kind: 'node',
+    color: '#1D4ED8',
+    nodePreset: {
+      width: 300,
+      height: 185,
+      title: 'API 服务节点',
+      body: '职责说明：\n上游依赖 / 下游调用：\nSLA 目标：99.9%',
+      category: 'SERVICE',
+      color: '#1D4ED8',
+      defaultVars: { env: 'prod', healthy: true },
+      buttons: [
+        {
+          id: 'btn-ping',
+          label: '代理探活 GET',
+          variant: 'primary',
+          actionType: 'proxy_http',
+          proxyUrl: 'https://httpbin.org/get?service=ping',
+          proxyMethod: 'GET',
+        },
+      ],
+    },
+  },
+  {
+    id: 'tpl-metric-card',
+    name: '监控指标卡',
+    description: '模拟负载采样、延迟告警阈值演示',
+    group: '工程与运维',
+    kind: 'node',
+    color: '#B45309',
+    nodePreset: {
+      width: 270,
+      height: 170,
+      title: '集群负载监控',
+      body: '关注指标：P99 延迟、错误率与 CPU 负载',
+      category: 'OPS',
+      color: '#B45309',
+      defaultVars: { cpu: 0.35, alert: '正常' },
+      buttons: [
+        {
+          id: 'btn-sample',
+          label: '负载 +0.15',
+          variant: 'danger',
+          actionType: 'script',
+          code: `const c = Math.min(1, lib.inc('cpu', 0.15));\nvars.cpu = c;\nvars.alert = c >= 0.8 ? '告警' : '正常';`,
+        },
+      ],
+    },
+  },
+  {
+    id: 'tpl-gateway',
+    name: '条件分支 / 路由网关',
+    description: '用于架构蓝图中的流量或逻辑分流说明',
+    group: '工程与运维',
+    kind: 'node',
+    color: '#0369A1',
+    nodePreset: {
+      width: 260,
+      height: 165,
+      title: '路由网关节点',
+      body: '路由规则：按区域 / 灰度比例分发',
+      category: 'GATEWAY',
+      color: '#0369A1',
+      defaultVars: { canaryRatio: 10 },
+      buttons: [
+        {
+          id: 'btn-canary',
+          label: '灰度 +10%',
+          variant: 'secondary',
+          actionType: 'script',
+          code: `vars.canaryRatio = ((Number(vars.canaryRatio) || 0) + 10) % 110;`,
+        },
+      ],
+    },
+  },
+
+  // 四、注释与基础
+  {
+    id: 'tpl-blank-widget',
+    name: '空白自由控件',
+    description: '无预设按钮的干净节点，随时点击编辑扩展',
+    group: '注释与基础',
+    kind: 'node',
+    color: '#334155',
+    nodePreset: {
+      width: 260,
+      height: 150,
+      title: '新控件',
+      body: '双击或点击此处直接输入正文内容…',
+      category: '通用',
+      color: '#334155',
+      defaultVars: {},
+      buttons: [],
+    },
+  },
+  {
+    id: 'tpl-ann-header',
+    name: '区域大标题注释（穿透）',
+    description: '32px 粗体地图分区标牌，缩远全景依然清晰',
+    group: '注释与基础',
+    kind: 'annotation',
+    color: '#0F766E',
+    annotationPreset: {
+      width: 520,
+      text: '新区域大标题 · 点击编辑模式可拖动修改',
+      fontSize: 30,
+      color: '#0F766E',
+      weight: 'bold',
+      nonInteractive: true,
+    },
+  },
+  {
+    id: 'tpl-ann-note',
+    name: '背景图注说明（穿透）',
+    description: '16px 轻量说明文字，烘焙进瓦片绝不误触',
+    group: '注释与基础',
+    kind: 'annotation',
+    color: '#475569',
+    annotationPreset: {
+      width: 440,
+      text: '背景注释：用于标记设计边界、连线含义或阅读顺序',
+      fontSize: 16,
+      color: '#475569',
+      weight: 'normal',
+      nonInteractive: true,
+    },
+  },
+];
+
+export async function loadCustomTemplates(): Promise<BlueprintTemplate[]> {
+  const saved = await idbGet<BlueprintTemplate[]>(CUSTOM_TEMPLATES_KEY);
+  return Array.isArray(saved) ? saved : [];
+}
+
+export async function saveCustomTemplates(templates: BlueprintTemplate[]): Promise<void> {
+  await idbSet(CUSTOM_TEMPLATES_KEY, templates);
+}
+
+export function nodeToCustomTemplate(node: BlueprintNode, name: string): BlueprintTemplate {
+  return {
+    id: `custom-tpl-${Date.now()}`,
+    name: name.trim() || node.title,
+    description: `基于「${node.title}」保存的自定义模板`,
+    group: '我的模板',
+    kind: 'node',
+    color: node.color,
+    nodePreset: {
+      width: node.width,
+      height: node.height,
+      title: node.title,
+      body: node.body,
+      category: node.category,
+      color: node.color,
+      defaultVars: { ...node.defaultVars },
+      buttons: node.buttons ? node.buttons.map((b) => ({ ...b })) : [],
+      inputPorts: node.inputPorts ? node.inputPorts.map((p) => ({ ...p })) : undefined,
+      outputPorts: node.outputPorts ? node.outputPorts.map((p) => ({ ...p })) : undefined,
+    },
+  };
+}
