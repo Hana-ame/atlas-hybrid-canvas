@@ -74,6 +74,13 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+interface ProxyRequestBody {
+  url?: unknown;
+  method?: unknown;
+  headers?: unknown;
+  body?: unknown;
+}
+
 /**
  * 静态站上的代理没有服务端可信边界可言：白名单和密钥注入在这里只是
  * "演示语义"，真正能做的防护只有交给浏览器 CORS。所以这里如实说明：
@@ -81,9 +88,9 @@ function json(body: unknown, status = 200): Response {
  * （浏览器也拿不到对端 IP，写了也是假安全）。
  */
 async function handleProxy(req: Request): Promise<Response> {
-  let body: { url?: unknown; method?: unknown; headers?: unknown; body?: unknown } | null = null;
+  let body: ProxyRequestBody | null = null;
   try {
-    body = (await req.json()) as typeof body;
+    body = (await req.json()) as ProxyRequestBody;
   } catch {
     return json({ ok: false, error: '请求体格式无效' }, 400);
   }
@@ -178,7 +185,7 @@ async function route(url: URL, req: Request): Promise<Response | null> {
     if (req.method !== 'POST') return json({ ok: false, error: 'Method Not Allowed' }, 405);
     let payload: { blueprint?: unknown } | null = null;
     try {
-      payload = (await req.json()) as typeof payload;
+      payload = (await req.json()) as { blueprint?: unknown };
     } catch {
       return json({ ok: false, error: '无效的蓝图数据' }, 400);
     }
