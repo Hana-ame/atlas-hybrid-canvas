@@ -194,7 +194,7 @@ export function spawnStressChunks(base: BaseBlueprint): BaseBlueprint {
           height: 62,
           title: `节点 ${cx},${cy}#${i + 1}`,
           body: 'Chunk 压测卡片',
-          category: 'MAP',
+          category: '压测',
           color: palette[(Math.abs(cx + cy) + i) % palette.length],
           defaultVars: { idx: i + 1 },
           rev: 1,

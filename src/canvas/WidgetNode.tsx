@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { RotateCcw, Play, Globe } from 'lucide-react';
 import type { EffectiveBlueprintNode, WidgetButtonSpec } from '../core/types';
@@ -10,7 +11,7 @@ export interface WidgetNodeData extends Record<string, unknown> {
   busyButtonKey: string | null;
 }
 
-export function WidgetNode({ data }: NodeProps) {
+function WidgetNodeInner({ data }: NodeProps) {
   const { entity, onRunButton, onResetLocal, onEditBody, busyButtonKey } = data as WidgetNodeData;
   const varEntries = Object.entries(entity.effectiveVars || {});
 
@@ -43,7 +44,7 @@ export function WidgetNode({ data }: NodeProps) {
         {(entity.hasLocalOverride || entity.hasRuntimeVars) && (
           <button
             type="button"
-            title="重置此节点为后端默认值"
+            title="此节点含个人本地修改或运行态 vars，点击一键还原为后端默认值"
             onClick={(e) => {
               e.stopPropagation();
               onResetLocal(entity.id);
@@ -51,7 +52,7 @@ export function WidgetNode({ data }: NodeProps) {
             className="nodrag flex shrink-0 items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 hover:bg-amber-100"
           >
             <RotateCcw className="h-3 w-3" />
-            本地态
+            已改·还原
           </button>
         )}
       </div>
@@ -108,3 +109,5 @@ export function WidgetNode({ data }: NodeProps) {
     </div>
   );
 }
+
+export const WidgetNode = memo(WidgetNodeInner);

@@ -53,8 +53,8 @@ Pages 只能托管静态文件，`server/server.ts` 的 Express 路由不存在�
 
 | 接口 | 本地（Express） | Pages（mock） |
 |---|---|---|
-| `GET /api/blueprint` | 内存 | `localStorage` |
-| `POST /api/blueprint/publish` | 内存 + rev 自增 | `localStorage` + rev 自增 |
+| `GET /api/blueprint` | 内存 | `IndexedDB` |
+| `POST /api/blueprint/publish` | 内存 + rev 自增 | `IndexedDB` + rev 自增 |
 | `GET /api/proxy/status` | 服务端配置 | 返回白名单，`mock: true` |
 | `POST /api/proxy` | 服务端代发，含内网 IP 拦截 | 浏览器直连，受目标站 CORS 限制 |
 

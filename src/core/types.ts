@@ -84,7 +84,7 @@ export interface BaseBlueprint {
 }
 
 /**
- * 个人本地叠加层（仅保存在当前浏览器 IndexedDB / localStorage）
+ * 个人本地叠加层（仅保存在当前浏览器 IndexedDB）
  * 按字段级稀疏 Patch 存储，避免覆盖后端新发布的节点架构
  */
 export interface LocalNodePatch {

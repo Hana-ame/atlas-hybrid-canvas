@@ -8,7 +8,7 @@
  *   GET  /api/proxy/status
  *   POST /api/proxy
  *
- * 状态存在 localStorage，行为对 App.tsx 完全透明 —— 不需要改任何业务代码。
+ * 状态存在 IndexedDB，行为对 App.tsx 完全透明 —— 不需要改任何业务代码。
  * 只在生产构建里启用；`npm run dev` 仍然打真后端。
  */
 
@@ -19,39 +19,27 @@ export interface MockProxyStatus {
   allowedHosts: string[];
 }
 
+import { idbGet, idbSet } from './idbStorage';
+
 const BLUEPRINT_KEY = 'atlas-hybrid-mock-server-blueprint-v1';
 const REVISION_KEY = 'atlas-hybrid-mock-server-revision-v1';
 
-function readRevision(): number {
-  const raw = localStorage.getItem(REVISION_KEY);
+async function readRevision(): Promise<number> {
+  const raw = await idbGet<number>(REVISION_KEY);
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 1;
 }
 
-function writeRevision(rev: number): void {
-  try {
-    localStorage.setItem(REVISION_KEY, String(rev));
-  } catch {
-    /* 配额满了就只在内存里走一遭，不影响演示 */
-  }
+async function writeRevision(rev: number): Promise<void> {
+  await idbSet(REVISION_KEY, rev);
 }
 
-function readBlueprint(): unknown {
-  try {
-    const raw = localStorage.getItem(BLUEPRINT_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
+async function readBlueprint(): Promise<unknown> {
+  return idbGet<unknown>(BLUEPRINT_KEY);
 }
 
-function writeBlueprint(bp: unknown): boolean {
-  try {
-    localStorage.setItem(BLUEPRINT_KEY, JSON.stringify(bp));
-    return true;
-  } catch {
-    return false;
-  }
+async function writeBlueprint(bp: unknown): Promise<boolean> {
+  return idbSet(BLUEPRINT_KEY, bp);
 }
 
 /** 与服务端同名的白名单解析，默认值和 .env.example 保持一致。 */
@@ -178,7 +166,7 @@ async function route(url: URL, req: Request): Promise<Response | null> {
 
   if (pathname === '/api/blueprint') {
     if (req.method !== 'GET') return json({ ok: false, error: 'Method Not Allowed' }, 405);
-    return json({ ok: true, mock: true, serverRevision: readRevision(), blueprint: readBlueprint() });
+    return json({ ok: true, mock: true, serverRevision: await readRevision(), blueprint: await readBlueprint() });
   }
 
   if (pathname === '/api/blueprint/publish') {
@@ -192,11 +180,11 @@ async function route(url: URL, req: Request): Promise<Response | null> {
     if (!payload || typeof payload.blueprint !== 'object' || payload.blueprint === null) {
       return json({ ok: false, error: '无效的蓝图数据' }, 400);
     }
-    if (!writeBlueprint(payload.blueprint)) {
+    if (!(await writeBlueprint(payload.blueprint))) {
       return json({ ok: false, error: '浏览器存储已满，无法写入底座' }, 507);
     }
-    const nextRev = readRevision() + 1;
-    writeRevision(nextRev);
+    const nextRev = (await readRevision()) + 1;
+    await writeRevision(nextRev);
     return json({ ok: true, mock: true, serverRevision: nextRev });
   }
 
@@ -254,7 +242,7 @@ export function installMockApi(): void {
   // 方便在控制台确认当前跑的是 mock。
   // eslint-disable-next-line no-console
   console.info(
-    '%c[Atlas] GitHub Pages 静态模式：/api/* 由浏览器内 mock 提供（base blueprint 存 localStorage）',
+    '%c[Atlas] GitHub Pages 静态模式：/api/* 由浏览器内 mock 提供（base blueprint 存 IndexedDB）',
     'color:#0f766e;font-weight:bold',
   );
 }

@@ -1,3 +1,4 @@
+import { idbGet, idbSet } from './idbStorage';
 import type {
   BaseBlueprint,
   EffectiveBlueprintNode,
@@ -15,11 +16,10 @@ export function createEmptyOverlay(): LocalOverlayState {
   };
 }
 
-export function loadLocalOverlay(): LocalOverlayState {
+export async function loadLocalOverlay(): Promise<LocalOverlayState> {
   try {
-    const raw = localStorage.getItem(OVERLAY_STORAGE_KEY);
-    if (!raw) return createEmptyOverlay();
-    const parsed = JSON.parse(raw) as Partial<LocalOverlayState>;
+    const parsed = await idbGet<Partial<LocalOverlayState>>(OVERLAY_STORAGE_KEY);
+    if (!parsed) return createEmptyOverlay();
     return {
       runtimeVars: parsed.runtimeVars ?? {},
       nodePatches: parsed.nodePatches ?? {},
@@ -30,12 +30,8 @@ export function loadLocalOverlay(): LocalOverlayState {
   }
 }
 
-export function saveLocalOverlay(overlay: LocalOverlayState): void {
-  try {
-    localStorage.setItem(OVERLAY_STORAGE_KEY, JSON.stringify(overlay));
-  } catch {
-    // ignore storage quota errors in demo
-  }
+export async function saveLocalOverlay(overlay: LocalOverlayState): Promise<void> {
+  await idbSet(OVERLAY_STORAGE_KEY, overlay);
 }
 
 /**
