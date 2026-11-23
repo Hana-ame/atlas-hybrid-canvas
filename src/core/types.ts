@@ -98,12 +98,99 @@ export interface ContentApiPollerBlock {
   bindEnabled?: string;
 }
 
+export interface ContentImageBlock {
+  type: 'image';
+  id: string;
+  url?: string;
+  caption?: string;
+  fit?: 'contain' | 'cover';
+  bindUrl?: string;
+  bindCaption?: string;
+  bindFit?: string;
+}
+
+export interface ContentVideoBlock {
+  type: 'video';
+  id: string;
+  url?: string;
+  poster?: string;
+  loop?: boolean;
+  muted?: boolean;
+  bindUrl?: string;
+  bindLoop?: string;
+  bindMuted?: string;
+}
+
+export interface ContentSliderBlock {
+  type: 'slider';
+  id: string;
+  bind?: string;
+  label?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  value?: number;
+  unit?: string;
+  showValue?: boolean;
+  accentColor?: string;
+  width?: number;
+}
+
+export interface ContentPad2DBlock {
+  type: 'pad2d';
+  id: string;
+  label?: string;
+  labelX?: string;
+  labelY?: string;
+  bindX?: string;
+  bindY?: string;
+  x?: number;
+  y?: number;
+  minX?: number;
+  maxX?: number;
+  stepX?: number;
+  minY?: number;
+  maxY?: number;
+  stepY?: number;
+  unitX?: string;
+  unitY?: string;
+  invertY?: boolean;
+  height?: number;
+  accentColor?: string;
+}
+
+export interface ContentImageButtonBlock {
+  type: 'image_button';
+  id: string;
+  bind?: string;
+  label?: string;
+  toggle?: boolean;
+  on?: boolean;
+  offImage?: string;
+  onImage?: string;
+  hoverImage?: string;
+  clickImage?: string;
+  bindOffImage?: string;
+  bindOnImage?: string;
+  bindHoverImage?: string;
+  bindClickImage?: string;
+  width?: number;
+  height?: number;
+  disabled?: boolean;
+  showStateBadge?: boolean;
+}
+
 export type ContentLeafBlock =
   | ContentTextBlock
   | ContentButtonBlock
   | ContentInputBlock
   | ContentPdfBlock
-  | ContentApiPollerBlock;
+  | ContentApiPollerBlock
+  | ContentImageBlock
+  | ContentVideoBlock
+  | ContentSliderBlock
+  | ContentPad2DBlock
+  | ContentImageButtonBlock;
 export type ContentFlowItem = ContentLeafBlock | ContentLeafBlock[];
 
 export interface BlueprintNode {

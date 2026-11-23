@@ -17,3 +17,10 @@ export function proxyHeaders(extra?: Record<string, string>): Record<string, str
   if (CLIENT_TOKEN) headers['X-Proxy-Token'] = CLIENT_TOKEN;
   return headers;
 }
+
+/** 为无法附带自定义请求头的 <img> 资源 URL（如 /api/pdf/:id/page/:page）在配置了 token 时追加 token 查询参数。 */
+export function appendProxyTokenQuery(url: string): string {
+  if (!CLIENT_TOKEN || !url) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(CLIENT_TOKEN)}`;
+}

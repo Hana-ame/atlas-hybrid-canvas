@@ -453,6 +453,228 @@ onValidateConnect((conn) => {
       rev: 1,
       cid: 'server-base',
     },
+    'demo-image-node': {
+      id: 'demo-image-node',
+      x: 560,
+      y: 1335,
+      width: 340,
+      height: 260,
+      title: '⑥ 图片节点示例',
+      body: '',
+      category: '图片',
+      color: '#4F46E5',
+      inputPorts: [{ id: 'in-1', label: '输入' }],
+      outputPorts: [{ id: 'out-1', label: '输出' }],
+      defaultVars: {
+        imageUrl: "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 220'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%23EEF2FF'/%3E%3Cstop offset='100%25' stop-color='%23E0E7FF'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='360' height='220' fill='url(%23g)'/%3E%3Ccircle cx='118' cy='86' r='30' fill='%234F46E5' fill-opacity='0.22'/%3E%3Cpath d='M52 174 L142 104 L212 152 L262 118 L314 174 Z' fill='%234F46E5' fill-opacity='0.3'/%3E%3Ctext x='180' y='198' text-anchor='middle' font-family='sans-serif' font-size='13' fill='%23312E81'%3E悬停右上角：切铺满/等比 · 灯箱全屏 · 换图%3C/text%3E%3C/svg%3E",
+        imageFit: 'contain',
+        imageCaption: '支持 URL 与本地上传（<=4MB 持久保存）',
+      },
+      script: String.raw`vars.contents = [
+  { type: 'image', id: 'imgMain', bindUrl: 'imageUrl', bindFit: 'imageFit', bindCaption: 'imageCaption' }
+];`,
+      rev: 1,
+      cid: 'server-base',
+    },
+    'demo-video-node': {
+      id: 'demo-video-node',
+      x: 930,
+      y: 1335,
+      width: 380,
+      height: 260,
+      title: '⑦ 视频节点示例',
+      body: '',
+      category: '视频',
+      color: '#E11D48',
+      inputPorts: [{ id: 'in-1', label: '输入' }],
+      outputPorts: [{ id: 'out-1', label: '输出' }],
+      defaultVars: {
+        videoUrl: '',
+        videoLoop: false,
+        videoMuted: false,
+      },
+      script: String.raw`vars.contents = [
+  { type: 'video', id: 'vidMain', bindUrl: 'videoUrl', bindLoop: 'videoLoop', bindMuted: 'videoMuted' }
+];`,
+      rev: 1,
+      cid: 'server-base',
+    },
+    'demo-slider-node': {
+      id: 'demo-slider-node',
+      x: 1340,
+      y: 1335,
+      width: 310,
+      height: 215,
+      title: '⑧ 拖动条控件示例',
+      body: '',
+      category: '滑块',
+      color: '#2563EB',
+      inputPorts: [],
+      outputPorts: [{ id: 'out-1', label: '数值输出' }],
+      defaultVars: {
+        value: 60,
+        scale: 1.5,
+      },
+      script: String.raw`const v = Number(vars.value ?? 60);
+const s = Number(vars.scale ?? 1.5);
+const outVal = Math.round(v * s * 10) / 10;
+
+vars.contents = [
+  { type: 'slider', id: 'sVal', bind: 'value', label: '强度', min: 0, max: 100, step: 1, unit: '%', accentColor: '#2563EB' },
+  { type: 'slider', id: 'sScale', bind: 'scale', label: '倍率', min: 0.5, max: 3, step: 0.1, unit: '×', accentColor: '#0D9488' },
+  { type: 'text', text: '输出：' + outVal + '（拖完自动同步下方汇总）', align: 'center', color: '#1E293B', fontSize: 11.5, bold: true }
+];
+
+onChange(['value', 'scale'], () => {
+  vars.output = Math.round(Number(vars.value ?? 60) * Number(vars.scale ?? 1.5) * 10) / 10;
+});`,
+      rev: 1,
+      cid: 'server-base',
+    },
+    'demo-pad2d-node': {
+      id: 'demo-pad2d-node',
+      x: 560,
+      y: 1625,
+      width: 310,
+      height: 315,
+      title: '⑨ 2D Pad 拖动板示例',
+      body: '',
+      category: '2D Pad',
+      color: '#D97706',
+      inputPorts: [],
+      outputPorts: [{ id: 'out-1', label: 'XY 输出' }],
+      defaultVars: {
+        padX: 25,
+        padY: -15,
+      },
+      script: String.raw`const px = Number(vars.padX ?? 0);
+const py = Number(vars.padY ?? 0);
+
+vars.contents = [
+  {
+    type: 'pad2d',
+    id: 'xyPad',
+    label: '二维坐标触控板',
+    labelX: 'X',
+    labelY: 'Y',
+    bindX: 'padX',
+    bindY: 'padY',
+    minX: -100,
+    maxX: 100,
+    stepX: 1,
+    minY: -100,
+    maxY: 100,
+    stepY: 1,
+    height: 176,
+    accentColor: '#F59E0B'
+  },
+  { type: 'text', text: '向量：(' + px + ', ' + py + ')', align: 'center', color: '#334155', fontSize: 12, bold: true }
+];
+
+onChange(['padX', 'padY'], () => {
+  vars.magnitude = Math.round(Math.hypot(Number(vars.padX ?? 0), Number(vars.padY ?? 0)) * 10) / 10;
+});`,
+      rev: 1,
+      cid: 'server-base',
+    },
+    'demo-image-button-node': {
+      id: 'demo-image-button-node',
+      x: 900,
+      y: 1625,
+      width: 300,
+      height: 215,
+      title: '⑩ 四态图片按钮示例',
+      body: '',
+      category: '图钮',
+      color: '#059669',
+      inputPorts: [{ id: 'in-1', label: '输入' }],
+      outputPorts: [{ id: 'out-1', label: '状态输出' }],
+      defaultVars: {
+        powerOn: false,
+        clicks: 0,
+        btnOffImage: "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 88'%3E%3Crect x='4' y='6' width='232' height='76' rx='18' fill='%23334155' stroke='%2364748B' stroke-width='3'/%3E%3Ccircle cx='46' cy='44' r='12' fill='%2394A3B8'/%3E%3Ctext x='136' y='50' text-anchor='middle' font-family='sans-serif' font-size='18' font-weight='700' fill='%23E2E8F0'%3EOFF · 待机%3C/text%3E%3C/svg%3E",
+        btnOnImage: "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 88'%3E%3Crect x='4' y='6' width='232' height='76' rx='18' fill='%23059669' stroke='%2334D399' stroke-width='3'/%3E%3Ccircle cx='46' cy='44' r='12' fill='%23A7F3D0'/%3E%3Ctext x='136' y='50' text-anchor='middle' font-family='sans-serif' font-size='18' font-weight='700' fill='%23FFFFFF'%3EON · 已开启%3C/text%3E%3C/svg%3E",
+        btnHoverImage: "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 88'%3E%3Crect x='4' y='6' width='232' height='76' rx='18' fill='%234F46E5' stroke='%23A5B4FC' stroke-width='3'/%3E%3Ccircle cx='46' cy='44' r='12' fill='%23E0E7FF'/%3E%3Ctext x='136' y='50' text-anchor='middle' font-family='sans-serif' font-size='18' font-weight='700' fill='%23FFFFFF'%3EHOVER · 悬停%3C/text%3E%3C/svg%3E",
+        btnClickImage: "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 88'%3E%3Crect x='6' y='10' width='228' height='70' rx='16' fill='%23D97706' stroke='%23FDE68A' stroke-width='3'/%3E%3Ccircle cx='46' cy='45' r='12' fill='%23FEF3C7'/%3E%3Ctext x='136' y='51' text-anchor='middle' font-family='sans-serif' font-size='18' font-weight='700' fill='%23FFFFFF'%3ECLICK · 按下%3C/text%3E%3C/svg%3E",
+      },
+      script: String.raw`const isOn = Boolean(vars.powerOn);
+const clicks = Number(vars.clicks ?? 0);
+
+vars.contents = [
+  {
+    type: 'image_button',
+    id: 'imgToggleBtn',
+    bind: 'powerOn',
+    label: isOn ? '已开启' : '未开启',
+    toggle: true,
+    bindOffImage: 'btnOffImage',
+    bindOnImage: 'btnOnImage',
+    bindHoverImage: 'btnHoverImage',
+    bindClickImage: 'btnClickImage',
+    height: 92,
+    showStateBadge: true
+  },
+  {
+    type: 'text',
+    text: '状态：' + (isOn ? 'ON' : 'OFF') + ' · 点击 ' + clicks + ' 次（悬停右上角换图）',
+    align: 'center',
+    color: isOn ? '#047857' : '#475569',
+    fontSize: 11.5,
+    bold: true
+  }
+];
+
+on('imgToggleBtn', () => {
+  vars.clicks = Number(vars.clicks ?? 0) + 1;
+});`,
+      rev: 1,
+      cid: 'server-base',
+    },
+    'demo-controls-monitor': {
+      id: 'demo-controls-monitor',
+      x: 1260,
+      y: 1625,
+      width: 390,
+      height: 220,
+      title: '⑪ 交互控件下游实时监视器',
+      body: '',
+      category: '联动',
+      color: '#0F766E',
+      inputPorts: [
+        { id: 'in-1', label: '连续数值入口' },
+        { id: 'in-2', label: '开关状态入口' },
+      ],
+      outputPorts: [{ id: 'out-1', label: '汇总输出' }],
+      defaultVars: {},
+      script: String.raw`const numPeers = widgets.inputs('in-1');
+const switchPeers = widgets.inputs('in-2');
+const lines = [];
+
+for (const p of numPeers) {
+  const pv = p.vars || {};
+  if (pv.padX !== undefined || pv.padY !== undefined) {
+    lines.push('2D Pad：(' + Number(pv.padX ?? 0) + ', ' + Number(pv.padY ?? 0) + ')');
+  } else if (pv.value !== undefined) {
+    const out = Math.round(Number(pv.value ?? 0) * Number(pv.scale ?? 1) * 10) / 10;
+    lines.push('拖动条：' + Number(pv.value ?? 0) + '% × ' + Number(pv.scale ?? 1) + ' = ' + out);
+  }
+}
+
+let swText = '图片按钮：未接入';
+for (const p of switchPeers) {
+  const pv = p.vars || {};
+  swText = '图片按钮：' + (pv.powerOn ? 'ON（已开启）' : 'OFF（待机）');
+}
+
+vars.contents = [
+  { type: 'text', text: '已接入交互源：' + (numPeers.length + switchPeers.length) + ' 个', color: '#0F766E', fontSize: 12, bold: true },
+  { type: 'text', text: lines.length > 0 ? lines.join('  |  ') : '拖动左侧滑块或 2D Pad 实时查看变化', color: '#0F172A', fontSize: 12 },
+  { type: 'text', text: swText, color: '#334155', fontSize: 12 },
+  { type: 'text', text: '提示：拖动滑块/2D Pad 松手或点击图片按钮后，本卡片自动同步刷新', color: '#64748B', fontSize: 11 }
+];`,
+      rev: 1,
+      cid: 'server-base',
+    },
   };
 
   const annotations: Record<string, CanvasAnnotation> = {
@@ -524,6 +746,23 @@ onValidateConnect((conn) => {
       rev: 1,
       cid: 'server-base',
     },
+    'ann-zone-media': {
+      id: 'ann-zone-media',
+      kind: 'text',
+      x: 540,
+      y: 1270,
+      width: 1120,
+      height: 46,
+      text: 'ZONE E · 媒体与交互控件示例（图片 / 视频 / 拖动条 / 2D Pad / 四态图片按钮 → 下游实时联动）',
+      fontSize: 15,
+      color: '#4338CA',
+      bgColor: '#E0E7FF',
+      bgOpacity: 0.85,
+      weight: 'bold',
+      nonInteractive: true,
+      rev: 1,
+      cid: 'server-base',
+    },
   };
 
   return {
@@ -574,6 +813,39 @@ onValidateConnect((conn) => {
         targetHandle: 'in-2',
         label: '读取 vars + 推送事件',
         color: '#7C3AED',
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-ctrl-slider': {
+        id: 'edge-ctrl-slider',
+        source: 'demo-slider-node',
+        target: 'demo-controls-monitor',
+        sourceHandle: 'out-1',
+        targetHandle: 'in-1',
+        label: '滑块数值',
+        color: '#2563EB',
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-ctrl-pad2d': {
+        id: 'edge-ctrl-pad2d',
+        source: 'demo-pad2d-node',
+        target: 'demo-controls-monitor',
+        sourceHandle: 'out-1',
+        targetHandle: 'in-1',
+        label: '2D 坐标',
+        color: '#D97706',
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-ctrl-imgbtn': {
+        id: 'edge-ctrl-imgbtn',
+        source: 'demo-image-button-node',
+        target: 'demo-controls-monitor',
+        sourceHandle: 'out-1',
+        targetHandle: 'in-2',
+        label: '四态开关',
+        color: '#059669',
         rev: 1,
         cid: 'server-base',
       },

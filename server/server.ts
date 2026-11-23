@@ -2,6 +2,7 @@ import 'dotenv/config';
 import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
 import http from 'node:http';
+import https from 'node:https';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +11,6 @@ import {
   parseAllowedHosts,
   PROXY_DEFAULT_TIMEOUT_MS,
   sanitizeProxyHeaders,
-  readResponseBufferWithLimit,
   sanitizeBinaryProxyContentType,
   validateProxyTargetUrl,
 } from './proxySecurity';
@@ -282,29 +282,150 @@ async function startServer() {
    * 浏览器拿不到对端 IP、也没有 DNS 解析权限，所以这些检查只能在这里做——
    * 这正是"同一份业务逻辑、各环境用各自真实能力"的落点。
    */
+  /**
+   * 固定已校验 IP 的出站 HTTP/HTTPS 请求（彻底消除 DNS rebinding 二次解析窗口）。
+   * - 先 dns.lookup({ all: true }) 校验全部解析结果均非内网/保留地址；
+   * - 通过自定义 lookup 将 TCP 连接严格钉死在已校验 IP，同时保留 TLS SNI (servername) 与 Host 头；
+   * - 不跟随 3xx 重定向，流式累计字节并在超限时立即销毁连接防 OOM。
+   */
+  const pinnedOutboundRequest = async (
+    targetUrl: URL,
+    opts: {
+      method: string;
+      headers: Record<string, string>;
+      body?: Uint8Array;
+      maxBytes: number;
+      timeoutMs?: number;
+    }
+  ): Promise<
+    | { ok: true; status: number; headers: Record<string, string>; buffer: Buffer }
+    | { ok: false; kind: 'dns_blocked' | 'dns_failed' | 'too_large' | 'network'; error: string }
+  > => {
+    const lookupHost = targetUrl.hostname.replace(/^\[|\]$/g, '');
+    let records: Array<{ address: string; family: number }>;
+    try {
+      records = await dns.lookup(lookupHost, { all: true });
+    } catch {
+      return { ok: false, kind: 'dns_failed', error: '目标域名解析失败' };
+    }
+    if (records.length === 0 || records.some((r) => isPrivateOrReservedIP(r.address))) {
+      return {
+        ok: false,
+        kind: 'dns_blocked',
+        error: '安全限制：目标域名解析到受保护的内网或元数据地址，已拒绝代理',
+      };
+    }
+    const pinned = records[0];
+    const isHttps = targetUrl.protocol === 'https:';
+    const port = targetUrl.port ? Number(targetUrl.port) : isHttps ? 443 : 80;
+    const reqHeaders: Record<string, string | number> = {
+      ...opts.headers,
+      host: targetUrl.host,
+    };
+    const bodyBuf = opts.body && opts.body.byteLength > 0 ? Buffer.from(opts.body) : undefined;
+    if (bodyBuf) reqHeaders['content-length'] = bodyBuf.byteLength;
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (
+        result:
+          | { ok: true; status: number; headers: Record<string, string>; buffer: Buffer }
+          | { ok: false; kind: 'dns_blocked' | 'dns_failed' | 'too_large' | 'network'; error: string }
+      ) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+
+      const pinnedLookup = (
+        _hostname: string,
+        lookupOpts: unknown,
+        cb: (err: NodeJS.ErrnoException | null, address: unknown, family?: number) => void
+      ) => {
+        const wantsAll =
+          typeof lookupOpts === 'object' &&
+          lookupOpts !== null &&
+          Boolean((lookupOpts as { all?: boolean }).all);
+        if (wantsAll) {
+          cb(null, [{ address: pinned.address, family: pinned.family }]);
+        } else {
+          cb(null, pinned.address, pinned.family);
+        }
+      };
+
+      const reqFn = isHttps ? https.request : http.request;
+      const req = reqFn(
+        {
+          hostname: lookupHost,
+          port,
+          path: `${targetUrl.pathname}${targetUrl.search}`,
+          method: opts.method,
+          headers: reqHeaders,
+          lookup: pinnedLookup as unknown as typeof import('node:dns').lookup,
+          ...(isHttps ? { servername: lookupHost } : {}),
+        },
+        (res) => {
+          const contentLen = Number(res.headers['content-length'] || 0);
+          if (Number.isFinite(contentLen) && contentLen > opts.maxBytes) {
+            res.destroy();
+            done({ ok: false, kind: 'too_large', error: '上游响应体超过安全上限' });
+            return;
+          }
+          const chunks: Buffer[] = [];
+          let total = 0;
+          res.on('data', (chunk: Buffer) => {
+            total += chunk.length;
+            if (total > opts.maxBytes) {
+              res.destroy();
+              done({ ok: false, kind: 'too_large', error: '上游响应体超过安全上限' });
+              return;
+            }
+            chunks.push(chunk);
+          });
+          res.on('end', () => {
+            const outHeaders: Record<string, string> = {};
+            for (const [k, v] of Object.entries(res.headers)) {
+              if (v === undefined) continue;
+              outHeaders[k.toLowerCase()] = Array.isArray(v) ? v.join(', ') : String(v);
+            }
+            done({
+              ok: true,
+              status: res.statusCode ?? 502,
+              headers: outHeaders,
+              buffer: Buffer.concat(chunks),
+            });
+          });
+          res.on('error', (err) => {
+            done({ ok: false, kind: 'network', error: err.message || '上游读取失败' });
+          });
+        }
+      );
+
+      const timer = setTimeout(() => {
+        req.destroy(new Error('上游请求超时'));
+      }, opts.timeoutMs ?? PROXY_DEFAULT_TIMEOUT_MS);
+
+      req.on('error', (err) => {
+        done({ ok: false, kind: 'network', error: err.message || '上游请求失败' });
+      });
+
+      if (bodyBuf) req.write(bodyBuf);
+      req.end();
+    });
+  };
+
   const serverFetcher: HttpFetcher = {
     async fetch(url, init) {
       // a) 目标 URL 形状与白名单（复用 proxySecurity，别在这里重写一份）
       const target = validateProxyTargetUrl(url, { upstreamBaseUrl, allowedHosts });
       if (!target.ok) throw new Error(target.error);
 
-      // b) DNS 解析后逐个检查是否内网/元数据地址。
-      //    必须在真正发请求前查，因为 parse URL 阶段拿到的只是域名字符串，
-      //    域名可以解析到 127.0.0.1 或 169.254.169.254。
-      const lookupHost = target.url.hostname.replace(/^\[|\]$/g, '');
-      const records = await dns.lookup(lookupHost, { all: true });
-      if (records.length === 0) throw new Error('目标域名解析失败');
-      for (const rec of records) {
-        if (isPrivateOrReservedIP(rec.address)) {
-          throw new Error('安全限制：目标域名解析到受保护的内网或元数据地址，已拒绝代理');
-        }
-      }
-
-      // c) 头净化（去掉 Host / Cookie 这类不该透传的）
+      // b) 头净化（去掉 Host / Cookie 这类不该透传的）
       const headerCheck = sanitizeProxyHeaders(init.headers);
       if (!headerCheck.ok) throw new Error(headerCheck.error);
 
-      // d) 按配置注入上游密钥。调用方自己带了同名头就不覆盖。
+      // c) 按配置注入上游密钥。调用方自己带了同名头就不覆盖。
       const outboundHeaders: Record<string, string> = { ...headerCheck.headers };
       if (proxyApiKey && target.injectSecret) {
         const hasClientOverride = Object.keys(outboundHeaders).some(
@@ -315,33 +436,20 @@ async function startServer() {
         }
       }
 
-      // e) 发请求。redirect: manual —— 3xx 由 apiCore 统一拦截，
-      //    因为跟随后续跳转可能落到白名单之外。
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), PROXY_DEFAULT_TIMEOUT_MS);
-      try {
-        const res = await fetch(target.url.toString(), {
-          method: init.method,
-          headers: outboundHeaders,
-          // 包一层 Buffer：Node 的 fetch 接受 Buffer，而 Uint8Array 在 TS 的类型
-          // 定义里不被认作合法 BodyInit（实际运行时没问题，这里只是取悦类型）。
-          body: init.body ? Buffer.from(init.body) : undefined,
-          redirect: 'manual',
-          signal: controller.signal,
-        });
-        const read = await readResponseBufferWithLimit(res, 2 * 1024 * 1024);
-        if (!read.ok) {
+      // d) 固定已校验 IP 发请求（防 DNS rebinding + 不跟随 3xx + 2MB 流式上限）
+      const out = await pinnedOutboundRequest(target.url, {
+        method: init.method,
+        headers: outboundHeaders,
+        body: init.body,
+        maxBytes: 2 * 1024 * 1024,
+      });
+      if (!out.ok) {
+        if (out.kind === 'too_large') {
           throw new Error('上游响应体超过 2MB 安全上限，已中止读取');
         }
-        const buf = new Uint8Array(read.buffer);
-        const resHeaders: Record<string, string> = {};
-        res.headers.forEach((v, k) => {
-          resHeaders[k] = v;
-        });
-        return { status: res.status, headers: resHeaders, body: buf };
-      } finally {
-        clearTimeout(timer);
+        throw new Error(out.error);
       }
+      return { status: out.status, headers: out.headers, body: new Uint8Array(out.buffer) };
     },
   };
 
@@ -452,55 +560,36 @@ async function startServer() {
       res.status(target.status).json({ ok: false, error: target.error });
       return;
     }
-    try {
-      const records = await dns.lookup(target.url.hostname.replace(/^\[|\]$/g, ''), { all: true });
-      if (records.length === 0 || records.some((r) => isPrivateOrReservedIP(r.address))) {
+    const headers: Record<string, string> = {};
+    if (proxyApiKey && target.injectSecret) {
+      headers[proxyApiKeyHeader] = `${proxyApiKeyPrefix}${proxyApiKey}`;
+    }
+    const out = await pinnedOutboundRequest(target.url, {
+      method: 'GET',
+      headers,
+      maxBytes: PDF_UPLOAD_MAX_BYTES,
+    });
+    if (!out.ok) {
+      if (out.kind === 'dns_blocked') {
         res.status(403).json({ ok: false, error: '安全限制：目标域名解析到受保护地址' });
         return;
       }
-    } catch {
-      res.status(502).json({ ok: false, error: '目标域名解析失败' });
-      return;
-    }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), PROXY_DEFAULT_TIMEOUT_MS);
-    try {
-      const headers: Record<string, string> = {};
-      if (proxyApiKey && target.injectSecret) {
-        headers[proxyApiKeyHeader] = `${proxyApiKeyPrefix}${proxyApiKey}`;
-      }
-      // redirect: 'manual' 必须显式指定。Node fetch 默认跟随跳转，白名单上游返回 302 指向
-      // 127.0.0.1 / 169.254.169.254 时会在 fetch 内部完成跳转，前面那轮 dns.lookup 校验对
-      // 跳转后的地址完全无效 —— SSRF 由此绕过。/api/proxy 早已这么做了，binary 分支此前漏了。
-      const upstream = await fetch(target.url.toString(), {
-        method: 'GET',
-        headers,
-        redirect: 'manual',
-        signal: controller.signal,
-      });
-      if (upstream.status >= 300 && upstream.status < 400) {
-        res.status(502).json({ ok: false, error: '安全限制：已拦截上游 3xx 重定向' });
-        return;
-      }
-      // 流式读并累计字节，超限立刻中断。原先 arrayBuffer() 全量读入再比大小，
-      // 恶意大响应在比对之前就已经把内存吃满了。
-      // 这里不把 timer 的 controller 传进去：那个 controller 一 abort，下面的 catch 就会
-      // 把「超限」误报成「代理拉取失败」。readResponseBufferWithLimit 内部自己 cancel 流即可。
-      const read = await readResponseBufferWithLimit(upstream, PDF_UPLOAD_MAX_BYTES);
-      if (!read.ok) {
+      if (out.kind === 'too_large') {
         res.status(413).json({ ok: false, error: `PDF 文件超过 ${PDF_UPLOAD_MAX_LABEL} 代理上限` });
         return;
       }
-      // 上游 Content-Type 不可全信：透传 text/html 或 image/svg+xml 配合 inline 会在同源执行脚本。
-      res.setHeader('Content-Type', sanitizeBinaryProxyContentType(upstream.headers.get('content-type')));
-      res.setHeader('X-Content-Type-Options', 'nosniff');
-      res.setHeader('Content-Disposition', 'inline');
-      res.status(upstream.status).send(read.buffer);
-    } catch (err) {
-      res.status(502).json({ ok: false, error: err instanceof Error ? err.message : 'PDF 代理拉取失败' });
-    } finally {
-      clearTimeout(timer);
+      res.status(502).json({ ok: false, error: out.error || 'PDF 代理拉取失败' });
+      return;
     }
+    if (out.status >= 300 && out.status < 400) {
+      res.status(502).json({ ok: false, error: '安全限制：已拦截上游 3xx 重定向' });
+      return;
+    }
+    // 上游 Content-Type 不可全信：透传 text/html 或 image/svg+xml 配合 inline 会在同源执行脚本。
+    res.setHeader('Content-Type', sanitizeBinaryProxyContentType(out.headers['content-type'] ?? null));
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', 'inline');
+    res.status(out.status).send(out.buffer);
   });
 
   app.post('/api/pdf/upload', (req, res) => {
@@ -568,45 +657,37 @@ async function startServer() {
       res.status(target.status).json({ ok: false, error: target.error });
       return;
     }
-    try {
-      const records = await dns.lookup(target.url.hostname.replace(/^\[|\]$/g, ''), { all: true });
-      if (records.length === 0 || records.some((r) => isPrivateOrReservedIP(r.address))) {
+    const headers: Record<string, string> = {};
+    if (proxyApiKey && target.injectSecret) {
+      headers[proxyApiKeyHeader] = `${proxyApiKeyPrefix}${proxyApiKey}`;
+    }
+    const out = await pinnedOutboundRequest(target.url, {
+      method: 'GET',
+      headers,
+      maxBytes: PDF_UPLOAD_MAX_BYTES,
+    });
+    if (!out.ok) {
+      if (out.kind === 'dns_blocked') {
         res.status(403).json({ ok: false, error: '安全限制：目标域名解析到受保护地址' });
         return;
       }
-    } catch {
-      res.status(502).json({ ok: false, error: '目标域名解析失败' });
-      return;
-    }
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), PROXY_DEFAULT_TIMEOUT_MS);
-    try {
-      const headers: Record<string, string> = {};
-      if (proxyApiKey && target.injectSecret) {
-        headers[proxyApiKeyHeader] = `${proxyApiKeyPrefix}${proxyApiKey}`;
-      }
-      const upstream = await fetch(target.url.toString(), {
-        method: 'GET',
-        headers,
-        redirect: 'manual',
-        signal: controller.signal,
-      });
-      if (upstream.status >= 300 && upstream.status < 400) {
-        res.status(502).json({ ok: false, error: '安全限制：已拦截上游 3xx 重定向' });
-        return;
-      }
-      if (!upstream.ok) {
-        res.status(502).json({ ok: false, error: `拉取 PDF 失败（HTTP ${upstream.status}）` });
-        return;
-      }
-      // 独立限流读取，不传入超时 controller，避免超限时 fetch 抛 AbortError 被误判为 502
-      const readRes = await readResponseBufferWithLimit(upstream, PDF_UPLOAD_MAX_BYTES);
-      if (!readRes.ok) {
+      if (out.kind === 'too_large') {
         res.status(413).json({ ok: false, error: `PDF 文件超过 ${PDF_UPLOAD_MAX_LABEL} 上限` });
         return;
       }
-      const unpacked = await unpackPdfBufferToPages(readRes.buffer);
+      res.status(502).json({ ok: false, error: out.error || 'PDF 解包失败' });
+      return;
+    }
+    if (out.status >= 300 && out.status < 400) {
+      res.status(502).json({ ok: false, error: '安全限制：已拦截上游 3xx 重定向' });
+      return;
+    }
+    if (out.status < 200 || out.status >= 300) {
+      res.status(502).json({ ok: false, error: `拉取 PDF 失败（HTTP ${out.status}）` });
+      return;
+    }
+    try {
+      const unpacked = await unpackPdfBufferToPages(out.buffer);
       res.json({
         ok: true,
         docId: unpacked.docId,
@@ -615,8 +696,6 @@ async function startServer() {
       });
     } catch (err) {
       res.status(502).json({ ok: false, error: err instanceof Error ? err.message : 'PDF 解包失败' });
-    } finally {
-      clearTimeout(timer);
     }
   });
 
@@ -657,6 +736,11 @@ async function startServer() {
   });
 
   app.get('/api/pdf/:id/meta', (req, res) => {
+    const providedProxyToken = String(req.header('x-proxy-token') || req.query.token || '').trim();
+    if (!verifyProxyClientToken(providedProxyToken)) {
+      res.status(401).json({ ok: false, error: '未授权访问 PDF 元数据' });
+      return;
+    }
     const meta = getUnpackedPdfMeta(String(req.params.id || ''));
     if (!meta) {
       res.status(404).json({ ok: false, error: '未找到已解包的 PDF 文档' });
@@ -666,6 +750,11 @@ async function startServer() {
   });
 
   app.get('/api/pdf/:id/page/:page', async (req, res) => {
+    const providedProxyToken = String(req.header('x-proxy-token') || req.query.token || '').trim();
+    if (!verifyProxyClientToken(providedProxyToken)) {
+      res.status(401).json({ ok: false, error: '未授权访问 PDF 页面' });
+      return;
+    }
     const docId = String(req.params.id || '');
     const pageNum = Number(req.params.page);
     try {
@@ -684,6 +773,11 @@ async function startServer() {
   });
 
   app.get('/api/pdf/:id', (req, res) => {
+    const providedProxyToken = String(req.header('x-proxy-token') || req.query.token || '').trim();
+    if (!verifyProxyClientToken(providedProxyToken)) {
+      res.status(401).json({ ok: false, error: '未授权访问 PDF 文件' });
+      return;
+    }
     const id = String(req.params.id || '');
     const item = uploadedPdfStore.get(id);
     if (!item) {

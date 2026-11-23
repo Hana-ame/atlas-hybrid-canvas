@@ -15,6 +15,11 @@ import { RESERVED_WIDGET_PROP_VARS } from '../core/layeredStore';
 import { parseTaskLine, toggleTaskLine } from '../core/taskList';
 import { PdfViewerBlock } from './PdfViewerBlock';
 import { ApiPollerBlock } from './ApiPollerBlock';
+import { ImageNodeBlock } from './ImageNodeBlock';
+import { VideoNodeBlock } from './VideoNodeBlock';
+import { SliderControlBlock } from './SliderControlBlock';
+import { Pad2DControlBlock } from './Pad2DControlBlock';
+import { ImageButtonBlock } from './ImageButtonBlock';
 import type {
   ContentFlowItem,
   ContentLeafBlock,
@@ -28,6 +33,11 @@ export interface WidgetNodeData extends Record<string, unknown> {
   onRunButton: (nodeId: string, btn: WidgetButtonSpec) => void;
   onRunScriptClick: (nodeId: string, buttonId: string) => void;
   onScriptInputChange: (nodeId: string, bindKey: string, value: string) => void;
+  onSliderChange?: (nodeId: string, bindKey: string, value: number) => void;
+  onSliderCommit?: (nodeId: string, bindKey: string, value: number) => void;
+  onPad2DChange?: (nodeId: string, bindX: string, x: number, bindY: string, y: number) => void;
+  onPad2DCommit?: (nodeId: string, bindX: string, x: number, bindY: string, y: number) => void;
+  onImageButtonTrigger?: (nodeId: string, buttonId: string, bindKey: string, nextIsOn: boolean, toggle: boolean) => void;
   onBatchUpdateVars?: (nodeId: string, patch: Record<string, unknown>, notifyDownstream?: boolean) => void;
   onScriptInputSubmit: (nodeId: string, inputId: string, value: string) => void;
   onToggleLock: (nodeId: string) => void;
@@ -71,6 +81,11 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
     onRunButton,
     onRunScriptClick,
     onScriptInputChange,
+    onSliderChange,
+    onSliderCommit,
+    onPad2DChange,
+    onPad2DCommit,
+    onImageButtonTrigger,
     onBatchUpdateVars,
     onScriptInputSubmit,
     onToggleLock,
@@ -112,10 +127,10 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
   const rawContents = entity.effectiveVars?.contents;
   const flowItems: ContentFlowItem[] = Array.isArray(rawContents) ? (rawContents as ContentFlowItem[]) : [];
   const hasScriptContents = flowItems.length > 0;
-  const isImmersivePdf =
+  const isImmersiveMedia =
     flowItems.length === 1 &&
     !Array.isArray(flowItems[0]) &&
-    flowItems[0]?.type === 'pdf';
+    (flowItems[0]?.type === 'pdf' || flowItems[0]?.type === 'image' || flowItems[0]?.type === 'video');
   const varEntries = Object.entries(entity.effectiveVars || {}).filter(([k]) => !RESERVED_WIDGET_PROP_VARS.has(k));
 
   const renderLeafBlock = (block: ContentLeafBlock, idx: number, inRow: boolean) => {
@@ -323,6 +338,208 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
       );
     }
 
+    if (block.type === 'image') {
+      const urlKey = block.bindUrl || 'imageUrl';
+      const captionKey = block.bindCaption || 'imageCaption';
+      const fitKey = block.bindFit || 'imageFit';
+      const curUrl =
+        entity.effectiveVars?.[urlKey] !== undefined
+          ? String(entity.effectiveVars[urlKey])
+          : String(block.url ?? '');
+      const curCaption =
+        entity.effectiveVars?.[captionKey] !== undefined
+          ? String(entity.effectiveVars[captionKey])
+          : String(block.caption ?? '');
+      const rawFit =
+        entity.effectiveVars?.[fitKey] !== undefined
+          ? String(entity.effectiveVars[fitKey])
+          : String(block.fit ?? 'contain');
+      const curFit: 'contain' | 'cover' = rawFit === 'cover' ? 'cover' : 'contain';
+      return (
+        <ImageNodeBlock
+          key={`img-${block.id}-${idx}`}
+          url={curUrl}
+          caption={curCaption}
+          fit={curFit}
+          mediaActive={mediaActive}
+          onChangeUrl={(nextUrl) => onScriptInputChange(entity.id, urlKey, nextUrl)}
+          onChangeFit={(nextFit) => onScriptInputChange(entity.id, fitKey, nextFit)}
+        />
+      );
+    }
+
+    if (block.type === 'video') {
+      const urlKey = block.bindUrl || 'videoUrl';
+      const loopKey = block.bindLoop || 'videoLoop';
+      const mutedKey = block.bindMuted || 'videoMuted';
+      const curUrl =
+        entity.effectiveVars?.[urlKey] !== undefined
+          ? String(entity.effectiveVars[urlKey])
+          : String(block.url ?? '');
+      const curLoop =
+        entity.effectiveVars?.[loopKey] !== undefined
+          ? parseVarBoolean(entity.effectiveVars[loopKey])
+          : Boolean(block.loop);
+      const curMuted =
+        entity.effectiveVars?.[mutedKey] !== undefined
+          ? parseVarBoolean(entity.effectiveVars[mutedKey])
+          : Boolean(block.muted);
+      return (
+        <VideoNodeBlock
+          key={`vid-${block.id}-${idx}`}
+          url={curUrl}
+          poster={block.poster}
+          loop={curLoop}
+          muted={curMuted}
+          mediaActive={mediaActive}
+          onChangeUrl={(nextUrl) => onScriptInputChange(entity.id, urlKey, nextUrl)}
+          onChangeLoop={(nextLoop) => onScriptInputChange(entity.id, loopKey, nextLoop ? 'true' : '')}
+          onChangeMuted={(nextMuted) => onScriptInputChange(entity.id, mutedKey, nextMuted ? 'true' : '')}
+        />
+      );
+    }
+
+    if (block.type === 'slider') {
+      const bindKey = block.bind || block.id;
+      const rawVal = entity.effectiveVars?.[bindKey];
+      const curVal =
+        rawVal !== undefined && Number.isFinite(Number(rawVal))
+          ? Number(rawVal)
+          : Number.isFinite(Number(block.value))
+            ? Number(block.value)
+            : Number(block.min ?? 0);
+      return (
+        <SliderControlBlock
+          key={`slider-${block.id}-${idx}`}
+          label={block.label}
+          value={curVal}
+          min={block.min}
+          max={block.max}
+          step={block.step}
+          unit={block.unit}
+          showValue={block.showValue}
+          accentColor={block.accentColor || entity.color}
+          width={block.width}
+          inRow={inRow}
+          onChange={(nextVal) => {
+            if (onSliderChange) onSliderChange(entity.id, bindKey, nextVal);
+            else onScriptInputChange(entity.id, bindKey, String(nextVal));
+          }}
+          onCommit={(nextVal) => {
+            onSliderCommit?.(entity.id, bindKey, nextVal);
+          }}
+        />
+      );
+    }
+
+    if (block.type === 'pad2d') {
+      const bindX = block.bindX || `${block.id}X`;
+      const bindY = block.bindY || `${block.id}Y`;
+      const rawX = entity.effectiveVars?.[bindX];
+      const rawY = entity.effectiveVars?.[bindY];
+      const curX =
+        rawX !== undefined && Number.isFinite(Number(rawX))
+          ? Number(rawX)
+          : Number.isFinite(Number(block.x))
+            ? Number(block.x)
+            : 0;
+      const curY =
+        rawY !== undefined && Number.isFinite(Number(rawY))
+          ? Number(rawY)
+          : Number.isFinite(Number(block.y))
+            ? Number(block.y)
+            : 0;
+      return (
+        <Pad2DControlBlock
+          key={`pad2d-${block.id}-${idx}`}
+          label={block.label}
+          labelX={block.labelX}
+          labelY={block.labelY}
+          x={curX}
+          y={curY}
+          minX={block.minX}
+          maxX={block.maxX}
+          stepX={block.stepX}
+          minY={block.minY}
+          maxY={block.maxY}
+          stepY={block.stepY}
+          unitX={block.unitX}
+          unitY={block.unitY}
+          invertY={block.invertY}
+          height={block.height}
+          accentColor={block.accentColor || '#F59E0B'}
+          onChange={(nextX, nextY) => {
+            if (onPad2DChange) onPad2DChange(entity.id, bindX, nextX, bindY, nextY);
+            else {
+              onScriptInputChange(entity.id, bindX, String(nextX));
+              onScriptInputChange(entity.id, bindY, String(nextY));
+            }
+          }}
+          onCommit={(nextX, nextY) => {
+            onPad2DCommit?.(entity.id, bindX, nextX, bindY, nextY);
+          }}
+        />
+      );
+    }
+
+    if (block.type === 'image_button') {
+      const bindKey = block.bind || block.id;
+      const isToggle = block.toggle !== false;
+      const curOn =
+        entity.effectiveVars?.[bindKey] !== undefined
+          ? parseVarBoolean(entity.effectiveVars[bindKey])
+          : Boolean(block.on);
+      const offKey = block.bindOffImage || `${block.id}OffImage`;
+      const onKey = block.bindOnImage || `${block.id}OnImage`;
+      const hoverKey = block.bindHoverImage || `${block.id}HoverImage`;
+      const clickKey = block.bindClickImage || `${block.id}ClickImage`;
+      const curOff =
+        entity.effectiveVars?.[offKey] !== undefined
+          ? String(entity.effectiveVars[offKey])
+          : String(block.offImage ?? '');
+      const curOnImg =
+        entity.effectiveVars?.[onKey] !== undefined
+          ? String(entity.effectiveVars[onKey])
+          : String(block.onImage ?? '');
+      const curHover =
+        entity.effectiveVars?.[hoverKey] !== undefined
+          ? String(entity.effectiveVars[hoverKey])
+          : String(block.hoverImage ?? '');
+      const curClick =
+        entity.effectiveVars?.[clickKey] !== undefined
+          ? String(entity.effectiveVars[clickKey])
+          : String(block.clickImage ?? '');
+      return (
+        <ImageButtonBlock
+          key={`imgbtn-${block.id}-${idx}`}
+          label={block.label}
+          isOn={curOn}
+          toggle={isToggle}
+          offImage={curOff}
+          onImage={curOnImg}
+          hoverImage={curHover}
+          clickImage={curClick}
+          width={block.width}
+          height={block.height}
+          disabled={Boolean(block.disabled)}
+          showStateBadge={block.showStateBadge !== false}
+          inRow={inRow}
+          onTrigger={(nextIsOn) => {
+            if (onImageButtonTrigger) {
+              onImageButtonTrigger(entity.id, block.id, bindKey, nextIsOn, isToggle);
+            } else {
+              onRunScriptClick(entity.id, block.id);
+            }
+          }}
+          onUpdateStateImage={(st, nextUrl) => {
+            const targetKey =
+              st === 'off' ? offKey : st === 'on' ? onKey : st === 'hover' ? hoverKey : clickKey;
+            onScriptInputChange(entity.id, targetKey, nextUrl);
+          }}
+        />
+      );
+    }
+
     return null;
   };
 
@@ -506,13 +723,13 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
       {/* 主体区：默认整块正文可拖动；单 PDF 卡片自动进入零内边距沉浸铺满模式 */}
       <div
         className={
-          isImmersivePdf
+          isImmersiveMedia
             ? 'flex min-h-0 flex-1 flex-col overflow-hidden rounded-b-lg'
             : 'nowheel flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-2.5'
         }
       >
         {hasScriptContents ? (
-          <div className={isImmersivePdf ? 'flex min-h-0 flex-1 flex-col' : 'flex flex-col gap-2'}>
+          <div className={isImmersiveMedia ? 'flex min-h-0 flex-1 flex-col' : 'flex flex-col gap-2'}>
             {flowItems.map((item, idx) =>
               Array.isArray(item) ? (
                 <div key={`row-${idx}`} className="flex items-center gap-1.5">

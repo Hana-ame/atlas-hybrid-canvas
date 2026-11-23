@@ -1427,8 +1427,157 @@ function HybridCanvasWorkspace() {
     }));
   }, []);
 
+  const handleSliderChange = useCallback((nodeId: string, bindKey: string, value: number) => {
+    setOverlay((prev) => ({
+      ...prev,
+      runtimeVars: {
+        ...prev.runtimeVars,
+        [nodeId]: {
+          ...(prev.runtimeVars[nodeId] ?? effectiveNodesRef.current[nodeId]?.effectiveVars ?? {}),
+          [bindKey]: value,
+        },
+      },
+    }));
+  }, []);
+
+  const handleSliderCommit = useCallback(
+    (nodeId: string, bindKey: string, value: number) => {
+      pushHistory();
+      const prevEntity = effectiveNodesRef.current[nodeId];
+      const prevVars = prevEntity ? { ...prevEntity.effectiveVars } : {};
+      const nextVars = { ...prevVars, [bindKey]: value };
+      setOverlay((prev) => ({
+        ...prev,
+        runtimeVars: {
+          ...prev.runtimeVars,
+          [nodeId]: {
+            ...(prev.runtimeVars[nodeId] ?? prevVars),
+            [bindKey]: value,
+          },
+        },
+      }));
+      if (prevEntity?.script) {
+        void executeUnifiedWidgetScript(
+          nodeId,
+          { kind: 'varsChanged', prevVars, changedKeys: [bindKey] },
+          nextVars
+        );
+      }
+      const downstreamIds = Array.from(
+        new Set(
+          Object.values(edgesRef.current)
+            .filter((e) => e.source === nodeId && e.target !== nodeId)
+            .map((e) => e.target)
+        )
+      ).filter((dstId) => Boolean(effectiveNodesRef.current[dstId]?.script));
+      for (const dstId of downstreamIds) {
+        void executeUnifiedWidgetScript(dstId, { kind: 'render' }, undefined, 1, {
+          [nodeId]: { vars: nextVars },
+        });
+      }
+    },
+    [executeUnifiedWidgetScript, pushHistory]
+  );
+
+  const handlePad2DChange = useCallback(
+    (nodeId: string, bindX: string, x: number, bindY: string, y: number) => {
+      setOverlay((prev) => ({
+        ...prev,
+        runtimeVars: {
+          ...prev.runtimeVars,
+          [nodeId]: {
+            ...(prev.runtimeVars[nodeId] ?? effectiveNodesRef.current[nodeId]?.effectiveVars ?? {}),
+            [bindX]: x,
+            [bindY]: y,
+          },
+        },
+      }));
+    },
+    []
+  );
+
+  const handlePad2DCommit = useCallback(
+    (nodeId: string, bindX: string, x: number, bindY: string, y: number) => {
+      pushHistory();
+      const prevEntity = effectiveNodesRef.current[nodeId];
+      const prevVars = prevEntity ? { ...prevEntity.effectiveVars } : {};
+      const nextVars = { ...prevVars, [bindX]: x, [bindY]: y };
+      setOverlay((prev) => ({
+        ...prev,
+        runtimeVars: {
+          ...prev.runtimeVars,
+          [nodeId]: {
+            ...(prev.runtimeVars[nodeId] ?? prevVars),
+            [bindX]: x,
+            [bindY]: y,
+          },
+        },
+      }));
+      if (prevEntity?.script) {
+        void executeUnifiedWidgetScript(
+          nodeId,
+          { kind: 'varsChanged', prevVars, changedKeys: [bindX, bindY] },
+          nextVars
+        );
+      }
+      const downstreamIds = Array.from(
+        new Set(
+          Object.values(edgesRef.current)
+            .filter((e) => e.source === nodeId && e.target !== nodeId)
+            .map((e) => e.target)
+        )
+      ).filter((dstId) => Boolean(effectiveNodesRef.current[dstId]?.script));
+      for (const dstId of downstreamIds) {
+        void executeUnifiedWidgetScript(dstId, { kind: 'render' }, undefined, 1, {
+          [nodeId]: { vars: nextVars },
+        });
+      }
+    },
+    [executeUnifiedWidgetScript, pushHistory]
+  );
+
+  const handleImageButtonTrigger = useCallback(
+    (nodeId: string, buttonId: string, bindKey: string, nextIsOn: boolean, toggle: boolean) => {
+      pushHistory();
+      const prevEntity = effectiveNodesRef.current[nodeId];
+      const prevVars = prevEntity ? { ...prevEntity.effectiveVars } : {};
+      const nextVars = toggle ? { ...prevVars, [bindKey]: nextIsOn } : prevVars;
+      if (toggle) {
+        setOverlay((prev) => ({
+          ...prev,
+          runtimeVars: {
+            ...prev.runtimeVars,
+            [nodeId]: {
+              ...(prev.runtimeVars[nodeId] ?? prevVars),
+              [bindKey]: nextIsOn,
+            },
+          },
+        }));
+      }
+      if (prevEntity?.script) {
+        void executeUnifiedWidgetScript(nodeId, { kind: 'click', buttonId }, nextVars);
+      }
+      if (toggle) {
+        const downstreamIds = Array.from(
+          new Set(
+            Object.values(edgesRef.current)
+              .filter((e) => e.source === nodeId && e.target !== nodeId)
+              .map((e) => e.target)
+          )
+        ).filter((dstId) => Boolean(effectiveNodesRef.current[dstId]?.script));
+        for (const dstId of downstreamIds) {
+          void executeUnifiedWidgetScript(dstId, { kind: 'render' }, undefined, 1, {
+            [nodeId]: { vars: nextVars },
+          });
+        }
+      }
+    },
+    [executeUnifiedWidgetScript, pushHistory]
+  );
+
   const handleBatchUpdateRuntimeVars = useCallback(
     (nodeId: string, patch: Record<string, unknown>, notifyDownstream = true) => {
+      pushHistory();
       const baseVars = overlayRef.current.runtimeVars[nodeId] ?? effectiveNodesRef.current[nodeId]?.effectiveVars ?? {};
       const nextVars = { ...baseVars, ...patch };
       setOverlay((prev) => ({
@@ -1455,7 +1604,7 @@ function HybridCanvasWorkspace() {
         });
       }
     },
-    [executeUnifiedWidgetScript]
+    [executeUnifiedWidgetScript, pushHistory]
   );
 
   const handleScriptInputSubmit = useCallback(
@@ -1468,6 +1617,7 @@ function HybridCanvasWorkspace() {
   const handleToggleLock = useCallback((nodeId: string) => {
     const cur = effectiveNodesRef.current[nodeId];
     if (!cur) return;
+    pushHistory();
     const nextLocked = !cur.locked;
     setOverlay((prev) => {
       const cleanedRt = clearConflictingRuntimeVars(prev.runtimeVars[nodeId], { locked: nextLocked });
@@ -1486,7 +1636,7 @@ function HybridCanvasWorkspace() {
     });
     setChunkSyncTick((t) => t + 1);
     setStatusLog(nextLocked ? `已锁定「${cur.title}」（防误拖，按钮与输入框仍可操作）` : `已解锁「${cur.title}」`);
-  }, []);
+  }, [pushHistory]);
 
   const handleRunScriptRefresh = useCallback(
     (nodeId: string) => {
@@ -1532,6 +1682,7 @@ function HybridCanvasWorkspace() {
   }, [executeUnifiedWidgetScript]);
 
   const handlePatchNode = useCallback((nodeId: string, patch: Partial<EffectiveBlueprintNode>) => {
+    pushHistory();
     setOverlay((prev) => {
       const cleanedRt = clearConflictingRuntimeVars(prev.runtimeVars[nodeId], patch);
       const nextRuntimeVars =
@@ -1574,7 +1725,7 @@ function HybridCanvasWorkspace() {
     ) {
       setChunkSyncTick((t) => t + 1);
     }
-  }, []);
+  }, [pushHistory]);
 
   const handleEditTitle = useCallback(
     (nodeId: string, nextTitle: string) => {
@@ -1622,7 +1773,6 @@ function HybridCanvasWorkspace() {
 
   const handleResizeNode = useCallback(
     (nodeId: string, width: number, height: number, x?: number, y?: number) => {
-      pushHistory();
       handlePatchNode(nodeId, {
         width,
         height,
@@ -1631,10 +1781,11 @@ function HybridCanvasWorkspace() {
       });
       setChunkSyncTick((t) => t + 1);
     },
-    [handlePatchNode, pushHistory]
+    [handlePatchNode]
   );
 
   const handleUpdateDefaultVar = useCallback((nodeId: string, key: string, rawVal: string) => {
+    pushHistory();
     let parsed: unknown = rawVal;
     if (rawVal === 'true') parsed = true;
     else if (rawVal === 'false') parsed = false;
@@ -1679,9 +1830,10 @@ function HybridCanvasWorkspace() {
         nextEffectiveVars
       );
     }
-  }, [executeUnifiedWidgetScript]);
+  }, [executeUnifiedWidgetScript, pushHistory]);
 
   const handleDeleteDefaultVar = useCallback((nodeId: string, key: string) => {
+    pushHistory();
     const prevEntity = effectiveNodesRef.current[nodeId];
     const prevVars = prevEntity ? { ...prevEntity.effectiveVars } : {};
     const nextEffectiveVars = { ...prevVars };
@@ -1721,7 +1873,7 @@ function HybridCanvasWorkspace() {
         nextEffectiveVars
       );
     }
-  }, [executeUnifiedWidgetScript]);
+  }, [executeUnifiedWidgetScript, pushHistory]);
 
   const handleDuplicateNode = useCallback((nodeId: string) => {
     const src = effectiveNodesRef.current[nodeId];
@@ -1881,6 +2033,7 @@ function HybridCanvasWorkspace() {
   }, []);
 
   const handleUpdateAnnotation = useCallback((id: string, patch: Partial<CanvasAnnotation>) => {
+    pushHistory();
     setBase((prev) => {
       const cur = prev.annotations[id];
       if (!cur) return prev;
@@ -1893,7 +2046,7 @@ function HybridCanvasWorkspace() {
         },
       };
     });
-  }, []);
+  }, [pushHistory]);
 
   const handleDeleteAnnotation = useCallback((id: string) => {
     pushHistory();
@@ -1975,6 +2128,11 @@ function HybridCanvasWorkspace() {
             onRunButton: handleRunButton,
             onRunScriptClick: handleRunScriptClick,
             onScriptInputChange: handleScriptInputChange,
+            onSliderChange: handleSliderChange,
+            onSliderCommit: handleSliderCommit,
+            onPad2DChange: handlePad2DChange,
+            onPad2DCommit: handlePad2DCommit,
+            onImageButtonTrigger: handleImageButtonTrigger,
             onBatchUpdateVars: handleBatchUpdateRuntimeVars,
             onScriptInputSubmit: handleScriptInputSubmit,
             onToggleLock: handleToggleLock,
@@ -2010,6 +2168,11 @@ function HybridCanvasWorkspace() {
     handleRunButton,
     handleRunScriptClick,
     handleScriptInputChange,
+    handleSliderChange,
+    handleSliderCommit,
+    handlePad2DChange,
+    handlePad2DCommit,
+    handleImageButtonTrigger,
     handleBatchUpdateRuntimeVars,
     handleScriptInputSubmit,
     handleToggleLock,

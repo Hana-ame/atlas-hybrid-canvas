@@ -25,7 +25,7 @@ import {
   renderClientPdfPageImage,
   unpackPdfBytesInBrowser,
 } from '../core/pdfClientUnpack';
-import { proxyHeaders } from '../core/apiClient';
+import { appendProxyTokenQuery, proxyHeaders } from '../core/apiClient';
 
 const MAX_PDF_UPLOAD_BYTES = 50 * 1024 * 1024;
 
@@ -94,7 +94,8 @@ function PdfViewerBlockInner({
   }, [stageWidth, canvasZoom]);
 
   const activeDpi = pickPdfRenderDpi(targetPixelWidth);
-  const serverImageSrc = buildPdfPageImageUrl(url, safePage, activeDpi);
+  const rawServerImageSrc = buildPdfPageImageUrl(url, safePage, activeDpi);
+  const serverImageSrc = rawServerImageSrc ? appendProxyTokenQuery(rawServerImageSrc) : null;
   const isServerLocked = Boolean(serverImageSrc);
 
   const [urlDraft, setUrlDraft] = useState(isServerLocked ? '' : url);
@@ -190,7 +191,8 @@ function PdfViewerBlockInner({
       if (safePage > 1) neighbors.push(safePage - 1);
       for (const np of neighbors) {
         if (cancelled) break;
-        const neighborSrc = buildPdfPageImageUrl(url, np, activeDpi);
+        const rawNeighborSrc = buildPdfPageImageUrl(url, np, activeDpi);
+        const neighborSrc = rawNeighborSrc ? appendProxyTokenQuery(rawNeighborSrc) : null;
         if (neighborSrc) {
           void preloadDecodedImage(neighborSrc, preloadedSetRef.current);
         }
@@ -226,7 +228,7 @@ function PdfViewerBlockInner({
     let cancelled = false;
     void (async () => {
       try {
-        const resp = await fetch(`/api/pdf/${m[1]}/meta`);
+        const resp = await fetch(`/api/pdf/${m[1]}/meta`, { headers: proxyHeaders() });
         const data = (await resp.json().catch(() => null)) as { ok?: boolean; totalPages?: number } | null;
         if (!cancelled && resp.ok && data?.ok && data.totalPages && data.totalPages > 0) {
           onChangeTotalPages?.(data.totalPages);

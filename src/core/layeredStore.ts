@@ -40,6 +40,12 @@ export function sanitizeEphemeralBlobVars(
       nextVars.pdfUrl = '';
       nextVars.pdfTotalPages = 0;
     }
+    if (typeof nextVars.imageUrl === 'string' && nextVars.imageUrl.startsWith('blob:')) {
+      nextVars.imageUrl = '';
+    }
+    if (typeof nextVars.videoUrl === 'string' && nextVars.videoUrl.startsWith('blob:')) {
+      nextVars.videoUrl = '';
+    }
     cleaned[nodeId] = nextVars;
   }
   return cleaned;

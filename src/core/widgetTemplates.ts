@@ -517,6 +517,209 @@ onSubmit('bcInput', async (v) => doBroadcast(v));`,
     },
   },
   {
+    id: 'tpl-image-node',
+    name: '图片节点',
+    description: '支持图片链接与本地上传（<=4MB 持久化）、完整/裁切切换与大图灯箱预览',
+    group: '注释与基础',
+    kind: 'node',
+    color: '#4F46E5',
+    nodePreset: {
+      title: '图片画板',
+      body: '',
+      width: 360,
+      height: 270,
+      category: '图片',
+      color: '#4F46E5',
+      defaultVars: {
+        imageUrl: "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 220'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%23EEF2FF'/%3E%3Cstop offset='100%25' stop-color='%23E0E7FF'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='360' height='220' fill='url(%23g)'/%3E%3Ccircle cx='118' cy='86' r='30' fill='%234F46E5' fill-opacity='0.22'/%3E%3Cpath d='M52 174 L142 104 L212 152 L262 118 L314 174 Z' fill='%234F46E5' fill-opacity='0.3'/%3E%3Ctext x='180' y='198' text-anchor='middle' font-family='sans-serif' font-size='13' fill='%23312E81'%3E悬停右上角可更换图片 · 支持本地上传与大图预览%3C/text%3E%3C/svg%3E",
+        imageFit: 'contain',
+        imageCaption: '示例图片（悬停右上角可换图或全屏预览）',
+      },
+      script: String.raw`vars.contents = [
+  { type: 'image', id: 'imgMain', bindUrl: 'imageUrl', bindFit: 'imageFit', bindCaption: 'imageCaption' }
+];`,
+      inputPorts: [{ id: 'in-1', label: '输入' }],
+      outputPorts: [{ id: 'out-1', label: '输出' }],
+    },
+  },
+  {
+    id: 'tpl-video-node',
+    name: '视频节点',
+    description: '支持 MP4/WebM 直链或本地视频上传，带倍速/循环/静音与离屏自动暂停',
+    group: '注释与基础',
+    kind: 'node',
+    color: '#E11D48',
+    nodePreset: {
+      title: '视频播放器',
+      body: '',
+      width: 420,
+      height: 300,
+      category: '视频',
+      color: '#E11D48',
+      defaultVars: {
+        videoUrl: '',
+        videoLoop: false,
+        videoMuted: false,
+      },
+      script: String.raw`vars.contents = [
+  { type: 'video', id: 'vidMain', bindUrl: 'videoUrl', bindLoop: 'videoLoop', bindMuted: 'videoMuted' }
+];`,
+      inputPorts: [{ id: 'in-1', label: '输入' }],
+      outputPorts: [{ id: 'out-1', label: '输出' }],
+    },
+  },
+  {
+    id: 'tpl-slider-node',
+    name: '拖动条控件',
+    description: '实时拖动调节数值并触发脚本 onChange，可连线驱动下游节点参数',
+    group: '知识地图',
+    kind: 'node',
+    color: '#2563EB',
+    nodePreset: {
+      title: '参数拖动条',
+      body: '',
+      width: 320,
+      height: 200,
+      category: '滑块',
+      color: '#2563EB',
+      defaultVars: {
+        value: 50,
+        scale: 1.0,
+      },
+      script: String.raw`const v = Number(vars.value ?? 50);
+const s = Number(vars.scale ?? 1.0);
+const result = Math.round(v * s * 10) / 10;
+
+vars.contents = [
+  { type: 'slider', id: 'sVal', bind: 'value', label: '主参数', min: 0, max: 100, step: 1, unit: '%', accentColor: '#2563EB' },
+  { type: 'slider', id: 'sScale', bind: 'scale', label: '倍率系数', min: 0.5, max: 3, step: 0.1, unit: '×', accentColor: '#0D9488' },
+  { type: 'text', text: '综合输出：' + result, align: 'center', color: '#1E293B', fontSize: 12, bold: true }
+];
+
+onChange(['value', 'scale'], () => {
+  const nextVal = Number(vars.value ?? 50);
+  const nextScale = Number(vars.scale ?? 1.0);
+  vars.output = Math.round(nextVal * nextScale * 10) / 10;
+});`,
+      inputPorts: [],
+      outputPorts: [{ id: 'out-1', label: '数值输出' }],
+    },
+  },
+  {
+    id: 'tpl-pad2d-node',
+    name: '2D Pad 拖动板',
+    description: '深色二维触控板（十字准星 + 发光拖拽球 + 双击归中），可实时输出 X/Y 坐标联动下游',
+    group: '知识地图',
+    kind: 'node',
+    color: '#D97706',
+    nodePreset: {
+      title: '2D Pad 控制器',
+      body: '',
+      width: 310,
+      height: 310,
+      category: '2D Pad',
+      color: '#D97706',
+      defaultVars: {
+        padX: 0,
+        padY: 0,
+      },
+      script: String.raw`const x = Number(vars.padX ?? 0);
+const y = Number(vars.padY ?? 0);
+
+vars.contents = [
+  {
+    type: 'pad2d',
+    id: 'xyPad',
+    label: '二维坐标触控板',
+    labelX: 'X',
+    labelY: 'Y',
+    bindX: 'padX',
+    bindY: 'padY',
+    minX: -100,
+    maxX: 100,
+    stepX: 1,
+    minY: -100,
+    maxY: 100,
+    stepY: 1,
+    height: 176,
+    accentColor: '#F59E0B'
+  },
+  {
+    type: 'text',
+    text: '当前向量：(' + x + ', ' + y + ')',
+    align: 'center',
+    color: '#334155',
+    fontSize: 12,
+    bold: true
+  }
+];
+
+onChange(['padX', 'padY'], () => {
+  const vx = Number(vars.padX ?? 0);
+  const vy = Number(vars.padY ?? 0);
+  vars.magnitude = Math.round(Math.hypot(vx, vy) * 10) / 10;
+});`,
+      inputPorts: [],
+      outputPorts: [{ id: 'out-1', label: 'XY 输出' }],
+    },
+  },
+  {
+    id: 'tpl-image-button-node',
+    name: '图片按钮 (4态)',
+    description: '用图片替代按钮，支持 on / off / hover / click 四种状态贴图与悬停快捷换图',
+    group: '知识地图',
+    kind: 'node',
+    color: '#059669',
+    nodePreset: {
+      title: '四态图片按钮',
+      body: '',
+      width: 300,
+      height: 215,
+      category: '图钮',
+      color: '#059669',
+      defaultVars: {
+        powerOn: false,
+        clicks: 0,
+        btnOffImage: "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 88'%3E%3Crect x='4' y='6' width='232' height='76' rx='18' fill='%23334155' stroke='%2364748B' stroke-width='3'/%3E%3Ccircle cx='46' cy='44' r='12' fill='%2394A3B8'/%3E%3Ctext x='136' y='50' text-anchor='middle' font-family='sans-serif' font-size='18' font-weight='700' fill='%23E2E8F0'%3EOFF · 待机%3C/text%3E%3C/svg%3E",
+        btnOnImage: "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 88'%3E%3Crect x='4' y='6' width='232' height='76' rx='18' fill='%23059669' stroke='%2334D399' stroke-width='3'/%3E%3Ccircle cx='46' cy='44' r='12' fill='%23A7F3D0'/%3E%3Ctext x='136' y='50' text-anchor='middle' font-family='sans-serif' font-size='18' font-weight='700' fill='%23FFFFFF'%3EON · 已开启%3C/text%3E%3C/svg%3E",
+        btnHoverImage: "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 88'%3E%3Crect x='4' y='6' width='232' height='76' rx='18' fill='%234F46E5' stroke='%23A5B4FC' stroke-width='3'/%3E%3Ccircle cx='46' cy='44' r='12' fill='%23E0E7FF'/%3E%3Ctext x='136' y='50' text-anchor='middle' font-family='sans-serif' font-size='18' font-weight='700' fill='%23FFFFFF'%3EHOVER · 悬停%3C/text%3E%3C/svg%3E",
+        btnClickImage: "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 88'%3E%3Crect x='6' y='10' width='228' height='70' rx='16' fill='%23D97706' stroke='%23FDE68A' stroke-width='3'/%3E%3Ccircle cx='46' cy='45' r='12' fill='%23FEF3C7'/%3E%3Ctext x='136' y='51' text-anchor='middle' font-family='sans-serif' font-size='18' font-weight='700' fill='%23FFFFFF'%3ECLICK · 按下%3C/text%3E%3C/svg%3E",
+      },
+      script: String.raw`const isOn = Boolean(vars.powerOn);
+const clicks = Number(vars.clicks ?? 0);
+
+vars.contents = [
+  {
+    type: 'image_button',
+    id: 'imgToggleBtn',
+    bind: 'powerOn',
+    label: isOn ? '已开启' : '未开启',
+    toggle: true,
+    bindOffImage: 'btnOffImage',
+    bindOnImage: 'btnOnImage',
+    bindHoverImage: 'btnHoverImage',
+    bindClickImage: 'btnClickImage',
+    height: 92,
+    showStateBadge: true
+  },
+  {
+    type: 'text',
+    text: '状态：' + (isOn ? 'ON' : 'OFF') + ' · 累计点击 ' + clicks + ' 次',
+    align: 'center',
+    color: isOn ? '#047857' : '#475569',
+    fontSize: 12,
+    bold: true
+  }
+];
+
+on('imgToggleBtn', () => {
+  vars.clicks = Number(vars.clicks ?? 0) + 1;
+});`,
+      inputPorts: [{ id: 'in-1', label: '输入' }],
+      outputPorts: [{ id: 'out-1', label: '状态输出' }],
+    },
+  },
+  {
     id: 'tpl-ann-image',
     name: '背景插图（等比不拉伸）',
     description: '所见即所得插图组件，支持换本地图与设背景色块',
@@ -540,8 +743,22 @@ onSubmit('bcInput', async (v) => doBroadcast(v));`,
 ];
 
 export async function loadCustomTemplates(): Promise<BlueprintTemplate[]> {
-  const saved = await idbGet<BlueprintTemplate[]>(CUSTOM_TEMPLATES_KEY);
-  return Array.isArray(saved) ? saved : [];
+  const saved = await idbGet<unknown>(CUSTOM_TEMPLATES_KEY);
+  if (!Array.isArray(saved)) return [];
+  return saved.filter((item): item is BlueprintTemplate => {
+    if (!item || typeof item !== 'object') return false;
+    const t = item as Partial<BlueprintTemplate>;
+    if (typeof t.id !== 'string' || !t.id.trim()) return false;
+    if (typeof t.name !== 'string' || !t.name.trim()) return false;
+    if (typeof t.color !== 'string') return false;
+    if (t.kind === 'node') {
+      return Boolean(t.nodePreset && typeof t.nodePreset === 'object' && typeof t.nodePreset.title === 'string');
+    }
+    if (t.kind === 'annotation') {
+      return Boolean(t.annotationPreset && typeof t.annotationPreset === 'object');
+    }
+    return false;
+  });
 }
 
 export async function saveCustomTemplates(templates: BlueprintTemplate[]): Promise<void> {

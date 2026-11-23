@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Atlas Hybrid Canvas v65 架构审阅报告</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    /* Utilitarian · Technical Architecture Review · answer-first compact hero · 4 open sections · IBM Plex Sans + IBM Plex Mono + Noto Sans SC · cool technical grey #F4F6F8 + cobalt #1D4ED8 + teal #0F766E · 0px image radius · 1 emphasis metric strip · layered SVG blueprint + horizontal complexity bar chart + star topology SVG */
+    :root {
+      --paper: #F4F6F8;
+      --paper-alt: #EAEFF4;
+      --ink: #0F172A;
+      --ink2: #1E293B;
+      --mute: #475569;
+      --hair: #CBD5E1;
+      --accent: #1D4ED8;
+      --accent-text: #1E3A8A;
+      --accent-2: #0F766E;
+      --accent-2-text: #115E59;
+      --warn: #B45309;
+      --warn-text: #78350F;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: 'IBM Plex Sans', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 16px;
+      line-height: 1.68;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    main {
+      padding: 56px clamp(24px, 8vw, 108px) 84px;
+    }
+
+    h1 {
+      margin: 0 0 18px;
+      font-size: clamp(34px, 4.2vw, 50px);
+      line-height: 1.16;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      color: var(--ink);
+      text-wrap: balance;
+      max-width: 24ch;
+    }
+
+    .deck {
+      margin: 0 0 32px;
+      font-size: 18px;
+      line-height: 1.6;
+      color: var(--ink2);
+      max-width: 66ch;
+    }
+
+    /* Single emphasis metric strip — open hairlines, 0 boxes */
+    .metrics-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 24px;
+      padding: 22px 0;
+      border-top: 2px solid var(--ink);
+      border-bottom: 1px solid var(--hair);
+      margin-bottom: 56px;
+    }
+
+    .metric-val {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: clamp(28px, 3vw, 40px);
+      font-weight: 500;
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+      color: var(--ink);
+      white-space: nowrap;
+    }
+
+    .metric-val.focal {
+      color: var(--accent-text);
+    }
+
+    .metric-val.warn {
+      color: var(--warn-text);
+    }
+
+    .metric-label {
+      margin-top: 6px;
+      font-size: 13px;
+      color: var(--mute);
+      line-height: 1.4;
+    }
+
+    section.sec {
+      margin-top: 68px;
+      padding-top: 28px;
+      border-top: 1px solid var(--hair);
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: clamp(24px, 2.5vw, 30px);
+      line-height: 1.25;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--ink);
+      text-wrap: balance;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 17px;
+      line-height: 1.35;
+      font-weight: 600;
+      color: var(--ink);
+    }
+
+    p {
+      margin: 0 0 16px;
+      color: var(--ink2);
+      max-width: 68ch;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: minmax(0, 4fr) minmax(0, 8fr);
+      gap: 32px;
+      align-items: start;
+    }
+
+    .cols-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 28px;
+      margin-top: 24px;
+      padding-top: 20px;
+      border-top: 1px solid var(--hair);
+    }
+
+    .cols-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 32px;
+      margin-top: 20px;
+    }
+
+    figure {
+      margin: 28px 0 12px;
+      padding: 0;
+    }
+
+    .fig-title {
+      margin: 0 0 12px;
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--ink);
+      line-height: 1.35;
+    }
+
+    figcaption {
+      margin-top: 10px;
+      font-size: 13px;
+      color: var(--mute);
+      line-height: 1.5;
+    }
+
+    svg.diagram {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    /* Full-bleed band (max 1) */
+    .band {
+      margin: 68px calc(-1 * clamp(24px, 8vw, 108px)) 0;
+      padding: 48px clamp(24px, 8vw, 108px);
+      background: var(--paper-alt);
+      border-top: 1px solid var(--hair);
+      border-bottom: 1px solid var(--hair);
+    }
+
+    .band > h2 {
+      margin-top: 0;
+    }
+
+    /* Open tables — no zebra stripes, crisp hairlines */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 24px 0 8px;
+      font-size: 14.5px;
+      line-height: 1.55;
+    }
+
+    thead th {
+      text-align: left;
+      font-family: 'IBM Plex Mono', 'Noto Sans SC', monospace;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--mute);
+      padding: 10px 14px 10px 0;
+      border-bottom: 2px solid var(--ink);
+      white-space: nowrap;
+    }
+
+    tbody td {
+      padding: 14px 14px 14px 0;
+      border-bottom: 1px solid var(--hair);
+      vertical-align: top;
+      color: var(--ink2);
+    }
+
+    tbody td:first-child {
+      font-weight: 600;
+      color: var(--ink);
+      white-space: nowrap;
+    }
+
+    .mono {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .score-good {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--accent-2-text);
+      white-space: nowrap;
+    }
+
+    .score-mid {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--warn-text);
+      white-space: nowrap;
+    }
+
+    code {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.9em;
+      color: var(--accent-text);
+    }
+
+    ul.clean {
+      margin: 10px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    ul.clean li {
+      position: relative;
+      padding-left: 16px;
+      margin-bottom: 10px;
+      color: var(--ink2);
+      font-size: 15px;
+    }
+
+    ul.clean li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 10px;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+
+    blockquote.verdict {
+      margin: 48px 0 0;
+      padding: 20px 0 20px 24px;
+      border-left: 3px solid var(--accent);
+      font-size: 20px;
+      line-height: 1.5;
+      color: var(--ink);
+      max-width: 58ch;
+      font-weight: 500;
+    }
+
+    @media (max-width: 860px) {
+      .metrics-strip {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .split, .cols-3, .cols-2 {
+        grid-template-columns: 1fr;
+      }
+      table {
+        display: block;
+        overflow-x: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Atlas Hybrid Canvas v65 架构审阅：主干稳健，瓶颈集中在状态拆分与持久化边界</h1>
+    <p class="deck">
+      对当前 v65 仓库（<code>src/</code> 43 文件、<code>server/</code> 4 文件、<code>tests/</code> 17 文件）的完整结构化审阅。混合渲染、隔离沙箱、统一双模路由与出站 SSRF 防护已达到工程可用标准，下一阶段应优先拆解 <code>App.tsx</code> 并补齐服务端持久化。
+    </p>
+
+    <div class="metrics-strip">
+      <div>
+        <div class="metric-val">16,105</div>
+        <div class="metric-label">生产源码总行数（src 14,097 + server 2,008）</div>
+      </div>
+      <div>
+        <div class="metric-val focal">85 / 85</div>
+        <div class="metric-label">核心与前端单元测试通过（17 个测试文件）</div>
+      </div>
+      <div>
+        <div class="metric-val warn">21.0%</div>
+        <div class="metric-label">前端代码集中于单文件 App.tsx（2,954 行）</div>
+      </div>
+      <div>
+        <div class="metric-val">697 kB</div>
+        <div class="metric-label">Vite 生产主包体积（gzip 后 214 kB）</div>
+      </div>
+    </div>
+
+    <!-- Section 1: End-to-End Architecture Blueprint -->
+    <section class="sec">
+      <h2>双层状态驱动混合渲染，统一 mockApi 收口全部接口流量</h2>
+      <p>
+        系统由四条解耦良好的主干组成：前端以 <code>BaseBlueprint</code>（权威蓝图）加 <code>LocalOverlayState</code>（个人叠加层）维持渲染与交互；所有控件脚本在一次性 Web Worker 中运行并受信任弹窗门禁约束；v61 起 <code>src/main.tsx</code> 无条件挂载 <code>mockApi</code>，使开发态与生产态完全共享同一套 <code>VITE_BACKEND_WS_URL</code> 双模路由规则；后端以单进程 Express 加 WebSocket 承载蓝图、多 DPI PDF 解包、固定 IP 防重绑定代理和多人房间。
+      </p>
+
+      <figure>
+        <div class="fig-title">四层架构实现渲染、沙箱、双模路由与单进程后端的清晰分层</div>
+        <svg class="diagram" viewBox="0 0 720 450" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Atlas Hybrid Canvas v65 四层系统架构图">
+          <defs>
+            <marker id="arr-b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 1 1.5 L 8.5 5 L 1 8.5" fill="none" stroke="#475569" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+            </marker>
+          </defs>
+
+          <!-- Layer labels on left -->
+          <text x="16" y="54" font-family="IBM Plex Mono, Noto Sans SC, monospace" font-size="13" fill="#475569">渲染层</text>
+          <text x="16" y="164" font-family="IBM Plex Mono, Noto Sans SC, monospace" font-size="13" fill="#475569">状态与沙箱</text>
+          <text x="16" y="274" font-family="IBM Plex Mono, Noto Sans SC, monospace" font-size="13" fill="#475569">双模路由</text>
+          <text x="16" y="384" font-family="IBM Plex Mono, Noto Sans SC, monospace" font-size="13" fill="#475569">后端服务</text>
+
+          <!-- Subtle horizontal layer dividers -->
+          <line x1="16" y1="106" x2="704" y2="106" stroke="#CBD5E1" stroke-width="1" stroke-dasharray="4 4" />
+          <line x1="16" y1="216" x2="704" y2="216" stroke="#CBD5E1" stroke-width="1" stroke-dasharray="4 4" />
+          <line x1="16" y1="326" x2="704" y2="326" stroke="#CBD5E1" stroke-width="1" stroke-dasharray="4 4" />
+
+          <!-- Layer 1: Rendering -->
+          <rect x="104" y="20" width="186" height="68" rx="10" fill="#FFFFFF" stroke="#1D4ED8" stroke-width="1.5" />
+          <text x="197" y="48" text-anchor="middle" font-size="14" font-weight="600" fill="#0F172A">React Flow 近景 DOM</text>
+          <text x="197" y="69" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="12" fill="#475569">≥38% · 10类声明式控件</text>
+
+          <rect x="316" y="20" width="176" height="68" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.4" />
+          <text x="404" y="48" text-anchor="middle" font-size="14" font-weight="600" fill="#0F172A">三环裁剪与滞回 LOD</text>
+          <text x="404" y="69" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="12" fill="#475569">viewportCulling.ts</text>
+
+          <rect x="518" y="20" width="186" height="68" rx="10" fill="#FFFFFF" stroke="#0F766E" stroke-width="1.5" />
+          <text x="611" y="48" text-anchor="middle" font-size="14" font-weight="600" fill="#0F172A">离屏瓦片画布层</text>
+          <text x="611" y="69" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="12" fill="#475569">&lt;32% · 512px LRU 缓存</text>
+
+          <!-- Layer 2: State & Sandbox -->
+          <rect x="104" y="130" width="186" height="68" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.4" />
+          <text x="197" y="158" text-anchor="middle" font-size="14" font-weight="600" fill="#0F172A">本地持久与跨页签</text>
+          <text x="197" y="179" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="12" fill="#475569">IndexedDB + Broadcast</text>
+
+          <rect x="316" y="130" width="176" height="68" rx="10" fill="#EFF6FF" stroke="#1D4ED8" stroke-width="1.6" />
+          <text x="404" y="158" text-anchor="middle" font-size="14" font-weight="600" fill="#1E3A8A">双层状态 App.tsx</text>
+          <text x="404" y="179" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="12" fill="#1E3A8A">Base + Overlay + 撤销栈</text>
+
+          <rect x="518" y="130" width="186" height="68" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.4" />
+          <text x="611" y="158" text-anchor="middle" font-size="14" font-weight="600" fill="#0F172A">隔离脚本沙箱</text>
+          <text x="611" y="179" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="12" fill="#475569">一次性 Worker · 信任门禁</text>
+
+          <!-- Layer 3: Unified Routing -->
+          <rect x="104" y="240" width="216" height="68" rx="10" fill="#EFF6FF" stroke="#1D4ED8" stroke-width="1.6" />
+          <text x="212" y="268" text-anchor="middle" font-size="14" font-weight="600" fill="#1E3A8A">mockApi 统一拦截器</text>
+          <text x="212" y="289" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="12" fill="#1E3A8A">DEV/PROD 恒挂载 /api/*</text>
+
+          <rect x="356" y="240" width="160" height="68" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.4" />
+          <text x="436" y="268" text-anchor="middle" font-size="14" font-weight="600" fill="#0F172A">浏览器本地兜底</text>
+          <text x="436" y="289" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="12" fill="#475569">无WS · apiCore+pdf.js</text>
+
+          <rect x="540" y="240" width="164" height="68" rx="10" fill="#FFFFFF" stroke="#0F766E" stroke-width="1.5" />
+          <text x="622" y="268" text-anchor="middle" font-size="14" font-weight="600" fill="#0F172A">RpcClient 转发</text>
+          <text x="622" y="289" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="12" fill="#475569">有WS · ?room=__rpc__</text>
+
+          <!-- Layer 4: Backend -->
+          <rect x="104" y="350" width="276" height="72" rx="10" fill="#FFFFFF" stroke="#0F766E" stroke-width="1.5" />
+          <text x="242" y="379" text-anchor="middle" font-size="14" font-weight="600" fill="#0F172A">Express REST + 防重绑定代理</text>
+          <text x="242" y="401" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="12" fill="#475569">apiCore · pinnedOutbound · pdfUnpack</text>
+
+          <rect x="412" y="350" width="292" height="72" rx="10" fill="#F0FDFA" stroke="#0F766E" stroke-width="1.6" />
+          <text x="558" y="379" text-anchor="middle" font-size="14" font-weight="600" fill="#115E59">WebSocket 房间与 RPC 网关</text>
+          <text x="558" y="401" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="12" fill="#115E59">roomServer.ts · LWW(rev,cid) · 72MB RPC</text>
+
+          <!-- Arrows -->
+          <path d="M 310 54 L 296 54" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#arr-b)" />
+          <path d="M 498 54 L 512 54" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#arr-b)" />
+          <path d="M 404 124 L 404 94" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#arr-b)" />
+          <path d="M 310 164 L 296 164" stroke="#475569" stroke-width="1.5" fill="none" marker-start="url(#arr-b)" marker-end="url(#arr-b)" />
+          <path d="M 498 164 L 512 164" stroke="#475569" stroke-width="1.5" fill="none" marker-start="url(#arr-b)" marker-end="url(#arr-b)" />
+          <path d="M 352 204 L 352 222 L 212 222 L 212 234" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#arr-b)" />
+          <path d="M 326 274 L 350 274" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#arr-b)" />
+          <path d="M 212 312 L 212 320 L 576 320 L 576 312" stroke="#0F766E" stroke-width="1.5" stroke-dasharray="3 3" fill="none" marker-end="url(#arr-b)" />
+          <path d="M 642 312 L 642 344" stroke="#0F766E" stroke-width="1.5" fill="none" marker-end="url(#arr-b)" />
+          <path d="M 406 386 L 386 386" stroke="#0F766E" stroke-width="1.5" fill="none" marker-end="url(#arr-b)" />
+        </svg>
+        <figcaption>依据 Atlas Hybrid Canvas v65 源码绘制；v61 后前端不再区分 DEV 直连与 PROD 拦截，统一由 <code>mockApi</code> 按 <code>VITE_BACKEND_WS_URL</code> 分发。</figcaption>
+      </figure>
+    </section>
+
+    <!-- Section 2: Complexity Hotspots -->
+    <section class="sec">
+      <h2>App.tsx 独占 21% 前端代码，已成为首要维护瓶颈</h2>
+      <div class="split">
+        <div>
+          <p>
+            按源码行数统计，核心算法模块（<code>chunkManager</code>、<code>viewportCulling</code>、<code>crdt</code>、<code>mediaHelper</code>）均保持在 46–197 行的健康体量，内聚度极高。
+          </p>
+          <p>
+            失衡点集中在最上层的编排组件：<code>App.tsx</code> 达到 2,954 行，同时承担蓝图状态、撤销栈、协同房间同步、Worker 调度、控件回调与快捷键；<code>WidgetNode.tsx</code> 随新控件增加也涨至 880 行。
+          </p>
+        </div>
+        <div>
+          <figure style="margin-top:0">
+            <div class="fig-title">v65 源码行数排名前七模块中，App.tsx 超过第二名三倍以上</div>
+            <svg class="diagram" viewBox="0 0 680 390" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="v65 源码行数排名前七模块横向条形图">
+              <!-- Gridlines -->
+              <line x1="210" y1="24" x2="210" y2="344" stroke="#CBD5E1" stroke-width="1" />
+              <line x1="330" y1="24" x2="330" y2="344" stroke="#CBD5E1" stroke-width="1" stroke-dasharray="3 3" />
+              <line x1="450" y1="24" x2="450" y2="344" stroke="#CBD5E1" stroke-width="1" stroke-dasharray="3 3" />
+              <line x1="570" y1="24" x2="570" y2="344" stroke="#CBD5E1" stroke-width="1" stroke-dasharray="3 3" />
+
+              <!-- Scale: 3000 lines = 360px (0.12 px/line) -->
+              <!-- Row 1: App.tsx 2954 -> 354.5px -->
+              <text x="198" y="54" text-anchor="end" font-family="IBM Plex Mono, sans-serif" font-size="13.5" font-weight="500" fill="#0F172A">src/App.tsx</text>
+              <rect x="210" y="36" width="354" height="26" rx="4" fill="#1D4ED8" />
+              <text x="574" y="54" font-family="IBM Plex Mono, sans-serif" font-size="13.5" font-weight="500" fill="#1E3A8A">2,954 行</text>
+
+              <!-- Row 2: seedBlueprint.ts 915 -> 110px -->
+              <text x="198" y="100" text-anchor="end" font-family="IBM Plex Mono, sans-serif" font-size="13.5" fill="#1E293B">seedBlueprint.ts</text>
+              <rect x="210" y="82" width="110" height="26" rx="4" fill="#64748B" />
+              <text x="330" y="100" font-family="IBM Plex Mono, sans-serif" font-size="13.5" fill="#475569">915 行</text>
+
+              <!-- Row 3: WidgetNode.tsx 880 -> 106px -->
+              <text x="198" y="146" text-anchor="end" font-family="IBM Plex Mono, sans-serif" font-size="13.5" fill="#1E293B">WidgetNode.tsx</text>
+              <rect x="210" y="128" width="106" height="26" rx="4" fill="#B45309" />
+              <text x="326" y="146" font-family="IBM Plex Mono, sans-serif" font-size="13.5" fill="#78350F">880 行</text>
+
+              <!-- Row 4: server.ts 855 -> 103px -->
+              <text x="198" y="192" text-anchor="end" font-family="IBM Plex Mono, sans-serif" font-size="13.5" fill="#1E293B">server/server.ts</text>
+              <rect x="210" y="174" width="103" height="26" rx="4" fill="#0F766E" />
+              <text x="323" y="192" font-family="IBM Plex Mono, sans-serif" font-size="13.5" fill="#115E59">855 行</text>
+
+              <!-- Row 5: widgetTemplates.ts 790 -> 95px -->
+              <text x="198" y="238" text-anchor="end" font-family="IBM Plex Mono, sans-serif" font-size="13.5" fill="#1E293B">widgetTemplates.ts</text>
+              <rect x="210" y="220" width="95" height="26" rx="4" fill="#64748B" />
+              <text x="315" y="238" font-family="IBM Plex Mono, sans-serif" font-size="13.5" fill="#475569">790 行</text>
+
+              <!-- Row 6: scriptSandbox.ts 767 -> 92px -->
+              <text x="198" y="284" text-anchor="end" font-family="IBM Plex Mono, sans-serif" font-size="13.5" fill="#1E293B">scriptSandbox.ts</text>
+              <rect x="210" y="266" width="92" height="26" rx="4" fill="#0F766E" />
+              <text x="312" y="284" font-family="IBM Plex Mono, sans-serif" font-size="13.5" fill="#115E59">767 行</text>
+
+              <!-- Row 7: PdfViewerBlock.tsx 676 -> 81px -->
+              <text x="198" y="330" text-anchor="end" font-family="IBM Plex Mono, sans-serif" font-size="13.5" fill="#1E293B">PdfViewerBlock.tsx</text>
+              <rect x="210" y="312" width="81" height="26" rx="4" fill="#64748B" />
+              <text x="301" y="330" font-family="IBM Plex Mono, sans-serif" font-size="13.5" fill="#475569">676 行</text>
+
+              <!-- X-axis ticks -->
+              <text x="210" y="366" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="13" fill="#475569">0</text>
+              <text x="330" y="366" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="13" fill="#475569">1,000</text>
+              <text x="450" y="366" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="13" fill="#475569">2,000</text>
+              <text x="570" y="366" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="13" fill="#475569">3,000 行</text>
+            </svg>
+            <figcaption>单位：源码行数（统计自 v65 工作区全部 47 个 <code>src/</code> 与 <code>server/</code> 文件）。蓝色与琥珀色标出最需拆分的编排层热点。</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 3: Full-bleed Band for Multi-User Collaboration Topology -->
+    <div class="band">
+      <h2>星型 WebSocket Hub 严格隔离多人底座与个人叠加层</h2>
+      <p>
+        多人协同不走 P2P，而是通过 <code>server/roomServer.ts</code> 构成星型中心转发。服务端与前端运行逐行等价的 <code>(rev, cid)</code> LWW 裁决函数，新成员入房拉取全量 <code>state</code> 快照，远端推送的脚本变更必须经过 <code>ScriptTrustModal</code> 审核。同一用户的本机多页签则通过 <code>BroadcastChannel</code> 仅同步 <code>LocalOverlayState</code>，不上行到房间，从而彻底避免多用户互相覆盖个人临时变量。
+      </p>
+
+      <figure>
+        <div class="fig-title">三条正交数据链路分别承载多人实时增量、同机叠加层与权威发布</div>
+        <svg class="diagram" viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="多人协同星型网络拓扑图">
+          <defs>
+            <marker id="arr-c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 1 1.5 L 8.5 5 L 1 8.5" fill="none" stroke="#475569" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+            </marker>
+          </defs>
+
+          <!-- Top Clients -->
+          <rect x="20" y="16" width="194" height="66" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.4" />
+          <text x="117" y="43" text-anchor="middle" font-size="14" font-weight="600" fill="#0F172A">客户端 A (Tab 1)</text>
+          <text x="117" y="64" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="12" fill="#475569">roomClient + crdt.ts</text>
+
+          <rect x="253" y="16" width="194" height="66" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.4" />
+          <text x="350" y="43" text-anchor="middle" font-size="14" font-weight="600" fill="#0F172A">客户端 B (远端)</text>
+          <text x="350" y="64" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="12" fill="#475569">roomClient + TrustModal</text>
+
+          <rect x="486" y="16" width="194" height="66" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.4" />
+          <text x="583" y="43" text-anchor="middle" font-size="14" font-weight="600" fill="#0F172A">客户端 N (远端)</text>
+          <text x="583" y="64" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="12" fill="#475569">roomClient + crdt.ts</text>
+
+          <!-- Center Hub -->
+          <rect x="206" y="144" width="288" height="72" rx="10" fill="#EFF6FF" stroke="#1D4ED8" stroke-width="1.6" />
+          <text x="350" y="173" text-anchor="middle" font-size="14.5" font-weight="600" fill="#1E3A8A">星型中心 Hub (roomServer.ts)</text>
+          <text x="350" y="196" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="12" fill="#1E3A8A">/ws?room=R · 32人上限 · 4MB/帧</text>
+
+          <!-- Bottom Orthogonal Stores -->
+          <rect x="20" y="256" width="224" height="68" rx="10" fill="#FFFFFF" stroke="#0F766E" stroke-width="1.4" />
+          <text x="132" y="284" text-anchor="middle" font-size="14" font-weight="600" fill="#0F172A">同机页签 (Tab 2)</text>
+          <text x="132" y="305" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="12" fill="#115E59">BroadcastChannel · 仅个人叠加层</text>
+
+          <rect x="444" y="256" width="236" height="68" rx="10" fill="#FFFFFF" stroke="#B45309" stroke-width="1.4" />
+          <text x="562" y="284" text-anchor="middle" font-size="14" font-weight="600" fill="#0F172A">Express 内存权威库</text>
+          <text x="562" y="305" text-anchor="middle" font-family="IBM Plex Mono, sans-serif" font-size="12" fill="#78350F">sharedStore · 重启即清空</text>
+
+          <!-- Links -->
+          <path d="M 156 88 L 156 112 L 246 112 L 246 138" stroke="#1D4ED8" stroke-width="1.5" fill="none" marker-start="url(#arr-c)" marker-end="url(#arr-c)" />
+          <path d="M 350 88 L 350 138" stroke="#1D4ED8" stroke-width="1.5" fill="none" marker-start="url(#arr-c)" marker-end="url(#arr-c)" />
+          <path d="M 544 88 L 544 112 L 454 112 L 454 138" stroke="#1D4ED8" stroke-width="1.5" fill="none" marker-start="url(#arr-c)" marker-end="url(#arr-c)" />
+
+          <path d="M 78 88 L 78 250" stroke="#0F766E" stroke-width="1.5" stroke-dasharray="4 4" fill="none" marker-start="url(#arr-c)" marker-end="url(#arr-c)" />
+          <text x="88" y="182" font-size="12.5" fill="#115E59">本机同步</text>
+
+          <path d="M 620 88 L 620 250" stroke="#B45309" stroke-width="1.5" stroke-dasharray="4 4" fill="none" marker-start="url(#arr-c)" marker-end="url(#arr-c)" />
+          <text x="536" y="182" font-size="12.5" fill="#78350F">发布 / 拉取</text>
+        </svg>
+        <figcaption>WS 协同房间与 <code>?room=__rpc__</code> 共享端口但逻辑隔离；房间状态在无人后保留 30 分钟自动回收。</figcaption>
+      </figure>
+    </div>
+
+    <!-- Section 4: Architecture Scorecard & Refactoring Roadmap -->
+    <section class="sec">
+      <h2>六个核心维度的成熟度评估与优先重构路线</h2>
+      <p>
+        综合代码质量、安全纵深与长期演进成本，当前架构在安全与渲染上得分最高，在状态解耦与服务端持久化上存在明确短板。
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>架构维度</th>
+            <th>成熟度</th>
+            <th>已验证的工程优势</th>
+            <th>现存架构短板与风险</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>混合渲染引擎</td>
+            <td><span class="score-good">9 / 10</span></td>
+            <td>三环裁剪、滞回 LOD（&lt;32% / &gt;38%）、512×512 LRU 离屏瓦片、Portal 灯箱与离屏视频自动暂停</td>
+            <td>10 类声明式控件全部内联在 <code>WidgetNode.tsx</code> 单个 <code>if</code> 链中，新增控件需改动多处</td>
+          </tr>
+          <tr>
+            <td>双层状态与撤销</td>
+            <td><span class="score-mid">7 / 10</span></td>
+            <td><code>Base + Overlay</code> 边界清晰，v62 补齐全部撤销入栈，300ms 防抖写 IndexedDB</td>
+            <td><code>App.tsx</code> 2,954 行承载过多副作用与回调，改动局部逻辑容易波及全局依赖数组</td>
+          </tr>
+          <tr>
+            <td>安全与代理边界</td>
+            <td><span class="score-good">9 / 10</span></td>
+            <td>一次性 Worker 沙箱、远端脚本信任门禁、空白名单默认拒绝、固定 IP 防 DNS Rebinding、PDF 全路由 Token 校验</td>
+            <td>前端 <code>VITE_PROXY_CLIENT_TOKEN</code> 属构建期公开常量，仅能防匿名扫描，公网生产仍需接入用户态鉴权</td>
+          </tr>
+          <tr>
+            <td>双模 /api/* 路由</td>
+            <td><span class="score-good">8.5 / 10</span></td>
+            <td>v61 彻底统一 DEV 与 PROD 链路，有无后端共享同一份 <code>apiCore.ts</code>，断线自动降级</td>
+            <td>50MB PDF 经 WS RPC 需做 base64 编码（膨胀约 33% 至 ~67MB），接近 72MB 帧上限</td>
+          </tr>
+          <tr>
+            <td>实时协同与存储</td>
+            <td><span class="score-mid">6.5 / 10</span></td>
+            <td>前后端 <code>(rev, cid)</code> LWW 裁决一致，30s 心跳 + 4MB 单帧与 32 人上限防滥用</td>
+            <td><code>sharedStore</code> 与 <code>RoomState</code> 均为进程内存态（重启丢失）；整条记录 LWW 在多人同时改同卡不同字段时会互相覆盖</td>
+          </tr>
+          <tr>
+            <td>构建与可测试性</td>
+            <td><span class="score-good">8 / 10</span></td>
+            <td>85/85 单测覆盖核心算法、沙箱、安全代理、媒体控件与种子蓝图防重叠</td>
+            <td>主 JS 包 697 kB 尚未代码分割；<code>NodeInspectorPanel</code> 与部分重控件可按需懒加载</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="cols-3">
+        <div>
+          <h3>P0 · 拆解 App.tsx 与控件注册表</h3>
+          <ul class="clean">
+            <li>将 <code>App.tsx</code> 拆为 <code>useRoomSync</code>、<code>useScriptRuntime</code>、<code>useCanvasMutations</code> 三个独立 Hook，把顶层容器压回 800 行以内。</li>
+            <li>将 <code>WidgetNode.tsx</code> 改为声明式 Block 注册表，后续新增控件只需注册组件，不再修改主渲染树。</li>
+          </ul>
+        </div>
+        <div>
+          <h3>P1 · 服务端持久化与字段级合并</h3>
+          <ul class="clean">
+            <li>将 <code>sharedStore</code> 与房间快照落盘到 SQLite（单机零运维）或 PostgreSQL / Redis，消除进程重启丢数据风险。</li>
+            <li>将节点属性 LWW 从整卡粒度细化为字段级 <code>fieldRev</code>，消除同卡并发编辑互相覆盖。</li>
+          </ul>
+        </div>
+        <div>
+          <h3>P2 · 大文件传输与首屏分包</h3>
+          <ul class="clean">
+            <li><code>PdfViewerBlock</code>、<code>VideoNodeBlock</code> 与 <code>NodeInspectorPanel</code> 改用 <code>React.lazy</code> 分包，将首屏主包压至 350 kB 以下。</li>
+            <li>WS RPC 遇到二进制体改走二进制 WebSocket 帧（ArrayBuffer header + body），去掉 33% base64 膨胀。</li>
+          </ul>
+        </div>
+      </div>
+
+      <blockquote class="verdict">
+        总体结论：Atlas Hybrid Canvas v65 的底座设计扎实、安全防线完整，适合直接作为原型或中小团队工具投入使用；真正决定它能否走向生产级多人产品的，只剩三件事——拆小 <code>App.tsx</code>、把内存存储换成真实数据库、以及给大文件上传去掉 base64 包装。
+      </blockquote>
+    </section>
+  </main>
+</body>
+</html>

@@ -109,8 +109,13 @@ test('validateProxyTargetUrl() never falls back to allowedHosts when upstreamBas
   const arbitrary = validateProxyTargetUrl('https://evil.example.com/x', {
     upstreamBaseUrl: 'not a url',
   });
-  assert.equal(arbitrary.ok, true);
-  if (arbitrary.ok) assert.equal(arbitrary.injectSecret, false);
+  assert.equal(arbitrary.ok, false, '白名单为空且上游非法时必须拒绝，不得退化为开放代理');
+
+  const openProxy = validateProxyTargetUrl('https://evil.example.com/x', {
+    upstreamBaseUrl: '',
+    allowedHosts: [],
+  });
+  assert.equal(openProxy.ok, false, '未配置白名单与上游时默认拒绝任意公网代理');
 
   // 完全未配置 upstreamBaseUrl 时才按白名单语义放行密钥
   const legacy = validateProxyTargetUrl('https://httpbin.org/get', { allowedHosts: allowed });

@@ -416,8 +416,21 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
           ctx.stroke();
           ctx.setLineDash([]);
 
-          // 闭合入箭头
-          const angle = Math.atan2(ty2 - ty2, tx2 - (tx2 - dx));
+          // 闭合入箭头：取贝塞尔终点附近（t=0.92）割线方向，使箭头贴合曲线实际入角
+          const tRef = 0.92;
+          const uRef = 1 - tRef;
+          const prevX =
+            uRef * uRef * uRef * sx +
+            3 * uRef * uRef * tRef * (sx + dx) +
+            3 * uRef * tRef * tRef * (tx2 - dx) +
+            tRef * tRef * tRef * tx2;
+          const prevY =
+            uRef * uRef * uRef * sy +
+            3 * uRef * uRef * tRef * sy +
+            3 * uRef * tRef * tRef * ty2 +
+            tRef * tRef * tRef * ty2;
+          const angle =
+            tx2 === prevX && ty2 === prevY ? 0 : Math.atan2(ty2 - prevY, tx2 - prevX);
           ctx.beginPath();
           ctx.moveTo(tx2, ty2);
           ctx.lineTo(tx2 - arrowLen * Math.cos(angle - 0.42), ty2 - arrowLen * Math.sin(angle - 0.42));

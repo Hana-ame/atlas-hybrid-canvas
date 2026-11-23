@@ -246,7 +246,15 @@ export function validateProxyTargetUrl(
     ? Array.from(new Set([...allowedHosts, upstreamHost]))
     : [...allowedHosts];
 
-  if (allowedHosts.length > 0 && !hostMatchesAllowlist(host, effectiveAllowlist)) {
+  if (effectiveAllowlist.length === 0) {
+    return {
+      ok: false,
+      status: 403,
+      error: '安全限制：服务端未配置代理白名单 (PROXY_ALLOWED_HOSTS / PROXY_UPSTREAM_BASE_URL)，已拒绝开放代理',
+    };
+  }
+
+  if (!hostMatchesAllowlist(host, effectiveAllowlist)) {
     return {
       ok: false,
       status: 403,
