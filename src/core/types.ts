@@ -69,7 +69,19 @@ export interface ContentInputBlock {
   height?: number;
 }
 
-export type ContentLeafBlock = ContentTextBlock | ContentButtonBlock | ContentInputBlock;
+export interface ContentPdfBlock {
+  type: 'pdf';
+  id: string;
+  url?: string;
+  page?: number;
+  height?: number;
+  useProxy?: boolean;
+  bindUrl?: string;
+  bindPage?: string;
+  bindProxy?: string;
+}
+
+export type ContentLeafBlock = ContentTextBlock | ContentButtonBlock | ContentInputBlock | ContentPdfBlock;
 export type ContentFlowItem = ContentLeafBlock | ContentLeafBlock[];
 
 export interface BlueprintNode {

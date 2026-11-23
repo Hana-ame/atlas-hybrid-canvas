@@ -11,6 +11,34 @@ const CUSTOM_TEMPLATES_KEY = 'atlas-hybrid-custom-templates-v1';
 
 export const BUILTIN_TEMPLATES: BlueprintTemplate[] = [
   {
+    id: 'tpl-pdf-reader',
+    name: 'PDF 阅读器',
+    description: '支持 PDF URL、上传/服务端 Proxy、左右翻页与页码直达',
+    group: '知识地图',
+    kind: 'node',
+    color: '#DC2626',
+    nodePreset: {
+      width: 440,
+      height: 455,
+      title: 'PDF 阅读器',
+      body: '',
+      category: 'PDF',
+      color: '#DC2626',
+      defaultVars: { pdfUrl: '', pdfPage: 1, pdfUseProxy: false },
+      script: String.raw`const page = Math.max(1, Math.floor(Number(vars.pdfPage) || 1));
+vars.contents = [
+  {
+    type: 'pdf',
+    id: 'pdfView',
+    bindUrl: 'pdfUrl',
+    bindPage: 'pdfPage',
+    bindProxy: 'pdfUseProxy',
+    height: 300
+  }
+];`,
+    },
+  },
+  {
     id: 'tpl-var-morph',
     name: 'vars 控形示例',
     description: '脚本用 vars.type / title / width / height / pos 实时变形与位移',
@@ -79,12 +107,14 @@ on('resetAll', () => {
   vars.modeIdx = 0;
   vars.expanded = false;
   vars.titleDraft = '';
-  vars.type = modes[0].type;
-  vars.title = modes[0].title;
-  vars.color = modes[0].color;
-  vars.width = 380;
-  vars.height = 205;
-  vars.pos = { x: 960, y: 1005 };
+  delete vars.type;
+  delete vars.title;
+  delete vars.color;
+  delete vars.width;
+  delete vars.height;
+  delete vars.pos;
+  delete vars.x;
+  delete vars.y;
 });`,
     },
   },

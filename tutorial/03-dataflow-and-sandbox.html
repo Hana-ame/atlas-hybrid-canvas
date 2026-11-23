@@ -295,7 +295,7 @@ figcaption {
 
     <h2>隔离 Web Worker 池与四重脚本安全防线</h2>
     <ol>
-      <li><strong>常驻可复用 Worker 池</strong>：<code>scriptSandbox.ts</code> 最多缓存 <code>3</code> 个空闲 Worker 并复用同一个 Blob URL，消除链式事件频繁冷启动带来的延迟与 GC 抖动；每次 <code>onmessage</code> 都在局部作用域重新声明 <code>vars / handlers / logs</code>，无状态串改。</li>
+      <li><strong>常驻可复用 Worker 池</strong>：<code>scriptSandbox.ts</code> 最多缓存 <code>6</code> 个空闲 Worker 并复用同一个 Blob URL，消除链式事件频繁冷启动带来的延迟与 GC 抖动；每次 <code>onmessage</code> 都在局部作用域重新声明 <code>vars / handlers / logs</code>，无状态串改。</li>
       <li><strong>5 秒硬超时强杀</strong>：任意死循环脚本超过 <code>5000ms</code> 立即 <code>worker.terminate()</code> 并移出复用池，绝不卡死主线程 UI。</li>
       <li><strong>26 词黑名单 + 原型键过滤</strong>：静态拦截 <code>window / document / fetch / localStorage / indexedDB / eval / Function / __proto__</code> 等 26 个高危标识符；检查器编辑框下方实时展示语法与安全预检结果。</li>
       <li><strong>外部脚本信任审核（<code>ScriptTrustModal</code>）</strong>：通过 JSON 导入或远端协同房间同步进来的新脚本默认处于锁定态，必须经用户逐条审阅代码并点击「信任」后才允许执行。</li>

@@ -255,7 +255,7 @@ figcaption {
     <ol>
       <li><strong>首次自动渲染</strong>：等 <code>overlayHydrated</code> 就绪后，<code>App.tsx</code> 自动给它发一次 <code>{ kind: 'render' }</code>，脚本产出的 <code>vars.contents</code> 立刻渲染出按钮行与输入框。</li>
       <li><strong>动态创建子控件并连线</strong>：点「+ 创建子控件」触发 <code>on('spawn')</code>，调用 <code>widgets.create({ dx: 470, dy, connect: '联动 #n', script: childScript })</code>。Worker 把创建指令放进 <code>widgetOps</code>，主线程同步写进 <code>base.nodes</code> 与 <code>base.edges</code>，并立刻帮新子卡跑一次 <code>render</code>。</li>
-      <li><strong>回车发送与双向回信</strong>：输入框绑定 <code>bind: 'draft'</code> 与 <code>onSubmit('msgInput')</code>，内部用 <code>emit(vars.lastChildId, 'ping', { text })</code> 投递给子卡；子卡收到 <code>on('ping')</code> 后更新 <code>vars.inbox</code>，点子卡按钮又能反向 <code>emit(vars.parentId, 'childReply', ...)</code> 回传主卡。</li>
+      <li><strong>回车发送与双向回信</strong>：输入框绑定 <code>bind: 'draft'</code> 与 <code>onSubmit('msgInput')</code>，内部用 <code>emitDownstream('ping', { text })</code> 并发扇出投递给所有已连线的下游子卡；子卡收到 <code>on('ping')</code> 后更新 <code>vars.inbox</code>，点子卡按钮又能反向 <code>emit(vars.parentId, 'childReply', ...)</code> 回传主卡。</li>
     </ol>
 
     <h3>示例 3：ZONE D 三节点连线数据通路（<code>demo-flow-*</code>）——端口驱动、零硬编码 ID</h3>

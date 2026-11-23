@@ -564,19 +564,55 @@ function HybridCanvasWorkspace() {
         if (res.annotationOps.length > 0) {
           setChunkSyncTick((t) => t + 1);
         }
+        const freshOverrides = { [nodeId]: { vars: res.updatedVars } };
+        const notifiedIds = new Set<string>();
+        const fanoutTasks: Array<Promise<void>> = [];
+        // 与统一脚本路径一致：按 targetId + event 归并，避免同一脚本被并发执行后覆盖彼此结果
+        const mergedEmits = new Map<string, { targetId: string; event: string; payloads: unknown[] }>();
+        for (const em of res.emitOps) {
+          const targets =
+            em.targetId === '*'
+              ? Object.values(effectiveNodesRef.current)
+                  .filter((n) => n.id !== nodeId && Boolean(n.script))
+                  .map((n) => n.id)
+              : [em.targetId];
+          for (const tid of targets) {
+            notifiedIds.add(tid);
+            const key = `${tid}\u0000${em.event}`;
+            const bucket = mergedEmits.get(key);
+            if (bucket) {
+              bucket.payloads.push(em.payload);
+            } else {
+              mergedEmits.set(key, { targetId: tid, event: em.event, payloads: [em.payload] });
+            }
+          }
+        }
+        for (const { targetId: tid, event, payloads } of mergedEmits.values()) {
+          const payload = payloads.length === 1 ? payloads[0] : payloads;
+          fanoutTasks.push(
+            executeUnifiedWidgetScript(
+              tid,
+              { kind: 'message', event, payload, fromId: nodeId, fromTitle: entity.title },
+              undefined,
+              1,
+              freshOverrides
+            )
+          );
+        }
         const downstreamIds = Array.from(
           new Set(
             Object.values(edgesRef.current)
-              .filter((e) => e.source === nodeId && e.target !== nodeId)
+              .filter((e) => e.source === nodeId && e.target !== nodeId && !notifiedIds.has(e.target))
               .map((e) => e.target)
           )
-        );
+        ).filter((dstId) => Boolean(effectiveNodesRef.current[dstId]?.script));
         for (const dstId of downstreamIds) {
-          if (effectiveNodesRef.current[dstId]?.script) {
-            void executeUnifiedWidgetScript(dstId, { kind: 'render' }, undefined, 1, {
-              [nodeId]: { vars: res.updatedVars },
-            });
-          }
+          fanoutTasks.push(
+            executeUnifiedWidgetScript(dstId, { kind: 'render' }, undefined, 1, freshOverrides)
+          );
+        }
+        if (fanoutTasks.length > 0) {
+          await Promise.all(fanoutTasks);
         }
         setStatusLog(res.logs.length > 0 ? `Worker 输出：${res.logs.join(' | ')}` : `已更新本地 vars (${entity.title})`);
       } else if (btn.actionType === 'proxy_http' && btn.proxyUrl) {
@@ -698,7 +734,19 @@ function HybridCanvasWorkspace() {
       });
 
       // 2) 处理 widgets.create / connect / remove 指令
-      const newlyCreatedScripts: Array<{ id: string; vars: Record<string, unknown>; script: string }> = [];
+      const newlyCreatedScripts: Array<{
+        id: string;
+        title: string;
+        body: string;
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+        color: string;
+        vars: Record<string, unknown>;
+        script: string;
+      }> = [];
+      const createdEdges: Record<string, BlueprintEdge> = { ...activeEdges };
       if (res.widgetOps.length > 0) {
         setBase((prev) => {
           const nextNodes = { ...prev.nodes };
@@ -721,11 +769,22 @@ function HybridCanvasWorkspace() {
                 cid: SELF_CID,
               };
               if (op.script) {
-                newlyCreatedScripts.push({ id: op.id, vars: op.vars || {}, script: op.script });
+                newlyCreatedScripts.push({
+                  id: op.id,
+                  title: op.title,
+                  body: op.body || '',
+                  x: op.x,
+                  y: op.y,
+                  width: op.width,
+                  height: op.height,
+                  color: op.color,
+                  vars: op.vars || {},
+                  script: op.script,
+                });
               }
               if (op.connect) {
                 const eid = `edge-${nodeId}-${op.id}-${Date.now()}`;
-                nextEdges[eid] = {
+                const createdEdge: BlueprintEdge = {
                   id: eid,
                   source: nodeId,
                   target: op.id,
@@ -736,6 +795,8 @@ function HybridCanvasWorkspace() {
                   rev: 1,
                   cid: SELF_CID,
                 };
+                nextEdges[eid] = createdEdge;
+                createdEdges[eid] = createdEdge;
               }
             } else if (op.op === 'connect') {
               const eid = `edge-${op.fromId}-${op.toId}-${Date.now()}`;
@@ -766,31 +827,36 @@ function HybridCanvasWorkspace() {
         setChunkSyncTick((t) => t + 1);
       }
 
-      // 新建的带脚本子控件立刻跑一次 render 产出它们的 vars.contents
-      for (const child of newlyCreatedScripts) {
-        const childRes = await runInIsolatedWorker(child.script, child.vars, {
-          selfEntity: {
-            id: child.id,
-            title: child.id,
-            label: child.id,
-            body: '',
-            x: 0,
-            y: 0,
-            width: 320,
-            height: 175,
-            color: '#059669',
-            vars: child.vars,
-          },
-          peers,
-          edges: edgesSnap,
-          trigger: { kind: 'render' },
-        });
-        if (childRes.ok) {
-          setOverlay((prev) => ({
-            ...prev,
-            runtimeVars: { ...prev.runtimeVars, [child.id]: childRes.updatedVars },
-          }));
-        }
+      // 新建的带脚本子控件并发跑一次 render，注入真实标题/坐标/尺寸与最新连线快照
+      if (newlyCreatedScripts.length > 0) {
+        const freshEdgesSnap = buildEdgeSnapshots(createdEdges);
+        await Promise.all(
+          newlyCreatedScripts.map(async (child) => {
+            const childRes = await runInIsolatedWorker(child.script, child.vars, {
+              selfEntity: {
+                id: child.id,
+                title: child.title,
+                label: child.title,
+                body: child.body,
+                x: child.x,
+                y: child.y,
+                width: child.width,
+                height: child.height,
+                color: child.color,
+                vars: child.vars,
+              },
+              peers,
+              edges: freshEdgesSnap,
+              trigger: { kind: 'render' },
+            });
+            if (childRes.ok) {
+              setOverlay((prev) => ({
+                ...prev,
+                runtimeVars: { ...prev.runtimeVars, [child.id]: childRes.updatedVars },
+              }));
+            }
+          })
+        );
       }
 
       const nextPeerOverrides: Record<string, Partial<PeerWidgetSnapshot>> = {
@@ -799,10 +865,10 @@ function HybridCanvasWorkspace() {
       };
 
       // 3) 处理跨控件 emit / broadcast / emitDownstream 事件投递（扇出目标通过 Promise.all 并发同时驱动）
-      // 注意：同一目标可能被多条 emitOp 命中（例如脚本里 emit 了两次，或 broadcast 与 emitDownstream 重叠）。
-      // 串行版本里这些是逐个 await 的独立执行；改成并发后若不去重，同一脚本会被多个 Worker 同时跑，
-      // 各自拿同一份 inputVars，最后由 setOverlay 的后写者覆盖前写者 —— 结果是丢更新。
-      // 因此按 targetId + event 归并：同目标同事件的载荷合并成一次投递。
+      // 注意：同一目标可能被多条 emitOp 命中（脚本 emit 两次、或 broadcast 与 emitDownstream 重叠、
+      // 或多条边指向同一 target）。串行版是逐个 await 的独立执行；并发后若不去重，同一脚本会被
+      // 多个 Worker 同时跑，各自拿同一份 inputVars，最后由 setOverlay 的后写者覆盖前写者 —— 丢更新。
+      // 因此按 targetId + event 归并，同目标同事件的载荷合并成一次投递。
       const notifiedIds = new Set<string>();
       const emitTasks: Array<Promise<void>> = [];
       const mergedEmits = new Map<string, { targetId: string; event: string; payloads: unknown[] }>();
@@ -953,8 +1019,30 @@ function HybridCanvasWorkspace() {
     });
     renderedScriptsRef.current.delete(nodeId);
     setChunkSyncTick((t) => t + 1);
+    const baseNode = baseRef.current.nodes[nodeId];
+    const downstreamIds = Array.from(
+      new Set(
+        Object.values(edgesRef.current)
+          .filter((e) => e.source === nodeId && e.target !== nodeId)
+          .map((e) => e.target)
+      )
+    ).filter((dstId) => Boolean(effectiveNodesRef.current[dstId]?.script));
+    if (baseNode && downstreamIds.length > 0) {
+      void Promise.all(
+        downstreamIds.map((dstId) =>
+          executeUnifiedWidgetScript(dstId, { kind: 'render' }, undefined, 1, {
+            [nodeId]: {
+              title: baseNode.title,
+              label: baseNode.title,
+              body: baseNode.body,
+              vars: { ...baseNode.defaultVars },
+            },
+          })
+        )
+      );
+    }
     setStatusLog('已将该节点重置为后端权威默认值');
-  }, []);
+  }, [executeUnifiedWidgetScript]);
 
   const handlePatchNode = useCallback((nodeId: string, patch: Partial<EffectiveBlueprintNode>) => {
     setOverlay((prev) => {
@@ -988,8 +1076,26 @@ function HybridCanvasWorkspace() {
   }, []);
 
   const handleEditTitle = useCallback(
-    (nodeId: string, nextTitle: string) => handlePatchNode(nodeId, { title: nextTitle }),
-    [handlePatchNode]
+    (nodeId: string, nextTitle: string) => {
+      handlePatchNode(nodeId, { title: nextTitle });
+      const downstreamIds = Array.from(
+        new Set(
+          Object.values(edgesRef.current)
+            .filter((e) => e.source === nodeId && e.target !== nodeId)
+            .map((e) => e.target)
+        )
+      ).filter((dstId) => Boolean(effectiveNodesRef.current[dstId]?.script));
+      if (downstreamIds.length > 0) {
+        void Promise.all(
+          downstreamIds.map((dstId) =>
+            executeUnifiedWidgetScript(dstId, { kind: 'render' }, undefined, 1, {
+              [nodeId]: { title: nextTitle, label: nextTitle },
+            })
+          )
+        );
+      }
+    },
+    [executeUnifiedWidgetScript, handlePatchNode]
   );
 
   const handleEditBody = useCallback(
@@ -1093,6 +1199,17 @@ function HybridCanvasWorkspace() {
 
   const handleDeleteNode = useCallback((nodeId: string) => {
     pushHistory();
+    const affectedTargets = new Set<string>();
+    const nextEdgesSnap: Record<string, BlueprintEdge> = {};
+    for (const [eid, edge] of Object.entries(edgesRef.current)) {
+      if (edge.source === nodeId && edge.target !== nodeId) {
+        affectedTargets.add(edge.target);
+      }
+      if (edge.source !== nodeId && edge.target !== nodeId) {
+        nextEdgesSnap[eid] = edge;
+      }
+    }
+    edgesRef.current = nextEdgesSnap;
     setBase((prev) => {
       const nextNodes = { ...prev.nodes };
       delete nextNodes[nodeId];
@@ -1104,6 +1221,14 @@ function HybridCanvasWorkspace() {
       }
       return { ...prev, version: prev.version + 1, nodes: nextNodes, edges: nextEdges };
     });
+    const refreshTargets = Array.from(affectedTargets).filter((tid) => Boolean(effectiveNodesRef.current[tid]?.script));
+    if (refreshTargets.length > 0) {
+      void Promise.all(
+        refreshTargets.map((tid) =>
+          executeUnifiedWidgetScript(tid, { kind: 'render' }, undefined, 1, undefined, nextEdgesSnap)
+        )
+      );
+    }
     setOverlay((prev) => {
       const nextRuntime = { ...prev.runtimeVars };
       const nextPatches = { ...prev.nodePatches };

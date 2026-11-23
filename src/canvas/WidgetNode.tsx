@@ -12,6 +12,7 @@ import { Handle, NodeResizer, Position, useUpdateNodeInternals, type NodeProps }
 import { Copy, Globe, Lock, Play, RotateCcw, Settings2, Trash2, Unlock } from 'lucide-react';
 import { RESERVED_WIDGET_PROP_VARS } from '../core/layeredStore';
 import { parseTaskLine, toggleTaskLine } from '../core/taskList';
+import { PdfViewerBlock } from './PdfViewerBlock';
 import type {
   ContentFlowItem,
   ContentLeafBlock,
@@ -95,6 +96,10 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
   const rawContents = entity.effectiveVars?.contents;
   const flowItems: ContentFlowItem[] = Array.isArray(rawContents) ? (rawContents as ContentFlowItem[]) : [];
   const hasScriptContents = flowItems.length > 0;
+  const isImmersivePdf =
+    flowItems.length === 1 &&
+    !Array.isArray(flowItems[0]) &&
+    flowItems[0]?.type === 'pdf';
   const varEntries = Object.entries(entity.effectiveVars || {}).filter(([k]) => !RESERVED_WIDGET_PROP_VARS.has(k));
 
   const renderLeafBlock = (block: ContentLeafBlock, idx: number, inRow: boolean) => {
@@ -186,6 +191,44 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
       );
     }
 
+    if (block.type === 'pdf') {
+      const urlKey = block.bindUrl || 'pdfUrl';
+      const pageKey = block.bindPage || 'pdfPage';
+      const proxyKey = block.bindProxy || 'pdfUseProxy';
+      const curUrl =
+        entity.effectiveVars?.[urlKey] !== undefined
+          ? String(entity.effectiveVars[urlKey])
+          : String(block.url ?? '');
+      const curPage =
+        entity.effectiveVars?.[pageKey] !== undefined
+          ? Number(entity.effectiveVars[pageKey]) || 1
+          : Number(block.page) || 1;
+      const totalKey = 'pdfTotalPages';
+      const curProxy =
+        entity.effectiveVars?.[proxyKey] !== undefined
+          ? Boolean(entity.effectiveVars[proxyKey])
+          : Boolean(block.useProxy);
+      const curTotal =
+        entity.effectiveVars?.[totalKey] !== undefined
+          ? Number(entity.effectiveVars[totalKey]) || 0
+          : 0;
+      return (
+        <PdfViewerBlock
+          key={`pdf-${block.id}-${idx}`}
+          url={curUrl}
+          page={curPage}
+          totalPages={curTotal > 0 ? curTotal : undefined}
+          useProxy={curProxy}
+          onChangeUrl={(nextUrl) => onScriptInputChange(entity.id, urlKey, nextUrl)}
+          onChangePage={(nextPage) => onScriptInputChange(entity.id, pageKey, String(nextPage))}
+          onChangeTotalPages={(nextTotal) =>
+            onScriptInputChange(entity.id, totalKey, nextTotal > 0 ? String(nextTotal) : '')
+          }
+          onChangeUseProxy={(nextProxy) => onScriptInputChange(entity.id, proxyKey, nextProxy ? 'true' : '')}
+        />
+      );
+    }
+
     return null;
   };
 
@@ -196,6 +239,7 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
       } ${selected ? 'ring-2 ring-blue-500/40' : ''}`}
       style={{
         width: entity.width,
+        height: isImmersivePdf ? entity.height : undefined,
         minHeight: entity.height,
         borderColor: entity.color,
         borderTopWidth: 4,
@@ -346,10 +390,16 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
         </div>
       </div>
 
-      {/* 主体区：默认整块正文可拖动，双击进入多行编辑；超长内容自动内部滚动不裁切 */}
-      <div className="nowheel flex max-h-[420px] flex-1 flex-col gap-2 overflow-y-auto px-3 py-2.5">
+      {/* 主体区：默认整块正文可拖动；单 PDF 卡片自动进入零内边距沉浸铺满模式 */}
+      <div
+        className={
+          isImmersivePdf
+            ? 'flex min-h-0 flex-1 flex-col overflow-hidden rounded-b-lg'
+            : 'nowheel flex max-h-[560px] flex-1 flex-col gap-2 overflow-y-auto px-3 py-2.5'
+        }
+      >
         {hasScriptContents ? (
-          <div className="flex flex-col gap-2">
+          <div className={isImmersivePdf ? 'flex min-h-0 flex-1 flex-col' : 'flex flex-col gap-2'}>
             {flowItems.map((item, idx) =>
               Array.isArray(item) ? (
                 <div key={`row-${idx}`} className="flex items-center gap-1.5">

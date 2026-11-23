@@ -267,6 +267,33 @@ on('push', async () => {
       rev: 1,
       cid: 'server-base',
     },
+    'demo-pdf-reader': {
+      id: 'demo-pdf-reader',
+      x: 1390,
+      y: 675,
+      width: 440,
+      height: 455,
+      title: '⑤ PDF 阅读控件（URL / 上传 / Proxy）',
+      body: '',
+      category: 'PDF',
+      color: '#DC2626',
+      inputPorts: [{ id: 'in-1', label: '页码/URL入口' }],
+      outputPorts: [{ id: 'out-1', label: '阅读状态输出' }],
+      defaultVars: { pdfUrl: '', pdfPage: 1, pdfUseProxy: false },
+      script: String.raw`const page = Math.max(1, Math.floor(Number(vars.pdfPage) || 1));
+vars.contents = [
+  {
+    type: 'pdf',
+    id: 'pdfView',
+    bindUrl: 'pdfUrl',
+    bindPage: 'pdfPage',
+    bindProxy: 'pdfUseProxy',
+    height: 300
+  }
+];`,
+      rev: 1,
+      cid: 'server-base',
+    },
     'demo-var-morph': {
       id: 'demo-var-morph',
       x: 960,
@@ -334,12 +361,14 @@ on('resetAll', () => {
   vars.modeIdx = 0;
   vars.expanded = false;
   vars.titleDraft = '';
-  vars.type = modes[0].type;
-  vars.title = modes[0].title;
-  vars.color = modes[0].color;
-  vars.width = 380;
-  vars.height = 205;
-  vars.pos = { x: 960, y: 1005 };
+  delete vars.type;
+  delete vars.title;
+  delete vars.color;
+  delete vars.width;
+  delete vars.height;
+  delete vars.pos;
+  delete vars.x;
+  delete vars.y;
 });`,
       rev: 1,
       cid: 'server-base',
