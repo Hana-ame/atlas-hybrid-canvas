@@ -19,6 +19,11 @@ const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT || 3000);
 const IS_PROD = process.env.NODE_ENV === 'production';
 
+// PDF 上传单文件上限。走二进制直传，不再有 base64 的 4/3 膨胀，
+// 因此这里就是文件的真身体积；前后端共用同一数值，避免两边阈值漂移。
+const PDF_UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
+const PDF_UPLOAD_MAX_LABEL = '50MB';
+
 // 权威底座内存存储（生产环境可替换为 SQLite / PostgreSQL + PostGIS）
 let serverBaseBlueprint: Record<string, unknown> | null = null;
 let serverRevision = 1;
@@ -26,10 +31,13 @@ let serverRevision = 1;
 async function startServer() {
   const app = express();
   app.disable('x-powered-by');
-  // PDF 上传走 base64 JSON，15MB 原始字节编码后约 20.0MB（膨胀 4/3），
-  // 若 limit 取 20mb 会与 PDF 自身上限撞在边界上，导致正好 15MB 的文件被 express 直接 413、
-  // 连 /api/pdf/upload 里的友好提示都到不了。这里留足余量到 24mb。
-  app.use(express.json({ limit: '24mb' }));
+  // PDF 上传改成直接传二进制（Content-Type: application/pdf），不再走 base64 JSON。
+  // 原来的 base64 会把 15MB 膨胀成 20.00MB，正好撞上 express.json 的 limit，
+  // 导致文件在进入路由前就被 413 掉。这里用 express.raw 精确接住 PDF 字节，
+  // 体积按原始大小算，上限就是文件真实大小，不再有编码膨胀这层耦合。
+  // json 的 limit 也回落到常规的 1mb——它现在只承载 blueprint 这类小 JSON。
+  app.use(express.json({ limit: '1mb' }));
+  app.use('/api/pdf/upload', express.raw({ type: 'application/pdf', limit: PDF_UPLOAD_MAX_BYTES }));
 
   const blueprintSaveKey = (process.env.BLUEPRINT_SAVE_KEY || '').trim();
   const upstreamBaseUrl = (process.env.PROXY_UPSTREAM_BASE_URL || '').trim();
@@ -309,8 +317,9 @@ async function startServer() {
       }
       const upstream = await fetch(target.url.toString(), { method: 'GET', headers, signal: controller.signal });
       const arr = Buffer.from(await upstream.arrayBuffer());
-      if (arr.byteLength > 15 * 1024 * 1024) {
-        res.status(413).json({ ok: false, error: 'PDF 文件超过 15MB 代理上限' });
+      // 代理拉回来的也是 PDF，与上传共用同一上限，免得「能上传却打不开代理的同类文件」
+      if (arr.byteLength > PDF_UPLOAD_MAX_BYTES) {
+        res.status(413).json({ ok: false, error: `PDF 文件超过 ${PDF_UPLOAD_MAX_LABEL} 代理上限` });
         return;
       }
       res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/pdf');
@@ -336,15 +345,15 @@ async function startServer() {
       res.status(401).json({ ok: false, error: '未授权上传' });
       return;
     }
-    const body = req.body as { filename?: unknown; base64?: unknown } | null;
-    const base64 = typeof body?.base64 === 'string' ? body.base64.trim() : '';
-    if (!base64) {
-      res.status(400).json({ ok: false, error: '缺少 PDF 数据' });
+    // 请求体由上方 express.raw({ type: 'application/pdf' }) 直接给出原始字节，
+    // 不再做 base64 解码，上限对应的就是文件真实大小（见 PDF_UPLOAD_MAX_BYTES）
+    const buf = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (buf.byteLength === 0) {
+      res.status(400).json({ ok: false, error: '缺少 PDF 数据（请以 application/pdf 提交原始字节）' });
       return;
     }
-    const buf = Buffer.from(base64, 'base64');
-    if (buf.byteLength === 0 || buf.byteLength > 15 * 1024 * 1024) {
-      res.status(413).json({ ok: false, error: 'PDF 文件大小需在 1B–15MB 之间' });
+    if (buf.byteLength > PDF_UPLOAD_MAX_BYTES) {
+      res.status(413).json({ ok: false, error: `PDF 文件大小需在 1B–${PDF_UPLOAD_MAX_LABEL} 之间` });
       return;
     }
     if (buf.subarray(0, 4).toString('ascii') !== '%PDF') {
@@ -352,7 +361,14 @@ async function startServer() {
       return;
     }
     const id = crypto.randomBytes(8).toString('hex');
-    const filename = String(body?.filename || 'document.pdf').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
+    // 文件名通过 X-Pdf-Filename 头传递；非 ASCII 名由前端 encodeURIComponent 编码后解回
+    let rawName = String(req.header('x-pdf-filename') || 'document.pdf');
+    try {
+      rawName = decodeURIComponent(rawName);
+    } catch {
+      // 未编码的原始头值，保持原样
+    }
+    const filename = rawName.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80) || 'document.pdf';
     if (uploadedPdfStore.size >= MAX_UPLOADED_PDFS) {
       const oldestKey = uploadedPdfStore.keys().next().value;
       if (oldestKey) uploadedPdfStore.delete(oldestKey);
@@ -391,6 +407,33 @@ async function startServer() {
       res.sendFile(path.join(distDir, 'index.html'));
     });
   }
+
+  // 请求体解析类错误（典型是 express.raw 超限）发生在进入路由之前，
+  // 不接住的话用户只会看到 Express 默认的 HTML 错误页。
+  // 注册在所有路由与静态资源之后，只兜底未被处理的错误，并统一改成 JSON。
+  app.use(
+    (
+      err: (Error & { type?: string; status?: number }) | null,
+      _req: express.Request,
+      res: express.Response,
+      next: express.NextFunction
+    ) => {
+      if (!err) {
+        next();
+        return;
+      }
+      if (res.headersSent) {
+        next(err);
+        return;
+      }
+      if (err.type === 'entity.too.large') {
+        res.status(413).json({ ok: false, error: `PDF 文件大小需在 1B–${PDF_UPLOAD_MAX_LABEL} 之间` });
+        return;
+      }
+      const status = typeof err.status === 'number' ? err.status : 500;
+      res.status(status).json({ ok: false, error: err.message || '服务端处理失败' });
+    }
+  );
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Atlas Hybrid Canvas] running at http://localhost:${PORT}`);

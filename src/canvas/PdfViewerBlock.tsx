@@ -126,21 +126,16 @@ function PdfViewerBlockInner({
     const detectedPages = countPdfPagesFromBytes(bytes) ?? 0;
 
     try {
-      if (useProxy && file.size <= 12 * 1024 * 1024) {
-        const base64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const res = String(reader.result || '');
-            const idx = res.indexOf(',');
-            resolve(idx >= 0 ? res.slice(idx + 1) : res);
-          };
-          reader.onerror = () => reject(new Error('读取失败'));
-          reader.readAsDataURL(file);
-        });
+      // 直接以 application/pdf 提交原始字节，不再 base64 编码：
+      // 少一层 4/3 膨胀与 FileReader 全量读入，上限即文件真实大小。
+      if (useProxy && file.size <= 50 * 1024 * 1024) {
         const resp = await fetch('/api/pdf/upload', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filename: file.name, base64 }),
+          headers: {
+            'Content-Type': 'application/pdf',
+            'X-Pdf-Filename': encodeURIComponent(file.name),
+          },
+          body: file,
         });
         if (resp.ok) {
           const data = (await resp.json()) as { ok?: boolean; url?: string };
@@ -152,6 +147,11 @@ function PdfViewerBlockInner({
             setUploading(false);
             return;
           }
+        } else {
+          // 服务端明确拒绝（超限 / 非 PDF / 未授权）时说清原因，
+          // 否则下面会静默降级成本地 Blob，用户不知道自己传的其实是本地文件。
+          const data = (await resp.json().catch(() => null)) as { error?: string } | null;
+          setTip(data?.error || `上传失败（HTTP ${resp.status}），已改用本地文件预览`);
         }
       }
     } catch {
@@ -211,7 +211,7 @@ function PdfViewerBlockInner({
             type="button"
             disabled={uploading}
             onClick={() => fileInputRef.current?.click()}
-            title="上传本地 PDF"
+            title="上传本地 PDF（单文件上限 50MB）"
             className="inline-flex shrink-0 items-center gap-0.5 rounded border border-slate-300 bg-white px-1.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-50"
           >
             <Upload className="h-3 w-3" />
