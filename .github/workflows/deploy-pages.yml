@@ -22,13 +22,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
-          # v7 起仓库自带 package-lock.json，可以安全启用依赖缓存。
+          # 仓库自带 package-lock.json，可以安全启用依赖缓存。
           # （早期版本没有 lockfile，cache: npm 会在 setup 阶段直接失败）
           cache: npm
 
@@ -78,7 +78,7 @@ jobs:
         run: touch dist/.nojekyll
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: dist
 
@@ -92,4 +92,4 @@ jobs:
     steps:
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
