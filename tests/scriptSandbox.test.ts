@@ -42,9 +42,9 @@ test('All seed blueprint scripts and built-in template scripts pass safety + syn
     }
   }
   for (const tpl of BUILTIN_TEMPLATES) {
-    if (tpl.preset?.script) {
-      assert.equal(validateScriptSafety(tpl.preset.script).ok, true, `Template script safety failed: ${tpl.id}`);
-      const syn = validateScriptSyntax(tpl.preset.script);
+    if (tpl.nodePreset?.script) {
+      assert.equal(validateScriptSafety(tpl.nodePreset.script).ok, true, `Template script safety failed: ${tpl.id}`);
+      const syn = validateScriptSyntax(tpl.nodePreset.script);
       assert.equal(syn.ok, true, `Template script syntax failed (${tpl.id}): ${syn.error}`);
     }
   }

@@ -10,6 +10,7 @@
 import { memo, useEffect, useState } from 'react';
 import { Handle, NodeResizer, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import { Copy, Globe, Lock, Play, RotateCcw, Settings2, Trash2, Unlock } from 'lucide-react';
+import { RESERVED_WIDGET_PROP_VARS } from '../core/layeredStore';
 import { parseTaskLine, toggleTaskLine } from '../core/taskList';
 import type {
   ContentFlowItem,
@@ -94,7 +95,7 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
   const rawContents = entity.effectiveVars?.contents;
   const flowItems: ContentFlowItem[] = Array.isArray(rawContents) ? (rawContents as ContentFlowItem[]) : [];
   const hasScriptContents = flowItems.length > 0;
-  const varEntries = Object.entries(entity.effectiveVars || {}).filter(([k]) => k !== 'contents');
+  const varEntries = Object.entries(entity.effectiveVars || {}).filter(([k]) => !RESERVED_WIDGET_PROP_VARS.has(k));
 
   const renderLeafBlock = (block: ContentLeafBlock, idx: number, inRow: boolean) => {
     if (!block || typeof block !== 'object') return null;

@@ -109,3 +109,15 @@ on('doneReport', (msg) => {
 - `widgets.outputs(portId?)`：返回从当前控件出口连出的下游控件快照数组。
 - `emitDownstream(event, payload, portId?)`：沿当前出口连线向所有下游控件投递事件（接收方用 `on(event, (payload, meta) => ...)` 处理）。
 - 当上游修改正文（例如勾选 `- [ ]` 复选框）、执行脚本修改 `vars`，或建立/删除连线时，已连线的下游脚本控件会自动触发实时刷新。
+
+
+## 用 `vars` 动态控制控件形态（v22 新增）
+
+控件脚本写入以下保留字段时，会实时驱动该控件的渲染属性与空间坐标（且保留在本地叠加层，不污染后端底座）：
+
+- `vars.type` / `vars.category`：动态修改左上角类型徽标文字；
+- `vars.title`：动态修改控件标题；
+- `vars.color`：动态修改顶部边框与徽标主题色；
+- `vars.width` / `vars.height`：动态修改控件宽高（自动安全钳位在 `180–1400` / `100–1200`）；
+- `vars.pos`（`{ x, y }` 或 `[x, y]`）或 `vars.x` / `vars.y`：动态移动控件在无限画布中的世界坐标；
+- `vars.locked`：动态切换控件锁定状态。

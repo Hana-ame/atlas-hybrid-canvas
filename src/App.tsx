@@ -797,7 +797,8 @@ function HybridCanvasWorkspace() {
         });
       }
 
-      if (res.annotationOps.length > 0 || res.widgetOps.length > 0) {
+      const touchedLayout = ['x', 'y', 'pos', 'width', 'height'].some((k) => k in res.updatedVars);
+      if (res.annotationOps.length > 0 || res.widgetOps.length > 0 || touchedLayout) {
         setChunkSyncTick((t) => t + 1);
       }
 

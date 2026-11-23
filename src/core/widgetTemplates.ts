@@ -10,6 +10,84 @@ import type { BlueprintNode, BlueprintTemplate } from './types';
 const CUSTOM_TEMPLATES_KEY = 'atlas-hybrid-custom-templates-v1';
 
 export const BUILTIN_TEMPLATES: BlueprintTemplate[] = [
+  {
+    id: 'tpl-var-morph',
+    name: 'vars 控形示例',
+    description: '脚本用 vars.type / title / width / height / pos 实时变形与位移',
+    group: '知识地图',
+    kind: 'node',
+    color: '#0D9488',
+    nodePreset: {
+      title: 'vars 驱动形态示例',
+      body: '',
+      width: 380,
+      height: 205,
+      category: '形态',
+      color: '#0D9488',
+      defaultVars: { modeIdx: 0, expanded: false, titleDraft: '' },
+      script: String.raw`const modes = [
+  { type: '形态', title: '④ vars 驱动形态演示', color: '#0D9488' },
+  { type: 'ALERT', title: '告警模式（vars.type / title）', color: '#DC2626' },
+  { type: 'TERM', title: '终端模式（vars.color 变色）', color: '#1E293B' }
+];
+const idx = Number(vars.modeIdx) || 0;
+const expanded = Boolean(vars.expanded);
+const w = ctx.entity.width;
+const h = ctx.entity.height;
+const x = ctx.entity.x;
+const y = ctx.entity.y;
+
+vars.contents = [
+  { type: 'text', text: '当前：' + w + '×' + h + ' · 坐标 (' + x + ', ' + y + ')', align: 'center', color: '#0F766E', fontSize: 12, bold: true },
+  [
+    { type: 'input', id: 'titleInp', bind: 'titleDraft', placeholder: '输入新标题按回车直接改 vars.title…' },
+    { type: 'button', id: 'applyTitle', label: '改标题', width: 68, variant: 'primary' }
+  ],
+  [
+    { type: 'button', id: 'cycleMode', label: '切 type/色', variant: 'primary' },
+    { type: 'button', id: 'toggleSize', label: expanded ? '还原宽高' : '放大宽高', variant: 'secondary' },
+    { type: 'button', id: 'nudgeRight', label: 'pos.x +80', variant: 'success' },
+    { type: 'button', id: 'resetAll', label: '重置', variant: 'secondary' }
+  ]
+];
+
+onSubmit('titleInp', (val) => {
+  const t = String(val || '').trim();
+  if (t) { vars.title = t; vars.titleDraft = ''; }
+});
+on('applyTitle', () => {
+  const t = String(vars.titleDraft || '').trim();
+  if (t) { vars.title = t; vars.titleDraft = ''; }
+});
+on('cycleMode', () => {
+  const next = (idx + 1) % modes.length;
+  vars.modeIdx = next;
+  vars.type = modes[next].type;
+  vars.title = modes[next].title;
+  vars.color = modes[next].color;
+});
+on('toggleSize', () => {
+  const nextExp = !expanded;
+  vars.expanded = nextExp;
+  vars.width = nextExp ? 480 : 380;
+  vars.height = nextExp ? 270 : 205;
+});
+on('nudgeRight', () => {
+  vars.pos = { x: (ctx.entity.x || 960) + 80, y: ctx.entity.y || 1005 };
+});
+on('resetAll', () => {
+  vars.modeIdx = 0;
+  vars.expanded = false;
+  vars.titleDraft = '';
+  vars.type = modes[0].type;
+  vars.title = modes[0].title;
+  vars.color = modes[0].color;
+  vars.width = 380;
+  vars.height = 205;
+  vars.pos = { x: 960, y: 1005 };
+});`,
+    },
+  },
   // 一、知识地图
   {
     id: 'tpl-knowledge-card',

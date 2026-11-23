@@ -115,6 +115,63 @@ export function subscribeCrossTabOverlay(onRemoteOverlay: (overlay: LocalOverlay
   return () => ch.removeEventListener('message', handler);
 }
 
+/** 脚本可通过这些保留 vars 字段直接驱动控件的标题、类型、颜色、宽高与坐标 */
+export const RESERVED_WIDGET_PROP_VARS = new Set([
+  'contents',
+  'title',
+  'type',
+  'category',
+  'color',
+  'width',
+  'height',
+  'pos',
+  'x',
+  'y',
+  'locked',
+]);
+
+function extractVarDrivenProps(vars: Record<string, unknown>): Partial<LocalNodePatch> {
+  const out: Partial<LocalNodePatch> = {};
+  if (typeof vars.title === 'string') {
+    out.title = vars.title;
+  }
+  const rawType = typeof vars.type === 'string' ? vars.type : typeof vars.category === 'string' ? vars.category : undefined;
+  if (rawType !== undefined) {
+    out.category = rawType;
+  }
+  if (typeof vars.color === 'string' && vars.color.trim()) {
+    out.color = vars.color.trim();
+  }
+  if (vars.width !== undefined && Number.isFinite(Number(vars.width))) {
+    out.width = Math.max(180, Math.min(1400, Math.round(Number(vars.width))));
+  }
+  if (vars.height !== undefined && Number.isFinite(Number(vars.height))) {
+    out.height = Math.max(100, Math.min(1200, Math.round(Number(vars.height))));
+  }
+  if (vars.pos && typeof vars.pos === 'object') {
+    if (Array.isArray(vars.pos) && vars.pos.length >= 2) {
+      const px = Number(vars.pos[0]);
+      const py = Number(vars.pos[1]);
+      if (Number.isFinite(px)) out.x = Math.round(px);
+      if (Number.isFinite(py)) out.y = Math.round(py);
+    } else {
+      const p = vars.pos as { x?: unknown; y?: unknown };
+      if (p.x !== undefined && Number.isFinite(Number(p.x))) out.x = Math.round(Number(p.x));
+      if (p.y !== undefined && Number.isFinite(Number(p.y))) out.y = Math.round(Number(p.y));
+    }
+  }
+  if (vars.x !== undefined && Number.isFinite(Number(vars.x))) {
+    out.x = Math.round(Number(vars.x));
+  }
+  if (vars.y !== undefined && Number.isFinite(Number(vars.y))) {
+    out.y = Math.round(Number(vars.y));
+  }
+  if (typeof vars.locked === 'boolean') {
+    out.locked = vars.locked;
+  }
+  return out;
+}
+
 export function resolveEffectiveNodes(
   base: BaseBlueprint,
   overlay: LocalOverlayState
@@ -125,14 +182,17 @@ export function resolveEffectiveNodes(
     const rtVars = overlay.runtimeVars[id];
     const hasLocalOverride = Boolean(patch && Object.keys(patch).length > 0);
     const hasRuntimeVars = Boolean(rtVars && Object.keys(rtVars).length > 0);
+    const effectiveVars: Record<string, unknown> = {
+      ...baseNode.defaultVars,
+      ...(rtVars ?? {}),
+    };
+    const varDriven = extractVarDrivenProps(effectiveVars);
 
     result[id] = {
       ...baseNode,
       ...(patch ?? {}),
-      effectiveVars: {
-        ...baseNode.defaultVars,
-        ...(rtVars ?? {}),
-      },
+      ...varDriven,
+      effectiveVars,
       hasLocalOverride,
       hasRuntimeVars,
     };
