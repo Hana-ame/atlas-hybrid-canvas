@@ -273,7 +273,7 @@ on('push', async () => {
       y: 675,
       width: 440,
       height: 455,
-      title: '⑤ PDF 阅读控件（URL / 上传 / Proxy）',
+      title: '⑤ PDF 图片查看器（逐页解包 · 一次性加载）',
       body: '',
       category: 'PDF',
       color: '#DC2626',

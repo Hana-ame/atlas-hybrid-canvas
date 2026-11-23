@@ -15,6 +15,11 @@ import {
   sanitizeBinaryProxyContentType,
   validateProxyTargetUrl,
 } from './proxySecurity';
+import {
+  getUnpackedPdfMeta,
+  getUnpackedPdfPage,
+  unpackPdfBufferToPages,
+} from './pdfUnpack';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -40,6 +45,7 @@ async function startServer() {
   // json 的 limit 也回落到常规的 1mb——它现在只承载 blueprint 这类小 JSON。
   app.use(express.json({ limit: '10mb' }));
   app.use('/api/pdf/upload', express.raw({ type: 'application/pdf', limit: PDF_UPLOAD_MAX_BYTES }));
+  app.use('/api/pdf/unpack-upload', express.raw({ type: 'application/pdf', limit: PDF_UPLOAD_MAX_BYTES }));
 
   const blueprintSaveKey = (process.env.BLUEPRINT_SAVE_KEY || '').trim();
   const upstreamBaseUrl = (process.env.PROXY_UPSTREAM_BASE_URL || '').trim();
@@ -394,6 +400,137 @@ async function startServer() {
     }
     uploadedPdfStore.set(id, { filename, buf, createdAt: Date.now() });
     res.json({ ok: true, id, url: `/api/pdf/${id}` });
+  });
+
+  // 解包远程 PDF URL 为逐页 PNG 图片（严格复用 SSRF/3xx/50MB 流式上限校验，且不与超时 controller 共用）
+  app.post('/api/pdf/unpack', async (req, res) => {
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    const rl = checkProxyRateLimit(clientIp);
+    if (!rl.ok) {
+      res.setHeader('Retry-After', String(rl.retryAfterSec ?? 10));
+      res.status(429).json({ ok: false, error: `请求过于频繁，请 ${rl.retryAfterSec} 秒后重试` });
+      return;
+    }
+    const providedProxyToken = String(req.header('x-proxy-token') || '').trim();
+    if (!verifyProxyClientToken(providedProxyToken)) {
+      res.status(401).json({ ok: false, error: '未授权解包请求' });
+      return;
+    }
+    const rawUrl = String((req.body as { url?: unknown } | undefined)?.url || '').trim();
+    const target = validateProxyTargetUrl(rawUrl, { upstreamBaseUrl, allowedHosts });
+    if (!target.ok) {
+      res.status(target.status).json({ ok: false, error: target.error });
+      return;
+    }
+    try {
+      const records = await dns.lookup(target.url.hostname, { all: true });
+      if (records.length === 0 || records.some((r) => isPrivateOrReservedIP(r.address))) {
+        res.status(403).json({ ok: false, error: '安全限制：目标域名解析到受保护地址' });
+        return;
+      }
+    } catch {
+      res.status(502).json({ ok: false, error: '目标域名解析失败' });
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PROXY_DEFAULT_TIMEOUT_MS);
+    try {
+      const headers: Record<string, string> = {};
+      if (proxyApiKey && target.injectSecret) {
+        headers[proxyApiKeyHeader] = `${proxyApiKeyPrefix}${proxyApiKey}`;
+      }
+      const upstream = await fetch(target.url.toString(), {
+        method: 'GET',
+        headers,
+        redirect: 'manual',
+        signal: controller.signal,
+      });
+      if (upstream.status >= 300 && upstream.status < 400) {
+        res.status(502).json({ ok: false, error: '安全限制：已拦截上游 3xx 重定向' });
+        return;
+      }
+      if (!upstream.ok) {
+        res.status(502).json({ ok: false, error: `拉取 PDF 失败（HTTP ${upstream.status}）` });
+        return;
+      }
+      // 独立限流读取，不传入超时 controller，避免超限时 fetch 抛 AbortError 被误判为 502
+      const readRes = await readResponseBufferWithLimit(upstream, PDF_UPLOAD_MAX_BYTES);
+      if (!readRes.ok) {
+        res.status(413).json({ ok: false, error: `PDF 文件超过 ${PDF_UPLOAD_MAX_LABEL} 上限` });
+        return;
+      }
+      const unpacked = await unpackPdfBufferToPages(readRes.buffer);
+      res.json({
+        ok: true,
+        docId: unpacked.docId,
+        totalPages: unpacked.totalPages,
+        pageUrlTemplate: `/api/pdf/${unpacked.docId}/page/{page}`,
+      });
+    } catch (err) {
+      res.status(502).json({ ok: false, error: err instanceof Error ? err.message : 'PDF 解包失败' });
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
+  // 解包上传的本地 PDF 二进制为逐页 PNG 图片
+  app.post('/api/pdf/unpack-upload', async (req, res) => {
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    const rl = checkProxyRateLimit(clientIp);
+    if (!rl.ok) {
+      res.setHeader('Retry-After', String(rl.retryAfterSec ?? 10));
+      res.status(429).json({ ok: false, error: '上传过于频繁，请稍后重试' });
+      return;
+    }
+    const providedProxyToken = String(req.header('x-proxy-token') || '').trim();
+    if (!verifyProxyClientToken(providedProxyToken)) {
+      res.status(401).json({ ok: false, error: '未授权上传' });
+      return;
+    }
+    const buf = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (buf.byteLength === 0) {
+      res.status(400).json({ ok: false, error: '上传内容为空（请以 application/pdf 二进制发送）' });
+      return;
+    }
+    if (buf.byteLength > PDF_UPLOAD_MAX_BYTES) {
+      res.status(413).json({ ok: false, error: `PDF 文件超过 ${PDF_UPLOAD_MAX_LABEL} 上限` });
+      return;
+    }
+    try {
+      const unpacked = await unpackPdfBufferToPages(buf);
+      res.json({
+        ok: true,
+        docId: unpacked.docId,
+        totalPages: unpacked.totalPages,
+        pageUrlTemplate: `/api/pdf/${unpacked.docId}/page/{page}`,
+      });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err instanceof Error ? err.message : 'PDF 解包失败' });
+    }
+  });
+
+  app.get('/api/pdf/:id/meta', (req, res) => {
+    const meta = getUnpackedPdfMeta(String(req.params.id || ''));
+    if (!meta) {
+      res.status(404).json({ ok: false, error: '未找到已解包的 PDF 文档' });
+      return;
+    }
+    res.json({ ok: true, ...meta });
+  });
+
+  app.get('/api/pdf/:id/page/:page', (req, res) => {
+    const docId = String(req.params.id || '');
+    const pageNum = Number(req.params.page);
+    const hit = getUnpackedPdfPage(docId, pageNum);
+    if (!hit) {
+      res.status(404).json({ ok: false, error: '未找到对应 PDF 页面图片' });
+      return;
+    }
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.send(hit.buffer);
   });
 
   app.get('/api/pdf/:id', (req, res) => {

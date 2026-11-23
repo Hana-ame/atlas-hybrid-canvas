@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPdfIframeSrc, countPdfPagesFromBytes, isSafePdfUrl, normalizePdfPage } from '../src/core/pdfHelper.ts';
+import {
+  buildPdfPageImageUrl,
+  countPdfPagesFromBytes,
+  isSafePdfUrl,
+  isUnpackedPdfTemplate,
+  normalizePdfPage,
+} from '../src/core/pdfHelper.ts';
 
 test('normalizePdfPage() clamps invalid, negative, and oversized page numbers', () => {
   assert.equal(normalizePdfPage(0), 1);
@@ -18,16 +24,12 @@ test('isSafePdfUrl() allows http/https/blob/local server proxy and rejects javas
   assert.equal(isSafePdfUrl('data:text/html,<script>alert(1)</script>'), false);
 });
 
-test('buildPdfIframeSrc() appends #page=N and routes remote URLs via /api/proxy/binary when useProxy is true', () => {
-  assert.equal(
-    buildPdfIframeSrc('https://example.com/a.pdf#page=1', 5, false),
-    'https://example.com/a.pdf#page=5&view=FitH'
-  );
-  assert.equal(
-    buildPdfIframeSrc('https://example.com/a.pdf', 7, true),
-    '/api/proxy/binary?url=https%3A%2F%2Fexample.com%2Fa.pdf#page=7&view=FitH'
-  );
-  assert.equal(buildPdfIframeSrc('javascript:alert(1)', 1, true), null);
+test('isUnpackedPdfTemplate() & buildPdfPageImageUrl() resolve per-page PNG URLs safely', () => {
+  assert.equal(isUnpackedPdfTemplate('/api/pdf/a1b2c3d4/page/{page}'), true);
+  assert.equal(isUnpackedPdfTemplate('https://example.com/a.pdf'), false);
+  assert.equal(buildPdfPageImageUrl('/api/pdf/a1b2c3d4/page/{page}', 3), '/api/pdf/a1b2c3d4/page/3');
+  assert.equal(buildPdfPageImageUrl('/api/pdf/a1b2c3d4', 0), '/api/pdf/a1b2c3d4/page/1');
+  assert.equal(buildPdfPageImageUrl('https://example.com/a.pdf', 2), null);
 });
 
 test('countPdfPagesFromBytes() extracts total page count from /Type /Pages /Count N', () => {

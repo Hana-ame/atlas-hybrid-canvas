@@ -13,7 +13,7 @@ export const BUILTIN_TEMPLATES: BlueprintTemplate[] = [
   {
     id: 'tpl-pdf-reader',
     name: 'PDF 阅读器',
-    description: '支持 PDF URL、上传/服务端 Proxy、左右翻页与页码直达',
+    description: '解包 PDF 为逐页图片，仿 Windows 图片查看器左右翻页与页码直达（fit 控件大小 · 一次性输入）',
     group: '知识地图',
     kind: 'node',
     color: '#DC2626',

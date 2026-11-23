@@ -1,18 +1,24 @@
 /**
  * @file PdfViewerBlock.tsx
- * @description 沉浸式 PDF 阅读块组件（零 blob: 依赖）：
- * - 仅支持持久 URL（http/https 外链、/api/proxy/binary 代理转发，或经服务端 POST /api/pdf/upload 托管的 /api/pdf/:id）；
- * - 翻页栏置于最底部，居中展示「‹ [当前页] / 共 X 页 ›」，右侧提供折叠式「换源 / 上传 / Proxy」入口；
- * - 远端离屏（mediaActive === false）自动卸载重型 iframe 节省内存与 GPU。
+ * @description 仿 Windows 图片查看器的 PDF 逐页图片查看控件：
+ * - 严禁内置浏览器渲染：彻底无 iframe/embed/object，所有 PDF 均解包为逐页 PNG 图片；
+ * - 严格 fit 控件大小：图片使用 w-full h-full object-contain，随控件放大/缩小等比自适应，不做双击放大；
+ * - 零滚动条：全程 overflow-hidden，不提供滚动浏览，仅提供左右翻页箭头 + 底部极简页码栏；
+ * - 一次性 URL/文件输入：成功解包并锁定来源后输入界面永久消失，不提供换源按钮。
  */
 
-import { memo, useEffect, useRef, useState, type ChangeEvent } from 'react';
-import { ChevronLeft, ChevronRight, FileText, Globe, Link2, Upload } from 'lucide-react';
+import { memo, useCallback, useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent, type TouchEvent } from 'react';
+import { ChevronLeft, ChevronRight, FileImage, Loader2, Upload } from 'lucide-react';
 import {
-  buildPdfIframeSrc,
-  countPdfPagesFromBytes,
+  buildPdfPageImageUrl,
+  isSafePdfUrl,
+  isUnpackedPdfTemplate,
   normalizePdfPage,
 } from '../core/pdfHelper';
+import {
+  renderClientPdfPageImage,
+  unpackPdfBytesInBrowser,
+} from '../core/pdfClientUnpack';
 
 const MAX_PDF_UPLOAD_BYTES = 50 * 1024 * 1024;
 
@@ -21,7 +27,7 @@ export interface PdfViewerBlockProps {
   page: number;
   totalPages?: number;
   useProxy: boolean;
-  /** 是否处于当前视口或紧邻预加载环内；远端离屏时卸载重型 iframe 节省内存与 GPU */
+  /** 是否处于当前视口或紧邻预加载环内；远端离屏时卸载图片节省显存 */
   mediaActive?: boolean;
   onChangeUrl: (nextUrl: string) => void;
   onChangePage: (nextPage: number) => void;
@@ -33,54 +39,225 @@ function PdfViewerBlockInner({
   url,
   page,
   totalPages,
-  useProxy,
   mediaActive = true,
   onChangeUrl,
   onChangePage,
   onChangeTotalPages,
-  onChangeUseProxy,
 }: PdfViewerBlockProps) {
   const safePage = normalizePdfPage(page);
   const validTotal = totalPages && totalPages > 0 ? totalPages : null;
-  const [urlDraft, setUrlDraft] = useState(url);
-  const [pageDraft, setPageDraft] = useState(String(safePage));
-  const [sourceOpen, setSourceOpen] = useState(!url);
-  const [uploading, setUploading] = useState(false);
-  const [tip, setTip] = useState('');
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  useEffect(() => {
-    setUrlDraft(url);
-    if (url) setSourceOpen(false);
-  }, [url]);
+  const serverImageSrc = buildPdfPageImageUrl(url, safePage);
+  const isServerLocked = Boolean(serverImageSrc);
+
+  const [urlDraft, setUrlDraft] = useState(isServerLocked ? '' : url);
+  const [pageDraft, setPageDraft] = useState(String(safePage));
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [imgLoading, setImgLoading] = useState(false);
+
+  const [clientDocId, setClientDocId] = useState<string | null>(null);
+  const [clientPageImg, setClientPageImg] = useState<string | null>(null);
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const touchStartXRef = useRef<number | null>(null);
+  const autoUnpackedUrlRef = useRef<string>('');
+
+  const isLocked = isServerLocked || Boolean(clientDocId);
+  const currentImageSrc = isServerLocked ? serverImageSrc : clientPageImg;
 
   useEffect(() => {
     setPageDraft(String(safePage));
   }, [safePage]);
 
-  // 自动尝试探测同源/代理/CORS 允许的 PDF 总页数（跨域受限时静默显示「共 ? 页」）
   useEffect(() => {
-    if (!url || validTotal) return;
-    const target = buildPdfIframeSrc(url, 1, useProxy)?.split('#')[0];
-    if (!target) return;
+    if (!isServerLocked || validTotal) return;
+    const m = url.trim().match(/^\/api\/pdf\/([a-zA-Z0-9_-]+)/);
+    if (!m) return;
     let cancelled = false;
     void (async () => {
       try {
-        const resp = await fetch(target);
-        if (!resp.ok || cancelled) return;
-        const buf = new Uint8Array(await resp.arrayBuffer());
-        const detected = countPdfPagesFromBytes(buf);
-        if (!cancelled && detected && detected > 0) {
-          onChangeTotalPages?.(detected);
+        const resp = await fetch(`/api/pdf/${m[1]}/meta`);
+        const data = (await resp.json().catch(() => null)) as { ok?: boolean; totalPages?: number } | null;
+        if (!cancelled && resp.ok && data?.ok && data.totalPages && data.totalPages > 0) {
+          onChangeTotalPages?.(data.totalPages);
         }
       } catch {
-        // 跨域拒绝读取字节时忽略
+        // 忽略探测异常
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [url, useProxy, validTotal, onChangeTotalPages]);
+  }, [isServerLocked, url, validTotal, onChangeTotalPages]);
+
+  useEffect(() => {
+    if (!clientDocId || !mediaActive) return;
+    let cancelled = false;
+    setImgLoading(true);
+    void (async () => {
+      try {
+        const dataUrl = await renderClientPdfPageImage(clientDocId, safePage);
+        if (!cancelled) {
+          setClientPageImg(dataUrl);
+          setImgLoading(false);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setErrorMsg(err instanceof Error ? err.message : 'PDF 页面渲染失败');
+          setImgLoading(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [clientDocId, safePage, mediaActive]);
+
+  /** @returns 是否成功装载（成功锁定来源或切到 /page/{page} 模板）。供自动解包 effect 判断是否该清掉占位。 */
+  const unpackFromUrl = useCallback(
+    async (rawInput: string): Promise<boolean> => {
+      const trimmed = rawInput.trim();
+      if (!trimmed) {
+        setErrorMsg('请输入 PDF 链接或选择本地 PDF 文件');
+        return false;
+      }
+      if (!isSafePdfUrl(trimmed)) {
+        setErrorMsg('仅支持 http/https 或合法 PDF 链接（拒绝 javascript:/data:）');
+        return false;
+      }
+      if (isUnpackedPdfTemplate(trimmed)) {
+        onChangeUrl(trimmed);
+        onChangePage(1);
+        return true;
+      }
+
+      setLoading(true);
+      setErrorMsg('');
+      try {
+        const resp = await fetch('/api/pdf/unpack', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: trimmed }),
+        });
+        const data = (await resp.json().catch(() => null)) as {
+          ok?: boolean;
+          pageUrlTemplate?: string;
+          totalPages?: number;
+          error?: string;
+        } | null;
+
+        if (resp.ok && data?.ok && data.pageUrlTemplate) {
+          onChangeTotalPages?.(data.totalPages ?? 1);
+          onChangeUrl(data.pageUrlTemplate);
+          onChangePage(1);
+          return true;
+        }
+
+        // 服务端返回了明确的业务错误（限流/未授权/私网拦截/解包失败）就直接展示，不再前端兜底。
+        if (data?.error) {
+          setErrorMsg(data.error);
+          return false;
+        }
+
+        // 走到这里说明没有服务端（静态部署下 POST 打到 Pages 得到 404 + HTML，data 为 null）。
+        // 退化为前端 pdf.js 解包：要求目标 PDF 自身允许 CORS 读取字节。
+        const directResp = await fetch(trimmed);
+        if (!directResp.ok) {
+          setErrorMsg(`无法拉取 PDF（HTTP ${directResp.status}）`);
+          return false;
+        }
+        const bytes = new Uint8Array(await directResp.arrayBuffer());
+        const unpacked = await unpackPdfBytesInBrowser(bytes);
+        setClientDocId(unpacked.clientDocId);
+        onChangeTotalPages?.(unpacked.totalPages);
+        onChangePage(1);
+        return true;
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        setErrorMsg(
+          `PDF 解包失败：当前为静态部署且目标地址未开放 CORS 读取（${detail}）。请改用「选择本地 PDF 文件」，或自建后端（npm run dev）后使用链接解包`
+        );
+        return false;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [onChangePage, onChangeTotalPages, onChangeUrl]
+  );
+
+  useEffect(() => {
+    const trimmed = url.trim();
+    if (!trimmed || isLocked || autoUnpackedUrlRef.current === trimmed) return;
+    if (!/^https?:\/\//i.test(trimmed)) return;
+    // 关键：先占位再调用。失败的场景下必须在 catch 里把它清掉，否则这个 URL 会被永久标记为
+    // 「已尝试」，后续 effect 再也不会重跑——用户只能手动改 URL 再改回来才能重试。
+    autoUnpackedUrlRef.current = trimmed;
+    void unpackFromUrl(trimmed).then((ok) => {
+      if (!ok && autoUnpackedUrlRef.current === trimmed) {
+        autoUnpackedUrlRef.current = '';
+      }
+    });
+  }, [url, isLocked, unpackFromUrl]);
+
+  const handleFilePick = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.type && file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      setErrorMsg('仅支持 .pdf 文件');
+      return;
+    }
+    if (file.size > MAX_PDF_UPLOAD_BYTES) {
+      setErrorMsg('PDF 文件超过 50MB 上限');
+      return;
+    }
+
+    setLoading(true);
+    setErrorMsg('');
+    try {
+      try {
+        const resp = await fetch('/api/pdf/unpack-upload', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/pdf',
+            'X-Pdf-Filename': encodeURIComponent(file.name),
+          },
+          body: file,
+        });
+        const data = (await resp.json().catch(() => null)) as {
+          ok?: boolean;
+          pageUrlTemplate?: string;
+          totalPages?: number;
+          error?: string;
+        } | null;
+        if (resp.ok && data?.ok && data.pageUrlTemplate) {
+          onChangeTotalPages?.(data.totalPages ?? 1);
+          onChangeUrl(data.pageUrlTemplate);
+          onChangePage(1);
+          return;
+        }
+        // 服务端给出明确错误就直接展示；data 为 null 说明是静态部署（Pages 返回 404 + HTML），
+        // 静默落到下方的前端 pdf.js 解包。
+        if (data?.error) {
+          setErrorMsg(data.error);
+          return;
+        }
+      } catch {
+        // 静态模式无后端，回退至纯前端 pdf.js 解包
+      }
+
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const unpacked = await unpackPdfBytesInBrowser(bytes);
+      setClientDocId(unpacked.clientDocId);
+      onChangeTotalPages?.(unpacked.totalPages);
+      onChangePage(1);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'PDF 文件解包失败');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const commitPage = (raw: string) => {
     let next = normalizePdfPage(raw);
@@ -89,218 +266,232 @@ function PdfViewerBlockInner({
     onChangePage(next);
   };
 
-  const commitUrl = () => {
-    const trimmed = urlDraft.trim();
-    if (trimmed && !buildPdfIframeSrc(trimmed, 1, useProxy)) {
-      setTip('仅支持 http/https、服务端 /api/pdf/ 或合法 PDF 链接（拒绝 javascript:/data:）');
-      return;
-    }
-    setTip('');
-    onChangeTotalPages?.(0);
-    onChangeUrl(trimmed);
-    onChangePage(1);
-    if (trimmed) setSourceOpen(false);
-  };
-
-  const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    if (file.type && file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-      setTip('仅支持 .pdf 文件');
-      return;
-    }
-    if (file.size > MAX_PDF_UPLOAD_BYTES) {
-      setTip('PDF 文件超过 50MB 上传上限');
-      return;
-    }
-
-    setUploading(true);
-    setTip('');
-    try {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      const detectedPages = countPdfPagesFromBytes(bytes) ?? 0;
-
-      const resp = await fetch('/api/pdf/upload', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/pdf',
-          'X-Pdf-Filename': encodeURIComponent(file.name),
-        },
-        body: file,
-      });
-      const data = (await resp.json().catch(() => null)) as { ok?: boolean; url?: string; error?: string } | null;
-      if (!resp.ok || !data?.ok || !data.url) {
-        setTip(data?.error || `上传失败（HTTP ${resp.status}）：需自托管后端 /api/pdf/upload，或直接粘贴 https:// PDF 链接`);
-        return;
-      }
-      onChangeTotalPages?.(detectedPages);
-      onChangeUrl(data.url);
-      onChangePage(1);
-      setSourceOpen(false);
-    } catch {
-      setTip('上传失败：当前为静态模式无 /api/pdf/upload 后端，请直接粘贴 https:// PDF 链接');
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const iframeSrc = buildPdfIframeSrc(url, safePage, useProxy);
   const atFirst = safePage <= 1;
   const atLast = Boolean(validTotal && safePage >= validTotal);
 
-  return (
-    <div
-      onMouseDown={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-      className="nodrag nopan nowheel flex h-full min-h-[260px] w-full flex-1 flex-col overflow-hidden bg-slate-100/70"
-    >
-      {/* 折叠式换源栏：平时收起，点底部「换源」图标或未加载时展开 */}
-      {sourceOpen && (
-        <div className="flex items-center gap-1.5 border-b border-slate-200 bg-white px-2.5 py-1.5">
+  const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (!isLocked) return;
+    if (e.key === 'ArrowLeft' && !atFirst) {
+      e.preventDefault();
+      commitPage(String(safePage - 1));
+    } else if (e.key === 'ArrowRight' && !atLast) {
+      e.preventDefault();
+      commitPage(String(safePage + 1));
+    }
+  };
+
+  const handleTouchStart = (e: TouchEvent<HTMLDivElement>) => {
+    if (e.touches.length === 1) {
+      touchStartXRef.current = e.touches[0].clientX;
+    }
+  };
+
+  const handleTouchEnd = (e: TouchEvent<HTMLDivElement>) => {
+    if (touchStartXRef.current === null || e.changedTouches.length === 0) return;
+    const dx = e.changedTouches[0].clientX - touchStartXRef.current;
+    touchStartXRef.current = null;
+    if (dx > 45 && !atFirst) {
+      commitPage(String(safePage - 1));
+    } else if (dx < -45 && !atLast) {
+      commitPage(String(safePage + 1));
+    }
+  };
+
+  // 一次性输入态：成功解包锁定后永久消失
+  if (!isLocked) {
+    return (
+      <div
+        onMouseDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+        className="nodrag nopan nowheel flex h-full min-h-[260px] w-full flex-1 flex-col items-center justify-center gap-3 overflow-hidden bg-slate-50 px-5 py-4 text-center"
+      >
+        <div className="flex h-11 w-11 items-center justify-center rounded-full bg-red-50 text-red-600">
+          {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <FileImage className="h-5 w-5" />}
+        </div>
+        <div className="space-y-0.5">
+          <div className="text-xs font-semibold text-slate-800">
+            {loading ? '正在解包 PDF 为逐页图片…' : '一次性加载 PDF（逐页图片查看器）'}
+          </div>
+          <div className="text-[11px] text-slate-500">
+            加载成功后即锁定来源，按控件大小自适应展示单页图片
+          </div>
+        </div>
+
+        <div className="flex w-full max-w-[340px] items-center gap-1.5">
           <input
             type="text"
+            disabled={loading}
             value={urlDraft}
-            placeholder="粘贴 https:// PDF 链接或点右侧上传到服务端…"
+            placeholder="输入 https:// PDF 链接（一次性）…"
             onChange={(e) => setUrlDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
                 e.preventDefault();
-                commitUrl();
+                void unpackFromUrl(urlDraft);
               }
             }}
-            className="min-w-0 flex-1 rounded border border-slate-300 bg-slate-50 px-2 py-1 text-[11px] text-slate-900 outline-none focus:border-blue-500 focus:bg-white"
+            className="min-w-0 flex-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 outline-none focus:border-blue-500 disabled:opacity-50"
           />
           <button
             type="button"
-            onClick={commitUrl}
-            className="shrink-0 rounded bg-slate-900 px-2 py-1 text-[11px] font-medium text-white hover:bg-slate-700"
+            disabled={loading}
+            onClick={() => void unpackFromUrl(urlDraft)}
+            className="shrink-0 rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700 disabled:opacity-50"
           >
-            打开
+            加载
           </button>
+        </div>
+
+        <div className="flex items-center gap-2">
           <input
             ref={fileInputRef}
             type="file"
             accept="application/pdf,.pdf"
-            onChange={(ev) => void handleFileUpload(ev)}
+            onChange={(ev) => void handleFilePick(ev)}
             className="hidden"
           />
           <button
             type="button"
-            disabled={uploading}
+            disabled={loading}
             onClick={() => fileInputRef.current?.click()}
-            title="二进制直传至服务端 /api/pdf/upload（上限 50MB）"
-            className="inline-flex shrink-0 items-center gap-0.5 rounded border border-slate-300 bg-white px-1.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+            className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
           >
-            <Upload className="h-3 w-3" />
-            {uploading ? '上传中' : '上传'}
+            <Upload className="h-3.5 w-3.5" />
+            选择本地 PDF 文件解包
           </button>
-          <label
-            className="inline-flex shrink-0 cursor-pointer items-center gap-1 text-[11px] text-slate-600 select-none"
-            title="开启后通过服务端 /api/proxy/binary 代理转发远程 PDF 链接"
-          >
-            <input
-              type="checkbox"
-              checked={useProxy}
-              onChange={(e) => onChangeUseProxy(e.target.checked)}
-              className="h-3 w-3 accent-blue-600"
-            />
-            <Globe className="h-3 w-3 text-slate-500" />
-          </label>
         </div>
-      )}
 
-      {tip && (
-        <div className="border-b border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] text-rose-700">
-          {tip}
-        </div>
-      )}
-
-      {/* 沉浸式 PDF 视口：零外框、零 padding，离屏休眠 */}
-      {iframeSrc ? (
-        mediaActive ? (
-          <iframe
-            key={iframeSrc}
-            src={iframeSrc}
-            title="PDF 预览"
-            className="min-h-0 w-full flex-1 border-0 bg-white"
-          />
-        ) : (
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 bg-slate-50 px-4 text-center text-xs text-slate-400">
-            <FileText className="h-6 w-6 text-slate-300" />
-            <div>PDF 离屏休眠中（移近视口自动恢复第 {safePage} 页）</div>
+        {errorMsg && (
+          <div className="w-full max-w-[340px] rounded-md border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[11px] text-rose-700">
+            {errorMsg}
           </div>
-        )
-      ) : (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 bg-white px-5 text-center text-xs text-slate-500">
-          <FileText className="h-7 w-7 text-slate-300" />
-          <div className="text-slate-600">在上方粘贴 PDF 链接（可勾选 Proxy 代理），或上传至服务端托管（上限 50MB）</div>
-        </div>
-      )}
+        )}
+      </div>
+    );
+  }
 
-      {/* 底部极简沉浸式翻页栏：‹  [页码] / 共 X 页  ›  + 右侧换源按钮 */}
-      <div className="flex items-center justify-between border-t border-slate-200/80 bg-white/95 px-2.5 py-1.5 backdrop-blur">
-        <div className="w-12" />
-
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            disabled={atFirst}
-            onClick={() => commitPage(String(safePage - 1))}
-            title="上一页"
-            aria-label="上一页"
-            className="inline-flex h-6 w-6 items-center justify-center rounded-full text-slate-700 transition hover:bg-slate-100 disabled:pointer-events-none disabled:opacity-30"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </button>
-
-          <div className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
-            <input
-              type="number"
-              min={1}
-              max={validTotal ?? 9999}
-              value={pageDraft}
-              onChange={(e) => setPageDraft(e.target.value)}
-              onBlur={() => commitPage(pageDraft)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  commitPage(pageDraft);
-                }
+  // 已锁定查看态：仿 Windows 图片查看器（严格 fit 控件大小 + 左右翻页 + 底部页码，零滚动条）
+  return (
+    <div
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+      onMouseDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+      className="nodrag nopan nowheel relative flex h-full min-h-[260px] w-full flex-1 flex-col overflow-hidden bg-neutral-900 outline-none select-none"
+    >
+      {/* 主图片视口：严格 w-full h-full object-contain 随控件大小缩放，无滚动条、无双击放大 */}
+      <div className="relative flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden bg-neutral-900 p-2">
+        {mediaActive ? (
+          currentImageSrc ? (
+            <img
+              key={currentImageSrc}
+              src={currentImageSrc}
+              alt={`PDF 第 ${safePage} 页`}
+              draggable={false}
+              onLoad={() => setImgLoading(false)}
+              onError={() => {
+                setImgLoading(false);
+                setErrorMsg(`第 ${safePage} 页图片加载失败`);
               }}
-              aria-label="当前页码"
-              className="w-8 bg-transparent text-center font-mono text-[11px] font-semibold text-slate-900 outline-none"
+              className="h-full w-full object-contain"
             />
-            <span className="text-slate-400">/</span>
-            <span className="whitespace-nowrap font-medium text-slate-600">
-              共 {validTotal ?? '?'} 页
-            </span>
+          ) : (
+            <div className="flex flex-col items-center gap-1.5 text-xs text-neutral-400">
+              <Loader2 className="h-5 w-5 animate-spin" />
+              <span>正在渲染第 {safePage} 页…</span>
+            </div>
+          )
+        ) : (
+          <div className="flex flex-col items-center gap-1.5 text-xs text-neutral-400">
+            <FileImage className="h-6 w-6 text-neutral-500" />
+            <span>离屏休眠中（移近视口自动恢复第 {safePage} 页）</span>
           </div>
+        )}
 
-          <button
-            type="button"
-            disabled={atLast}
-            onClick={() => commitPage(String(safePage + 1))}
-            title="下一页"
-            aria-label="下一页"
-            className="inline-flex h-6 w-6 items-center justify-center rounded-full text-slate-700 transition hover:bg-slate-100 disabled:pointer-events-none disabled:opacity-30"
-          >
-            <ChevronRight className="h-4 w-4" />
-          </button>
+        {imgLoading && mediaActive && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-neutral-900/40">
+            <Loader2 className="h-6 w-6 animate-spin text-white" />
+          </div>
+        )}
+
+        {/* 左悬浮翻页箭头 */}
+        <button
+          type="button"
+          disabled={atFirst}
+          onClick={() => commitPage(String(safePage - 1))}
+          title="上一页 (←)"
+          aria-label="上一页"
+          className="absolute left-2 top-1/2 z-10 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur-sm transition hover:bg-black/75 disabled:pointer-events-none disabled:opacity-20"
+        >
+          <ChevronLeft className="h-5 w-5" />
+        </button>
+
+        {/* 右悬浮翻页箭头 */}
+        <button
+          type="button"
+          disabled={atLast}
+          onClick={() => commitPage(String(safePage + 1))}
+          title="下一页 (→)"
+          aria-label="下一页"
+          className="absolute right-2 top-1/2 z-10 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur-sm transition hover:bg-black/75 disabled:pointer-events-none disabled:opacity-20"
+        >
+          <ChevronRight className="h-5 w-5" />
+        </button>
+      </div>
+
+      {errorMsg && (
+        <div className="border-t border-rose-900/50 bg-rose-950/90 px-2.5 py-1 text-center text-[11px] text-rose-200">
+          {errorMsg}
+        </div>
+      )}
+
+      {/* 底部极简页码栏：仅保留左右翻页与页码（无换源、无滚动控件） */}
+      <div className="flex shrink-0 items-center justify-center gap-2 border-t border-neutral-800 bg-neutral-950/95 px-3 py-1.5">
+        <button
+          type="button"
+          disabled={atFirst}
+          onClick={() => commitPage(String(safePage - 1))}
+          title="上一页"
+          aria-label="上一页"
+          className="inline-flex h-6 w-6 items-center justify-center rounded-full text-neutral-300 transition hover:bg-neutral-800 hover:text-white disabled:pointer-events-none disabled:opacity-30"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </button>
+
+        <div className="inline-flex items-center gap-1 rounded-full bg-neutral-800 px-2.5 py-0.5 text-[11px] text-neutral-300">
+          <input
+            type="number"
+            min={1}
+            max={validTotal ?? 9999}
+            value={pageDraft}
+            onChange={(e) => setPageDraft(e.target.value)}
+            onBlur={() => commitPage(pageDraft)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commitPage(pageDraft);
+              }
+            }}
+            aria-label="当前页码"
+            className="w-8 bg-transparent text-center font-mono text-[11px] font-semibold text-white outline-none"
+          />
+          <span className="text-neutral-500">/</span>
+          <span className="whitespace-nowrap font-medium text-neutral-300">
+            共 {validTotal ?? '?'} 页
+          </span>
         </div>
 
         <button
           type="button"
-          onClick={() => setSourceOpen((v) => !v)}
-          title={sourceOpen ? '收起链接与上传栏' : '切换 PDF 链接 / 上传 / Proxy'}
-          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition ${
-            sourceOpen
-              ? 'bg-slate-900 text-white'
-              : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
-          }`}
+          disabled={atLast}
+          onClick={() => commitPage(String(safePage + 1))}
+          title="下一页"
+          aria-label="下一页"
+          className="inline-flex h-6 w-6 items-center justify-center rounded-full text-neutral-300 transition hover:bg-neutral-800 hover:text-white disabled:pointer-events-none disabled:opacity-30"
         >
-          <Link2 className="h-3 w-3" />
-          换源
+          <ChevronRight className="h-4 w-4" />
         </button>
       </div>
     </div>
