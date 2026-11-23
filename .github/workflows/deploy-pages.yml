@@ -61,6 +61,18 @@ jobs:
           VITE_BASE_PATH: ${{ steps.base.outputs.path }}
         run: npm run build
 
+      # tutorial/ 是独立的静态多页文档，不走 vite 构建；直接拷进 dist/ 一起发布
+      - name: Copy tutorial into dist
+        run: |
+          if [ -d tutorial ]; then
+            mkdir -p dist/tutorial
+            cp -r tutorial/. dist/tutorial/
+            echo "已拷贝 tutorial/ 到 dist/tutorial/："
+            ls -1 dist/tutorial
+          else
+            echo "未找到 tutorial/ 目录，跳过"
+          fi
+
       # Pages 默认会跑 Jekyll，下划线开头的资源会被吞掉；.nojekyll 关掉它
       - name: Add .nojekyll
         run: touch dist/.nojekyll
