@@ -11,6 +11,47 @@ const CUSTOM_TEMPLATES_KEY = 'atlas-hybrid-custom-templates-v1';
 
 export const BUILTIN_TEMPLATES: BlueprintTemplate[] = [
   {
+    id: 'tpl-api-poller',
+    name: 'API 轮询抓取器',
+    description: '定时轮询抓取接口数据、JSON 路径提取、指数退避与离屏自动暂停',
+    group: '工程与运维',
+    kind: 'node',
+    color: '#0284C7',
+    nodePreset: {
+      width: 390,
+      height: 330,
+      title: 'API 轮询抓取器',
+      body: '',
+      category: '轮询',
+      color: '#0284C7',
+      inputPorts: [{ id: 'in-1', label: '配置入口' }],
+      outputPorts: [{ id: 'out-1', label: '抓取结果输出' }],
+      defaultVars: {
+        pollUrl: '/api/proxy/status',
+        pollMethod: 'GET',
+        pollIntervalSec: 10,
+        pollJsonPath: '',
+        pollUseProxy: true,
+        pollEnabled: false,
+        pollLastValue: '',
+        pollStatus: '',
+        pollUpdatedAt: '',
+      },
+      script: String.raw`vars.contents = [
+  {
+    type: 'api_poller',
+    id: 'pollerView',
+    bindUrl: 'pollUrl',
+    bindMethod: 'pollMethod',
+    bindInterval: 'pollIntervalSec',
+    bindJsonPath: 'pollJsonPath',
+    bindProxy: 'pollUseProxy',
+    bindEnabled: 'pollEnabled'
+  }
+];`,
+    },
+  },
+  {
     id: 'tpl-pdf-reader',
     name: 'PDF 阅读器',
     description: '解包 PDF 为逐页图片，仿 Windows 图片查看器左右翻页与页码直达（fit 控件大小 · 一次性输入）',

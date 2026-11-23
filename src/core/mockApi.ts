@@ -207,11 +207,15 @@ export function installMockApi(): void {
     let url: URL;
     let req: Request | null = null;
 
+    // 在 about:blank / srcdoc / file:// 等非 HTTP 宿主页中，window.location.href 不能作为相对路径 base
+    const baseHref = /^https?:\/\//i.test(window.location.href)
+      ? window.location.href
+      : 'http://atlas.local/';
     if (input instanceof Request) {
       req = input;
-      url = new URL(input.url, window.location.href);
+      url = new URL(input.url, baseHref);
     } else {
-      url = new URL(typeof input === 'string' ? input : input.toString(), window.location.href);
+      url = new URL(typeof input === 'string' ? input : input.toString(), baseHref);
     }
 
     if (!url.pathname.startsWith('/api/')) {

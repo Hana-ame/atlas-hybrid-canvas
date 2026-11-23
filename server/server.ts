@@ -283,7 +283,11 @@ async function startServer() {
           redirect: 'manual',
           signal: controller.signal,
         });
-        const buf = new Uint8Array(await res.arrayBuffer());
+        const read = await readResponseBufferWithLimit(res, 2 * 1024 * 1024);
+        if (!read.ok) {
+          throw new Error('上游响应体超过 2MB 安全上限，已中止读取');
+        }
+        const buf = new Uint8Array(read.buffer);
         const resHeaders: Record<string, string> = {};
         res.headers.forEach((v, k) => {
           resHeaders[k] = v;
@@ -613,18 +617,22 @@ async function startServer() {
     res.json({ ok: true, ...meta });
   });
 
-  app.get('/api/pdf/:id/page/:page', (req, res) => {
+  app.get('/api/pdf/:id/page/:page', async (req, res) => {
     const docId = String(req.params.id || '');
     const pageNum = Number(req.params.page);
-    const hit = getUnpackedPdfPage(docId, pageNum);
-    if (!hit) {
-      res.status(404).json({ ok: false, error: '未找到对应 PDF 页面图片' });
-      return;
+    try {
+      const hit = await getUnpackedPdfPage(docId, pageNum, req.query.dpi);
+      if (!hit) {
+        res.status(404).json({ ok: false, error: '未找到对应 PDF 页面图片' });
+        return;
+      }
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.send(hit.buffer);
+    } catch (err) {
+      res.status(502).json({ ok: false, error: err instanceof Error ? err.message : 'PDF 页面渲染失败' });
     }
-    res.setHeader('Content-Type', 'image/png');
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Cache-Control', 'public, max-age=3600');
-    res.send(hit.buffer);
   });
 
   app.get('/api/pdf/:id', (req, res) => {

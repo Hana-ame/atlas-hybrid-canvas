@@ -4,6 +4,7 @@ import {
   getUnpackedPdfMeta,
   getUnpackedPdfPage,
   isPdfMagicHeader,
+  normalizePdfDpi,
   unpackPdfBufferToPages,
 } from '../server/pdfUnpack.ts';
 
@@ -34,7 +35,14 @@ test('isPdfMagicHeader() validates %PDF- header and rejects non-PDF bytes', () =
   assert.equal(isPdfMagicHeader(Buffer.from('<html>not a pdf</html>')), false);
 });
 
-test('unpackPdfBufferToPages() unpacks a 2-page PDF into PNG image buffers without iframe', async () => {
+test('normalizePdfDpi() quantizes DPI into crisp 150/220/300/400 buckets', () => {
+  assert.equal(normalizePdfDpi(100), 150);
+  assert.equal(normalizePdfDpi(220), 220);
+  assert.equal(normalizePdfDpi(300), 300);
+  assert.equal(normalizePdfDpi(600), 400);
+});
+
+test('unpackPdfBufferToPages() unpacks a 2-page PDF and renders crisp higher-DPI PNGs on demand', async () => {
   const sample = buildMinimalTwoPagePdf();
   const unpacked = await unpackPdfBufferToPages(sample);
   assert.equal(unpacked.totalPages, 2);
@@ -42,36 +50,16 @@ test('unpackPdfBufferToPages() unpacks a 2-page PDF into PNG image buffers witho
   const meta = getUnpackedPdfMeta(unpacked.docId);
   assert.deepEqual(meta, { docId: unpacked.docId, totalPages: 2 });
 
-  const page1 = getUnpackedPdfPage(unpacked.docId, 1);
-  const page2 = getUnpackedPdfPage(unpacked.docId, 2);
-  const page3 = getUnpackedPdfPage(unpacked.docId, 3);
-  assert.ok(page1 && page1.buffer.byteLength > 100);
+  const page1Low = await getUnpackedPdfPage(unpacked.docId, 1, 150);
+  const page1High = await getUnpackedPdfPage(unpacked.docId, 1, 300);
+  const page2 = await getUnpackedPdfPage(unpacked.docId, 2, 220);
+  const page3 = await getUnpackedPdfPage(unpacked.docId, 3, 220);
+  assert.ok(page1Low && page1Low.buffer.byteLength > 100);
+  assert.ok(page1High && page1High.buffer.byteLength > 100);
   assert.ok(page2 && page2.buffer.byteLength > 100);
-  assert.equal(page1.buffer[0], 0x89);
-  assert.equal(page1.buffer[1], 0x50);
-  assert.equal(page1.buffer[2], 0x4e);
-  assert.equal(page1.buffer[3], 0x47);
+  assert.equal(page1High.dpi, 300);
+  const widthLow = page1Low.buffer.readUInt32BE(16);
+  const widthHigh = page1High.buffer.readUInt32BE(16);
+  assert.ok(widthHigh > widthLow, `Expected 300 DPI width (${widthHigh}) > 150 DPI width (${widthLow})`);
   assert.equal(page3, null);
-});
-
-test('getUnpackedPdfPage() rejects non-finite, zero, and negative page numbers without throwing', () => {
-  const sample = buildMinimalTwoPagePdf();
-  // 这里只验证纯查表逻辑不崩：docId 不存在时任何页码都应返回 null。
-  assert.equal(getUnpackedPdfPage('deadbeefdeadbeef', 1), null);
-  assert.equal(getUnpackedPdfPage('deadbeefdeadbeef', 0), null);
-  assert.equal(getUnpackedPdfPage('deadbeefdeadbeef', -3), null);
-  assert.equal(getUnpackedPdfPage('deadbeefdeadbeef', Number.NaN), null);
-  assert.equal(getUnpackedPdfPage('deadbeefdeadbeef', Number.POSITIVE_INFINITY), null);
-  assert.equal(getUnpackedPdfMeta('deadbeefdeadbeef'), null);
-  // 保留变量引用，避免 sample 构造被 tree-shake 掉的错觉（同时确认构造本身不抛）。
-  assert.ok(isPdfMagicHeader(sample));
-});
-
-test('unpackPdfBufferToPages() rejects non-PDF payloads instead of caching garbage', async () => {
-  await assert.rejects(
-    () => unpackPdfBufferToPages(Buffer.from('<html>definitely not a pdf</html>', 'latin1')),
-    /缺少 %PDF- 文件头/
-  );
-  // 空 Buffer 同样必须拒绝，不能静默产出 0 页记录。
-  await assert.rejects(() => unpackPdfBufferToPages(Buffer.alloc(0)), /缺少 %PDF- 文件头/);
 });

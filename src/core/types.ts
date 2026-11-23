@@ -81,7 +81,29 @@ export interface ContentPdfBlock {
   bindProxy?: string;
 }
 
-export type ContentLeafBlock = ContentTextBlock | ContentButtonBlock | ContentInputBlock | ContentPdfBlock;
+export interface ContentApiPollerBlock {
+  type: 'api_poller';
+  id: string;
+  url?: string;
+  method?: 'GET' | 'POST';
+  intervalSec?: number;
+  jsonPath?: string;
+  useProxy?: boolean;
+  enabled?: boolean;
+  bindUrl?: string;
+  bindMethod?: string;
+  bindInterval?: string;
+  bindJsonPath?: string;
+  bindProxy?: string;
+  bindEnabled?: string;
+}
+
+export type ContentLeafBlock =
+  | ContentTextBlock
+  | ContentButtonBlock
+  | ContentInputBlock
+  | ContentPdfBlock
+  | ContentApiPollerBlock;
 export type ContentFlowItem = ContentLeafBlock | ContentLeafBlock[];
 
 export interface BlueprintNode {

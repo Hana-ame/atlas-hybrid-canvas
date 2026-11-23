@@ -1,8 +1,8 @@
 /**
  * @file pdfHelper.ts
- * @description PDF 逐页图片查看器辅助工具（彻底移除内置浏览器渲染逻辑）：
- * - 校验 PDF URL 安全性（放行 http/https 外链、服务端 /api/pdf/、/api/proxy/binary 及合法 blob:，拒绝 javascript:/data:）；
- * - 构造服务端逐页图片地址（/api/pdf/:docId/page/:page）；
+ * @description PDF 逐页图片查看器辅助工具（零内置浏览器渲染）：
+ * - 校验 PDF URL 安全性；
+ * - 构造带动态高分 DPI 档位（150/220/300/400）的服务端逐页图片地址；
  * - 零依赖 PDF 页数探测。
  */
 
@@ -30,33 +30,37 @@ export function isSafePdfUrl(rawUrl: string): boolean {
   }
 }
 
-/**
- * 判断地址是否已是服务端解包后的逐页图片模板（/api/pdf/:docId/page/{page}）。
- */
 export function isUnpackedPdfTemplate(rawUrl: string): boolean {
   return /^\/api\/pdf\/[a-zA-Z0-9_-]+\/page\/\{page\}$/.test(rawUrl.trim());
 }
 
-/**
- * 根据服务端解包模板（/api/pdf/:docId/page/{page}）生成指定页的图片地址。
- */
-export function buildPdfPageImageUrl(rawUrl: string, page: number): string | null {
+export function pickPdfRenderDpi(targetPixelWidth: number): 150 | 220 | 300 | 400 {
+  if (!Number.isFinite(targetPixelWidth) || targetPixelWidth <= 1050) return 150;
+  if (targetPixelWidth <= 1650) return 220;
+  if (targetPixelWidth <= 2450) return 300;
+  return 400;
+}
+
+export function buildPdfPageImageUrl(rawUrl: string, page: number, dpi?: number): string | null {
   const trimmed = rawUrl.trim();
   if (!trimmed) return null;
   const safePage = normalizePdfPage(page);
+  let base: string | null = null;
   if (isUnpackedPdfTemplate(trimmed)) {
-    return trimmed.replace('{page}', String(safePage));
+    base = trimmed.replace('{page}', String(safePage));
+  } else {
+    const match = trimmed.match(/^\/api\/pdf\/([a-zA-Z0-9_-]+)(?:\/page\/\d+)?$/);
+    if (match) {
+      base = `/api/pdf/${match[1]}/page/${safePage}`;
+    }
   }
-  const match = trimmed.match(/^\/api\/pdf\/([a-zA-Z0-9_-]+)(?:\/page\/\d+)?$/);
-  if (match) {
-    return `/api/pdf/${match[1]}/page/${safePage}`;
+  if (!base) return null;
+  if (dpi && Number.isFinite(dpi)) {
+    return `${base}?dpi=${Math.round(dpi)}`;
   }
-  return null;
+  return base;
 }
 
-/**
- * 零依赖快速解析 PDF 总页数：优先在 4KB 窗口内匹配 /Type /Pages ... /Count N，回退统计 /Type /Page 节点数。
- */
 export function countPdfPagesFromBytes(bytes: Uint8Array): number | null {
   try {
     const text = new TextDecoder('latin1').decode(bytes);

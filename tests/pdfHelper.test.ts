@@ -6,6 +6,7 @@ import {
   isSafePdfUrl,
   isUnpackedPdfTemplate,
   normalizePdfPage,
+  pickPdfRenderDpi,
 } from '../src/core/pdfHelper.ts';
 
 test('normalizePdfPage() clamps invalid, negative, and oversized page numbers', () => {
@@ -24,10 +25,14 @@ test('isSafePdfUrl() allows http/https/blob/local server proxy and rejects javas
   assert.equal(isSafePdfUrl('data:text/html,<script>alert(1)</script>'), false);
 });
 
-test('isUnpackedPdfTemplate() & buildPdfPageImageUrl() resolve per-page PNG URLs safely', () => {
+test('isUnpackedPdfTemplate(), pickPdfRenderDpi() & buildPdfPageImageUrl() resolve crisp per-page PNG URLs', () => {
   assert.equal(isUnpackedPdfTemplate('/api/pdf/a1b2c3d4/page/{page}'), true);
   assert.equal(isUnpackedPdfTemplate('https://example.com/a.pdf'), false);
-  assert.equal(buildPdfPageImageUrl('/api/pdf/a1b2c3d4/page/{page}', 3), '/api/pdf/a1b2c3d4/page/3');
+  assert.equal(pickPdfRenderDpi(800), 150);
+  assert.equal(pickPdfRenderDpi(1500), 220);
+  assert.equal(pickPdfRenderDpi(2200), 300);
+  assert.equal(pickPdfRenderDpi(3200), 400);
+  assert.equal(buildPdfPageImageUrl('/api/pdf/a1b2c3d4/page/{page}', 3, 300), '/api/pdf/a1b2c3d4/page/3?dpi=300');
   assert.equal(buildPdfPageImageUrl('/api/pdf/a1b2c3d4', 0), '/api/pdf/a1b2c3d4/page/1');
   assert.equal(buildPdfPageImageUrl('https://example.com/a.pdf', 2), null);
 });

@@ -1,8 +1,8 @@
 /**
  * @file pdfClientUnpack.ts
- * @description 纯前端 PDF 解包为逐页图片引擎（静态无后端模式兜底）：
+ * @description 纯前端 PDF 高清逐页解包引擎（静态无后端模式兜底）：
  * - 绝不使用浏览器内置 PDF 渲染器；
- * - 动态加载 pdf.js ESM 解析 PDF 二进制，按页渲染至离屏 Canvas 并导出 PNG DataURL 缓存。
+ * - 按当前控件物理像素宽度动态档位（1100/1700/2500/3600px）渲染离屏 Canvas 并导出 PNG，放大不发糊。
  */
 
 interface PdfJsViewport {
@@ -31,14 +31,22 @@ interface ClientUnpackedDoc {
   id: string;
   totalPages: number;
   doc: PdfJsDoc;
-  pageCache: Map<number, string>;
+  pageCache: Map<string, string>;
 }
 
 const PDFJS_CDN_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.min.mjs';
 const PDFJS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs';
+const MAX_CANVAS_EDGE = 4096;
 
 let pdfJsPromise: Promise<PdfJsModule> | null = null;
 const clientDocStore = new Map<string, ClientUnpackedDoc>();
+
+function quantizeClientWidth(targetPixelWidth: number): number {
+  if (!Number.isFinite(targetPixelWidth) || targetPixelWidth <= 1100) return 1100;
+  if (targetPixelWidth <= 1700) return 1700;
+  if (targetPixelWidth <= 2500) return 2500;
+  return 3600;
+}
 
 async function loadPdfJs(): Promise<PdfJsModule> {
   if (!pdfJsPromise) {
@@ -75,17 +83,22 @@ export async function unpackPdfBytesInBrowser(
 
 export async function renderClientPdfPageImage(
   clientDocId: string,
-  pageNumber: number
+  pageNumber: number,
+  targetPixelWidth = 1700
 ): Promise<string | null> {
   const rec = clientDocStore.get(clientDocId);
   if (!rec) return null;
   const safePage = Math.max(1, Math.min(rec.totalPages, Math.floor(pageNumber)));
-  const cached = rec.pageCache.get(safePage);
+  const bucketW = quantizeClientWidth(targetPixelWidth);
+  const cacheKey = `${safePage}@${bucketW}`;
+  const cached = rec.pageCache.get(cacheKey);
   if (cached) return cached;
 
   const page = await rec.doc.getPage(safePage);
   const baseViewport = page.getViewport({ scale: 1 });
-  const targetScale = Math.min(2, Math.max(1.2, 1200 / Math.max(1, baseViewport.width)));
+  const desiredScale = bucketW / Math.max(1, baseViewport.width);
+  const maxSafeScale = MAX_CANVAS_EDGE / Math.max(1, Math.max(baseViewport.width, baseViewport.height));
+  const targetScale = Math.max(1.2, Math.min(5, desiredScale, maxSafeScale));
   const viewport = page.getViewport({ scale: targetScale });
 
   const canvas = document.createElement('canvas');
@@ -99,10 +112,10 @@ export async function renderClientPdfPageImage(
   canvas.width = 0;
   canvas.height = 0;
 
-  if (rec.pageCache.size >= 24) {
+  if (rec.pageCache.size >= 32) {
     const oldest = rec.pageCache.keys().next().value;
     if (oldest !== undefined) rec.pageCache.delete(oldest);
   }
-  rec.pageCache.set(safePage, dataUrl);
+  rec.pageCache.set(cacheKey, dataUrl);
   return dataUrl;
 }

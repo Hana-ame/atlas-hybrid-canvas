@@ -8,11 +8,13 @@
  */
 
 import { memo, useEffect, useState } from 'react';
-import { Handle, NodeResizer, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
+import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
+import { SmartNodeResizer } from './SmartNodeResizer';
 import { Copy, Globe, Lock, Play, RotateCcw, Settings2, Trash2, Unlock } from 'lucide-react';
 import { RESERVED_WIDGET_PROP_VARS } from '../core/layeredStore';
 import { parseTaskLine, toggleTaskLine } from '../core/taskList';
 import { PdfViewerBlock } from './PdfViewerBlock';
+import { ApiPollerBlock } from './ApiPollerBlock';
 import type {
   ContentFlowItem,
   ContentLeafBlock,
@@ -26,12 +28,13 @@ export interface WidgetNodeData extends Record<string, unknown> {
   onRunButton: (nodeId: string, btn: WidgetButtonSpec) => void;
   onRunScriptClick: (nodeId: string, buttonId: string) => void;
   onScriptInputChange: (nodeId: string, bindKey: string, value: string) => void;
+  onBatchUpdateVars?: (nodeId: string, patch: Record<string, unknown>, notifyDownstream?: boolean) => void;
   onScriptInputSubmit: (nodeId: string, inputId: string, value: string) => void;
   onToggleLock: (nodeId: string) => void;
   onResetLocal: (nodeId: string) => void;
   onEditTitle: (nodeId: string, nextTitle: string) => void;
   onEditBody: (nodeId: string, nextBody: string) => void;
-  onResizeNode: (nodeId: string, width: number, height: number) => void;
+  onResizeNode: (nodeId: string, width: number, height: number, x?: number, y?: number) => void;
   onOpenInspector: (nodeId: string) => void;
   onDuplicateNode: (nodeId: string) => void;
   onDeleteNode: (nodeId: string) => void;
@@ -55,12 +58,20 @@ const VARIANT_CLASSES: Record<string, string> = {
   danger: 'bg-rose-700 text-white hover:bg-rose-800',
 };
 
+function parseVarBoolean(raw: unknown): boolean {
+  if (typeof raw === 'boolean') return raw;
+  if (typeof raw === 'number') return raw !== 0;
+  const s = String(raw ?? '').trim().toLowerCase();
+  return s !== '' && s !== 'false' && s !== '0' && s !== 'null' && s !== 'undefined';
+}
+
 function WidgetNodeInner({ data, selected }: NodeProps) {
   const {
     entity,
     onRunButton,
     onRunScriptClick,
     onScriptInputChange,
+    onBatchUpdateVars,
     onScriptInputSubmit,
     onToggleLock,
     onResetLocal,
@@ -77,6 +88,9 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
   // 默认单击/按住整卡可拖动，双击标题或正文才进入编辑态！
   const [editingTitle, setEditingTitle] = useState(false);
   const [editingBody, setEditingBody] = useState(false);
+  const [liveSize, setLiveSize] = useState<{ width: number; height: number } | null>(null);
+  const displayWidth = liveSize ? liveSize.width : entity.width;
+  const displayHeight = liveSize ? liveSize.height : entity.height;
 
   const updateNodeInternals = useUpdateNodeInternals();
   const inputPorts = entity.inputPorts !== undefined ? entity.inputPorts : DEFAULT_INPUT_PORTS;
@@ -208,7 +222,7 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
       const totalKey = 'pdfTotalPages';
       const curProxy =
         entity.effectiveVars?.[proxyKey] !== undefined
-          ? Boolean(entity.effectiveVars[proxyKey])
+          ? parseVarBoolean(entity.effectiveVars[proxyKey])
           : Boolean(block.useProxy);
       const curTotal =
         entity.effectiveVars?.[totalKey] !== undefined
@@ -232,6 +246,83 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
       );
     }
 
+    if (block.type === 'api_poller') {
+      const urlKey = block.bindUrl || 'pollUrl';
+      const methodKey = block.bindMethod || 'pollMethod';
+      const intervalKey = block.bindInterval || 'pollIntervalSec';
+      const pathKey = block.bindJsonPath || 'pollJsonPath';
+      const proxyKey = block.bindProxy || 'pollUseProxy';
+      const enabledKey = block.bindEnabled || 'pollEnabled';
+
+      const curUrl =
+        entity.effectiveVars?.[urlKey] !== undefined
+          ? String(entity.effectiveVars[urlKey])
+          : String(block.url ?? '');
+      const curMethod =
+        String(entity.effectiveVars?.[methodKey] ?? block.method ?? 'GET').toUpperCase() === 'POST'
+          ? 'POST'
+          : 'GET';
+      const curInterval =
+        entity.effectiveVars?.[intervalKey] !== undefined
+          ? Number(entity.effectiveVars[intervalKey]) || 10
+          : Number(block.intervalSec) || 10;
+      const curPath =
+        entity.effectiveVars?.[pathKey] !== undefined
+          ? String(entity.effectiveVars[pathKey])
+          : String(block.jsonPath ?? '');
+      const curProxy =
+        entity.effectiveVars?.[proxyKey] !== undefined
+          ? parseVarBoolean(entity.effectiveVars[proxyKey])
+          : block.useProxy !== false;
+      const curEnabled =
+        entity.effectiveVars?.[enabledKey] !== undefined
+          ? parseVarBoolean(entity.effectiveVars[enabledKey])
+          : Boolean(block.enabled);
+
+      return (
+        <ApiPollerBlock
+          key={`poller-${block.id}-${idx}`}
+          url={curUrl}
+          method={curMethod}
+          intervalSec={curInterval}
+          jsonPath={curPath}
+          useProxy={curProxy}
+          enabled={curEnabled}
+          lastValue={entity.effectiveVars?.pollLastValue !== undefined ? String(entity.effectiveVars.pollLastValue) : ''}
+          lastStatus={entity.effectiveVars?.pollStatus !== undefined ? String(entity.effectiveVars.pollStatus) : ''}
+          lastUpdatedAt={
+            entity.effectiveVars?.pollUpdatedAt !== undefined ? String(entity.effectiveVars.pollUpdatedAt) : ''
+          }
+          mediaActive={mediaActive}
+          onChangeUrl={(nextUrl) => onScriptInputChange(entity.id, urlKey, nextUrl)}
+          onChangeMethod={(nextMethod) => onScriptInputChange(entity.id, methodKey, nextMethod)}
+          onChangeInterval={(nextSec) => onScriptInputChange(entity.id, intervalKey, String(nextSec))}
+          onChangeJsonPath={(nextPath) => onScriptInputChange(entity.id, pathKey, nextPath)}
+          onChangeUseProxy={(nextProxy) => onScriptInputChange(entity.id, proxyKey, nextProxy ? 'true' : '')}
+          onChangeEnabled={(nextEnabled) => onScriptInputChange(entity.id, enabledKey, nextEnabled ? 'true' : '')}
+          onPollResult={({ value, status, updatedAt, error }) => {
+            if (onBatchUpdateVars) {
+              onBatchUpdateVars(
+                entity.id,
+                {
+                  pollLastValue: value,
+                  pollStatus: status,
+                  pollUpdatedAt: updatedAt,
+                  pollError: error,
+                },
+                true
+              );
+            } else {
+              onScriptInputChange(entity.id, 'pollLastValue', value);
+              onScriptInputChange(entity.id, 'pollStatus', status);
+              onScriptInputChange(entity.id, 'pollUpdatedAt', updatedAt);
+              onScriptInputChange(entity.id, 'pollError', error);
+            }
+          }}
+        />
+      );
+    }
+
     return null;
   };
 
@@ -241,23 +332,37 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
         entity.locked ? 'cursor-default ring-1 ring-slate-300' : 'cursor-grab active:cursor-grabbing'
       } ${selected ? 'ring-2 ring-blue-500/40' : ''}`}
       style={{
-        width: entity.width,
-        height: isImmersivePdf ? entity.height : undefined,
-        minHeight: entity.height,
+        width: displayWidth,
+        height: isImmersivePdf || liveSize ? displayHeight : undefined,
+        minHeight: displayHeight,
         borderColor: entity.color,
         borderTopWidth: 4,
       }}
     >
-      <NodeResizer
+      <SmartNodeResizer
         isVisible={Boolean(selected) && !entity.locked}
         minWidth={220}
         minHeight={120}
         lineClassName="!border-blue-500"
-        handleClassName="!h-2.5 !w-2.5 !rounded-sm !border-blue-600 !bg-white"
+        handleClassName="!rounded-sm !border-2 !border-blue-600 !bg-white shadow-sm"
+        onResize={(_ev, params) => {
+          setLiveSize({ width: Math.round(params.width), height: Math.round(params.height) });
+        }}
         onResizeEnd={(_ev, params) => {
-          onResizeNode(entity.id, Math.round(params.width), Math.round(params.height));
+          const w = Math.round(params.width);
+          const h = Math.round(params.height);
+          const nextX = Math.round(params.x);
+          const nextY = Math.round(params.y);
+          setLiveSize(null);
+          onResizeNode(entity.id, w, h, nextX, nextY);
         }}
       />
+
+      {liveSize && (
+        <div className="pointer-events-none absolute -bottom-7 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-full bg-slate-900/90 px-2.5 py-0.5 font-mono text-[11px] font-medium text-white shadow">
+          {liveSize.width} × {liveSize.height}
+        </div>
+      )}
 
       {inputPorts.map((port, idx) => (
         <Handle

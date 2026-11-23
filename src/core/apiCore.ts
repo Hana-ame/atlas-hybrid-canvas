@@ -257,8 +257,9 @@ async function handleProxy(deps: ApiDeps, req: ApiRequest): Promise<ApiResult> {
 
   // 6) 出站请求。超时由 fetcher 自己实现，两边语义一致（10s）。
   let upstream: { status: number; headers: Record<string, string>; body: Uint8Array };
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('__timeout__')), PROXY_TIMEOUT_MS);
+    timeoutId = setTimeout(() => reject(new Error('__timeout__')), PROXY_TIMEOUT_MS);
   });
   try {
     upstream = await Promise.race([
@@ -278,6 +279,8 @@ async function handleProxy(deps: ApiDeps, req: ApiRequest): Promise<ApiResult> {
       },
       isTimeout ? 504 : 502
     );
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
   }
 
   // 7) 拦截重定向：3xx 可能把请求引到白名单之外，一律不跟。

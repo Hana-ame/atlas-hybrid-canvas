@@ -6,7 +6,8 @@
  */
 
 import { memo, useEffect, useRef, useState, type ChangeEvent } from 'react';
-import { NodeResizer, type NodeProps } from '@xyflow/react';
+import type { NodeProps } from '@xyflow/react';
+import { SmartNodeResizer } from './SmartNodeResizer';
 import { ImagePlus, Trash2 } from 'lucide-react';
 import { parseTaskLine, toggleTaskLine } from '../core/taskList';
 import type { CanvasAnnotation } from '../core/types';
@@ -34,6 +35,9 @@ function AnnotationNodeInner({ data, selected }: NodeProps) {
   const { annotation, onUpdateAnnotation, onDeleteAnnotation } = data as AnnotationNodeData;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [editingText, setEditingText] = useState(false);
+  const [liveSize, setLiveSize] = useState<{ width: number; height: number } | null>(null);
+  const displayWidth = liveSize ? liveSize.width : annotation.width;
+  const displayHeight = liveSize ? liveSize.height : annotation.height;
 
   useEffect(() => {
     if (!selected) setEditingText(false);
@@ -85,25 +89,35 @@ function AnnotationNodeInner({ data, selected }: NodeProps) {
         selected ? 'ring-2 ring-amber-500' : 'ring-1 ring-dashed ring-amber-500/70'
       }`}
       style={{
-        width: annotation.width,
-        height: annotation.height,
+        width: displayWidth,
+        height: displayHeight,
         backgroundColor: bgCss,
       }}
     >
-      <NodeResizer
+      <SmartNodeResizer
         isVisible={Boolean(selected)}
-        keepAspectRatio={isImage}
         minWidth={100}
         minHeight={isImage ? 80 : 40}
         lineClassName="!border-amber-500"
-        handleClassName="!h-2.5 !w-2.5 !rounded-sm !border-amber-600 !bg-white"
+        handleClassName="!rounded-sm !border-2 !border-amber-600 !bg-white shadow-sm"
+        onResize={(_ev, params) => {
+          setLiveSize({ width: Math.round(params.width), height: Math.round(params.height) });
+        }}
         onResizeEnd={(_ev, params) => {
-          onUpdateAnnotation(annotation.id, {
-            width: Math.round(params.width),
-            height: Math.round(params.height),
-          });
+          const w = Math.round(params.width);
+          const h = Math.round(params.height);
+          const nextX = Math.round(params.x);
+          const nextY = Math.round(params.y);
+          setLiveSize(null);
+          onUpdateAnnotation(annotation.id, { x: nextX, y: nextY, width: w, height: h });
         }}
       />
+
+      {liveSize && (
+        <div className="pointer-events-none absolute -bottom-7 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-full bg-amber-950/90 px-2.5 py-0.5 font-mono text-[11px] font-medium text-amber-100 shadow">
+          {liveSize.width} × {liveSize.height}
+        </div>
+      )}
 
       {/* 顶部悬浮微型样式栏（仅编辑态可见，不占内容区高度，保持所见即所得） */}
       <div

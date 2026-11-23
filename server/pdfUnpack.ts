@@ -1,12 +1,12 @@
 /**
  * @file pdfUnpack.ts
- * @description 服务端 PDF 逐页解包引擎：
- * - 使用 pdftoppm（优先）或 mutool（兜底）将 PDF 光栅化为逐页 PNG 图片；
+ * @description 服务端 PDF 多分辨率按需解包引擎：
+ * - 校验 %PDF- 魔数并通过 pdfinfo/mutool 快速获取精确总页数；
+ * - 按请求 DPI 档位（150 / 220 / 300 / 400）按需光栅化单页为超清 PNG，放大控件或缩放画布不发糊；
  * - 全程使用 execFile 传参数组，杜绝命令注入；
- * - 内置 LRU 缓存（最多 15 份且总计不超过 256MB），单页按需下发 image/png。
+ * - 内置双维度 LRU 缓存（最多 15 份文档、单文档最多 80 张页图、全局总字节上限 256MB），防 OOM。
  *
  * 运行前提：宿主机必须提供 `pdftoppm`（poppler-utils）或 `mutool`（mupdf-tools）。
- * 这两个是系统级二进制，无法通过 npm 安装，缺失时本模块所有解包请求都会失败。
  */
 
 import crypto from 'node:crypto';
@@ -19,45 +19,60 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 
 const MAX_UNPACKED_DOCS = 15;
-const MAX_RENDER_PAGES = 200;
-// 只按「份数」限制是不够的：200 页 144DPI 的彩色 PDF 每页可达 2-4MB，单份就能到 400-800MB，
-// 15 份叠加轻松突破 Node 默认堆上限直接 OOM。必须再加一道总字节上限，按实际占用逐出。
+const MAX_CACHED_PAGE_IMAGES = 80;
 const MAX_UNPACKED_TOTAL_BYTES = 256 * 1024 * 1024;
-const RENDER_DPI = '144';
-const UNPACK_TIMEOUT_MS = 45_000;
+const MAX_RENDER_PAGES = 500;
+const UNPACK_TIMEOUT_MS = 30_000;
+
+export const ALLOWED_PDF_DPIS = [150, 220, 300, 400] as const;
+export type AllowedPdfDpi = (typeof ALLOWED_PDF_DPIS)[number];
 
 interface UnpackedPdfRecord {
   docId: string;
-  pages: Buffer[];
+  pdfBytes: Buffer;
   totalPages: number;
+  pageCache: Map<string, Buffer>;
+  totalBytes: number;
   createdAt: number;
-  bytes: number;
 }
 
 const unpackedStore = new Map<string, UnpackedPdfRecord>();
+let globalCachedBytes = 0;
 
-function sumRecordBytes(record: UnpackedPdfRecord): number {
-  let total = 0;
-  for (const p of record.pages) total += p.byteLength;
-  return total;
-}
-
-function evictUntilWithinBudget(keepDocId: string): void {
-  let total = 0;
-  for (const rec of unpackedStore.values()) total += rec.bytes;
-  // 迭代顺序即插入顺序（最久未用在前），逐出直到同时满足份数与字节两条上限。
-  for (const [id, rec] of unpackedStore) {
-    if (unpackedStore.size <= MAX_UNPACKED_DOCS && total <= MAX_UNPACKED_TOTAL_BYTES) break;
-    if (id === keepDocId) continue; // 刚写入的这份本身超大时保留，否则会一进来就被逐出
-    total -= rec.bytes;
-    unpackedStore.delete(id);
+function evictGlobalIfNeeded(keepDocId?: string): void {
+  while (
+    unpackedStore.size > MAX_UNPACKED_DOCS ||
+    (globalCachedBytes > MAX_UNPACKED_TOTAL_BYTES && unpackedStore.size > 1)
+  ) {
+    let victimKey: string | undefined;
+    for (const k of unpackedStore.keys()) {
+      if (k !== keepDocId) {
+        victimKey = k;
+        break;
+      }
+    }
+    if (!victimKey) break;
+    const victim = unpackedStore.get(victimKey);
+    unpackedStore.delete(victimKey);
+    if (victim) {
+      globalCachedBytes = Math.max(0, globalCachedBytes - victim.totalBytes);
+    }
   }
 }
 
-function touchLru(docId: string, record: UnpackedPdfRecord): void {
+function touchDocLru(docId: string, record: UnpackedPdfRecord): void {
   unpackedStore.delete(docId);
   unpackedStore.set(docId, record);
-  evictUntilWithinBudget(docId);
+  evictGlobalIfNeeded(docId);
+}
+
+export function normalizePdfDpi(raw?: unknown): AllowedPdfDpi {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 220;
+  if (n <= 170) return 150;
+  if (n <= 250) return 220;
+  if (n <= 340) return 300;
+  return 400;
 }
 
 export function isPdfMagicHeader(buf: Buffer): boolean {
@@ -66,32 +81,92 @@ export function isPdfMagicHeader(buf: Buffer): boolean {
   return head.includes('%PDF-');
 }
 
-function numericPageSort(a: string, b: string): number {
-  const ma = a.match(/(\d+)\.png$/i);
-  const mb = b.match(/(\d+)\.png$/i);
-  const na = ma ? Number(ma[1]) : 0;
-  const nb = mb ? Number(mb[1]) : 0;
-  return na - nb;
+async function detectPdfTotalPages(inputPath: string, pdfBytes: Buffer): Promise<number> {
+  try {
+    const { stdout } = await execFileAsync('pdfinfo', [inputPath], {
+      timeout: 10_000,
+      maxBuffer: 1024 * 1024,
+    });
+    const m = stdout.match(/^Pages:\s*(\d+)/m);
+    if (m) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n) && n > 0) return Math.min(MAX_RENDER_PAGES, n);
+    }
+  } catch {
+    // fallback below
+  }
+
+  try {
+    const { stdout } = await execFileAsync('mutool', ['info', inputPath], {
+      timeout: 10_000,
+      maxBuffer: 1024 * 1024,
+    });
+    const m = stdout.match(/^Pages:\s*(\d+)/m);
+    if (m) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n) && n > 0) return Math.min(MAX_RENDER_PAGES, n);
+    }
+  } catch {
+    // fallback below
+  }
+
+  const text = pdfBytes.toString('latin1');
+  const counts: number[] = [];
+  const pagesRe = /\/Type\s*\/Pages\b[\s\S]{0,4096}?\/Count\s+(\d+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pagesRe.exec(text)) !== null) {
+    const n = Number(match[1]);
+    if (Number.isFinite(n) && n > 0 && n <= MAX_RENDER_PAGES) counts.push(n);
+  }
+  if (counts.length > 0) return Math.max(...counts);
+  const leafMatches = text.match(/\/Type\s*\/Page\b(?!s)/g);
+  if (leafMatches && leafMatches.length > 0) return Math.min(MAX_RENDER_PAGES, leafMatches.length);
+  return 1;
 }
 
-async function renderWithPdftoppm(inputPath: string, outPrefix: string): Promise<void> {
-  await execFileAsync(
-    'pdftoppm',
-    ['-png', '-r', RENDER_DPI, '-f', '1', '-l', String(MAX_RENDER_PAGES), inputPath, outPrefix],
-    { timeout: UNPACK_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 }
-  );
-}
-
-async function renderWithMutool(inputPath: string, outPattern: string): Promise<void> {
-  await execFileAsync(
-    'mutool',
-    ['draw', '-F', 'png', '-r', RENDER_DPI, '-o', outPattern, inputPath, `1-${MAX_RENDER_PAGES}`],
-    { timeout: UNPACK_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 }
-  );
+async function renderSinglePageToPng(
+  pdfBytes: Buffer,
+  pageNumber: number,
+  dpi: AllowedPdfDpi
+): Promise<Buffer> {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'atlas-pdf-page-'));
+  const inputPath = path.join(tmpDir, 'input.pdf');
+  const outPrefix = path.join(tmpDir, 'page');
+  const outPng = `${outPrefix}.png`;
+  try {
+    await fs.writeFile(inputPath, pdfBytes);
+    try {
+      await execFileAsync(
+        'pdftoppm',
+        [
+          '-png',
+          '-r',
+          String(dpi),
+          '-f',
+          String(pageNumber),
+          '-l',
+          String(pageNumber),
+          '-singlefile',
+          inputPath,
+          outPrefix,
+        ],
+        { timeout: UNPACK_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 }
+      );
+    } catch {
+      await execFileAsync(
+        'mutool',
+        ['draw', '-F', 'png', '-r', String(dpi), '-o', outPng, inputPath, String(pageNumber)],
+        { timeout: UNPACK_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 }
+      );
+    }
+    return await fs.readFile(outPng);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 /**
- * 将 PDF 二进制内容解包为逐页 PNG 图片并写入 LRU 缓存。
+ * 登记 PDF 文档并预渲染第 1 页（默认 220 DPI），后续页码与高分辨率按需即时渲染缓存。
  */
 export async function unpackPdfBufferToPages(
   pdfBytes: Buffer
@@ -101,81 +176,77 @@ export async function unpackPdfBufferToPages(
   }
 
   const docId = crypto.randomBytes(8).toString('hex');
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), `atlas-pdf-${docId}-`));
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), `atlas-pdf-meta-${docId}-`));
   const inputPath = path.join(tmpDir, 'input.pdf');
-
+  let totalPages = 1;
   try {
     await fs.writeFile(inputPath, pdfBytes);
-    const outPrefix = path.join(tmpDir, 'page');
-    const outPattern = path.join(tmpDir, 'page-%04d.png');
-
-    try {
-      await renderWithPdftoppm(inputPath, outPrefix);
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException)?.code;
-      if (code === 'ENOENT') {
-        await renderWithMutool(inputPath, outPattern);
-      } else {
-        try {
-          await renderWithMutool(inputPath, outPattern);
-        } catch {
-          throw new Error(`PDF 解包失败：${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-    }
-
-    const entries = (await fs.readdir(tmpDir))
-      .filter((f) => /^page[-_]?\d+\.png$/i.test(f))
-      .sort(numericPageSort);
-
-    if (entries.length === 0) {
-      throw new Error('PDF 未能解包出任何页面图片');
-    }
-
-    const pages: Buffer[] = [];
-    for (const file of entries) {
-      pages.push(await fs.readFile(path.join(tmpDir, file)));
-    }
-
-    const bytes = sumRecordBytes({ docId, pages, totalPages: pages.length, createdAt: 0, bytes: 0 });
-    // 单份就超出总预算时直接拒绝：收进来也会立刻被逐出，不如明确告知用户降低页数/DPI。
-    if (bytes > MAX_UNPACKED_TOTAL_BYTES) {
-      throw new Error(
-        `PDF 解包后体积过大（${Math.round(bytes / 1024 / 1024)}MB，超过 ${
-          MAX_UNPACKED_TOTAL_BYTES / 1024 / 1024
-        }MB 缓存上限），请拆分文件或降低页数后重试`
-      );
-    }
-
-    const record: UnpackedPdfRecord = {
-      docId,
-      pages,
-      totalPages: pages.length,
-      createdAt: Date.now(),
-      bytes,
-    };
-    touchLru(docId, record);
-    return { docId, totalPages: pages.length };
+    totalPages = await detectPdfTotalPages(inputPath, pdfBytes);
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
+
+  const firstPagePng = await renderSinglePageToPng(pdfBytes, 1, 220);
+  const pageCache = new Map<string, Buffer>();
+  pageCache.set('1@220', firstPagePng);
+
+  const totalBytes = pdfBytes.byteLength + firstPagePng.byteLength;
+  const record: UnpackedPdfRecord = {
+    docId,
+    pdfBytes,
+    totalPages,
+    pageCache,
+    totalBytes,
+    createdAt: Date.now(),
+  };
+  globalCachedBytes += totalBytes;
+  touchDocLru(docId, record);
+  return { docId, totalPages };
 }
 
 export function getUnpackedPdfMeta(docId: string): { docId: string; totalPages: number } | null {
   const rec = unpackedStore.get(docId);
   if (!rec) return null;
-  touchLru(docId, rec);
+  touchDocLru(docId, rec);
   return { docId: rec.docId, totalPages: rec.totalPages };
 }
 
-export function getUnpackedPdfPage(
+export async function getUnpackedPdfPage(
   docId: string,
-  page: number
-): { buffer: Buffer; totalPages: number } | null {
+  page: number,
+  requestedDpi?: unknown
+): Promise<{ buffer: Buffer; totalPages: number; dpi: AllowedPdfDpi } | null> {
   const rec = unpackedStore.get(docId);
   if (!rec) return null;
-  const idx = Math.floor(page) - 1;
-  if (!Number.isFinite(idx) || idx < 0 || idx >= rec.pages.length) return null;
-  touchLru(docId, rec);
-  return { buffer: rec.pages[idx], totalPages: rec.totalPages };
+  const pageNum = Math.floor(page);
+  if (!Number.isFinite(pageNum) || pageNum < 1 || pageNum > rec.totalPages) return null;
+  touchDocLru(docId, rec);
+
+  const dpi = normalizePdfDpi(requestedDpi);
+  const cacheKey = `${pageNum}@${dpi}`;
+  const cached = rec.pageCache.get(cacheKey);
+  if (cached) {
+    rec.pageCache.delete(cacheKey);
+    rec.pageCache.set(cacheKey, cached);
+    return { buffer: cached, totalPages: rec.totalPages, dpi };
+  }
+
+  const rendered = await renderSinglePageToPng(rec.pdfBytes, pageNum, dpi);
+  rec.pageCache.set(cacheKey, rendered);
+  rec.totalBytes += rendered.byteLength;
+  globalCachedBytes += rendered.byteLength;
+
+  while (rec.pageCache.size > MAX_CACHED_PAGE_IMAGES) {
+    const oldest = rec.pageCache.keys().next().value;
+    if (!oldest) break;
+    const evicted = rec.pageCache.get(oldest);
+    rec.pageCache.delete(oldest);
+    if (evicted) {
+      rec.totalBytes = Math.max(rec.pdfBytes.byteLength, rec.totalBytes - evicted.byteLength);
+      globalCachedBytes = Math.max(0, globalCachedBytes - evicted.byteLength);
+    }
+  }
+  evictGlobalIfNeeded(docId);
+
+  return { buffer: rendered, totalPages: rec.totalPages, dpi };
 }
