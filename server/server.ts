@@ -21,6 +21,7 @@ import {
 } from './pdfUnpack';
 import { attachRoomServer, type RoomServerHandle, type RpcHandler } from './roomServer';
 import { createFileBlueprintStore } from './fileStore';
+import { issueSignedSessionToken, verifySignedSessionToken } from './authSession';
 import {
   handleApiRequest,
   type ApiDeps,
@@ -94,9 +95,11 @@ function makeRpcHandler(port: number): RpcHandler {
       }
 
       const isBase64 = frame.bodyEncoding === 'base64';
-      const bodyBuf = frame.body
-        ? Buffer.from(frame.body, isBase64 ? 'base64' : 'utf8')
-        : Buffer.alloc(0);
+      const bodyBuf = frame.rawBody
+        ? Buffer.from(frame.rawBody)
+        : frame.body
+          ? Buffer.from(frame.body, isBase64 ? 'base64' : 'utf8')
+          : Buffer.alloc(0);
 
       const headers: Record<string, string | number> = {};
       for (const [k, v] of Object.entries(frame.headers || {})) {
@@ -165,14 +168,33 @@ function makeRpcHandler(port: number): RpcHandler {
               else if (Array.isArray(v)) resHeaders[k] = v.join(', ');
             }
             recordRpcStatus(res.statusCode ?? 0);
-            done({
-              t: 'rpc_res',
-              id: frame.id,
-              status: res.statusCode ?? 502,
-              headers: resHeaders,
-              body: buf.toString('base64'),
-              bodyEncoding: 'base64',
-            });
+            const ct = String(resHeaders['content-type'] || '').toLowerCase();
+            const isText =
+              ct.includes('json') ||
+              ct.startsWith('text/') ||
+              ct.includes('javascript') ||
+              ct.includes('xml') ||
+              buf.length === 0;
+            if (isText) {
+              done({
+                t: 'rpc_res',
+                id: frame.id,
+                status: res.statusCode ?? 502,
+                headers: resHeaders,
+                body: buf.toString('utf8'),
+                bodyEncoding: 'text',
+              });
+            } else {
+              done({
+                t: 'rpc_res',
+                id: frame.id,
+                status: res.statusCode ?? 502,
+                headers: resHeaders,
+                body: '',
+                rawBody: new Uint8Array(buf),
+                bodyEncoding: 'binary',
+              });
+            }
           });
         }
       );
@@ -230,17 +252,58 @@ async function startServer() {
   const allowedHosts = parseAllowedHosts(process.env.PROXY_ALLOWED_HOSTS);
   const proxyApiKey = (process.env.PROXY_API_KEY || '').trim();
   const proxyClientToken = (process.env.PROXY_CLIENT_TOKEN || '').trim();
+  const authSessionSecret = (process.env.AUTH_SESSION_SECRET || '').trim();
   const proxyRateLimitPerMin = Math.max(1, Number(process.env.PROXY_RATE_LIMIT_PER_MIN || 30));
   const proxyRateHits = new Map<string, number[]>();
 
-  const verifyProxyClientToken = (provided: string): boolean => {
-    if (!proxyClientToken) return true;
+  const verifyStaticClientToken = (provided: string): boolean => {
+    if (!proxyClientToken) return !authSessionSecret;
     if (!provided) return false;
     const a = Buffer.from(provided, 'utf8');
     const b = Buffer.from(proxyClientToken, 'utf8');
     if (a.length !== b.length) return false;
     return crypto.timingSafeEqual(a, b);
   };
+
+  const verifyProxyClientToken = (provided: string): boolean => {
+    if (!proxyClientToken && !authSessionSecret) return true;
+    if (!provided) return false;
+    const signingSecret = authSessionSecret || proxyClientToken;
+    if (signingSecret && verifySignedSessionToken(signingSecret, provided).valid) {
+      return true;
+    }
+    return Boolean(proxyClientToken) && verifyStaticClientToken(provided);
+  };
+
+  // 服务健康检查探针（供 Docker/K8s/反向代理做存活与就绪检测）
+  app.get('/api/health', (_req, res) => {
+    res.json({
+      ok: true,
+      status: 'up',
+      uptimeSec: Math.round(process.uptime()),
+      authMode: authSessionSecret ? 'signed' : proxyClientToken ? 'static+signed' : 'open',
+    });
+  });
+
+  // 签发短时效 HMAC-SHA256 会话令牌，用于替代构建期静态 VITE_PROXY_CLIENT_TOKEN
+  app.post('/api/auth/session', (req, res) => {
+    const provided = String(
+      req.header('x-proxy-token') || (req.body as { clientToken?: unknown } | undefined)?.clientToken || ''
+    ).trim();
+    if (proxyClientToken && !verifyStaticClientToken(provided)) {
+      res.status(401).json({ ok: false, error: '凭证校验失败，无法签发会话令牌' });
+      return;
+    }
+    const secret = authSessionSecret || proxyClientToken;
+    if (!secret) {
+      res.json({ ok: true, token: '', expiresInSec: 0, mode: 'open' });
+      return;
+    }
+    const sub = String((req.body as { cid?: unknown } | undefined)?.cid || req.ip || 'atlas-client');
+    const ttlSec = 3600;
+    const token = issueSignedSessionToken(secret, sub, ttlSec);
+    res.json({ ok: true, token, expiresInSec: ttlSec, mode: 'signed' });
+  });
 
   let lastRateSweepAt = Date.now();
   const checkProxyRateLimit = (ip: string): { ok: boolean; retryAfterSec?: number } => {
@@ -842,7 +905,7 @@ async function startServer() {
   });
 
   // 房间服务与 Express 共用同一个 HTTP server 与端口，靠 upgrade 事件按 /ws 分流。
-  roomServer = attachRoomServer(httpServer, '/ws', makeRpcHandler(PORT), DATA_DIR);
+  roomServer = attachRoomServer(httpServer, '/ws', makeRpcHandler(PORT), DATA_DIR, verifyProxyClientToken);
 
   const shutdown = () => {
     void roomServer!.close().finally(() => {

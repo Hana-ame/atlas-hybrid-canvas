@@ -10,6 +10,7 @@
 import { memo, useEffect, useState } from 'react';
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import { SmartNodeResizer } from './SmartNodeResizer';
+import { CanvasErrorBoundary } from '../components/CanvasErrorBoundary';
 import { Copy, Globe, Lock, Play, RotateCcw, Settings2, Trash2, Unlock } from 'lucide-react';
 import { RESERVED_WIDGET_PROP_VARS } from '../core/layeredStore';
 import { parseTaskLine, toggleTaskLine } from '../core/taskList';
@@ -324,17 +325,19 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
         }
       >
         {hasScriptContents ? (
-          <div className={isImmersiveMedia ? 'flex min-h-0 flex-1 flex-col' : 'flex flex-col gap-2'}>
-            {flowItems.map((item, idx) =>
-              Array.isArray(item) ? (
-                <div key={`row-${idx}`} className="flex items-center gap-1.5">
-                  {item.map((leaf, cidx) => renderLeafBlock(leaf, cidx, true))}
-                </div>
-              ) : (
-                renderLeafBlock(item, idx, false)
-              )
-            )}
-          </div>
+          <CanvasErrorBoundary variant="node" label={entity.title}>
+            <div className={isImmersiveMedia ? 'flex min-h-0 flex-1 flex-col' : 'flex flex-col gap-2'}>
+              {flowItems.map((item, idx) =>
+                Array.isArray(item) ? (
+                  <div key={`row-${idx}`} className="flex items-center gap-1.5">
+                    {item.map((leaf, cidx) => renderLeafBlock(leaf, cidx, true))}
+                  </div>
+                ) : (
+                  renderLeafBlock(item, idx, false)
+                )
+              )}
+            </div>
+          </CanvasErrorBoundary>
         ) : (
           <>
             {editingBody ? (

@@ -1,26 +1,122 @@
 /**
  * @file apiClient.ts
- * @description 前端调用 /api/* 时统一补上 X-Proxy-Token 的工具。
+ * @description 前端调用 /api/* 时统一补上 X-Proxy-Token 的工具，并管理 /api/auth/session 短时效签名令牌的自动换取与续期。
  *
- * 背景：服务端的 verifyProxyClientToken() 在 PROXY_CLIENT_TOKEN 为空时放行所有调用方，
- * 一旦配置了 token，前端此前从不发送该头，所有代理/上传/解包请求会直接 401 —— 于是
- * "设 token 就不可用、不设 token 就匿名开放"成了一个死结。
- *
- * 这里把 token 从 VITE_PROXY_CLIENT_TOKEN 注入前端（构建期常量，非机密；真正的机密
- * 始终只在服务端），三个调用点统一走 proxyHeaders()，避免各处漏加。
+ * 支持两种令牌来源（运行时签名会话令牌优先于构建期静态令牌）：
+ * 1. 运行时从 POST /api/auth/session 换取的短时效 HMAC-SHA256 签名令牌（initAuthSession / setRuntimeProxyToken）；
+ * 2. 构建期注入的 VITE_PROXY_CLIENT_TOKEN（兼容旧版静态部署）。
  */
-const CLIENT_TOKEN = String(import.meta.env.VITE_PROXY_CLIENT_TOKEN || '').trim();
+const STATIC_CLIENT_TOKEN = String(
+  (typeof import.meta !== 'undefined' && (import.meta as { env?: Record<string, unknown> }).env?.VITE_PROXY_CLIENT_TOKEN) || ''
+).trim();
 
-/** 合并业务需要的头，并在配置了 token 时补上 X-Proxy-Token。 */
+let runtimeSessionToken = '';
+let runtimeExpiresAt = 0;
+let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+let inflightRefresh: Promise<string> | null = null;
+
+/** 注入运行时从 /api/auth/session 获取的短时效签名会话令牌。 */
+export function setRuntimeProxyToken(token: string, expiresInSec?: number): void {
+  runtimeSessionToken = String(token || '').trim();
+  runtimeExpiresAt =
+    runtimeSessionToken && typeof expiresInSec === 'number' && expiresInSec > 0
+      ? Date.now() + expiresInSec * 1000
+      : 0;
+}
+
+export function getActiveProxyToken(): string {
+  if (runtimeSessionToken && (!runtimeExpiresAt || Date.now() < runtimeExpiresAt)) {
+    return runtimeSessionToken;
+  }
+  return STATIC_CLIENT_TOKEN;
+}
+
+export function stopAuthSessionRefresh(): void {
+  if (refreshTimer !== null) {
+    clearTimeout(refreshTimer);
+    refreshTimer = null;
+  }
+}
+
+export function getAuthSessionState(): { hasRuntimeToken: boolean; expiresAt: number } {
+  return {
+    hasRuntimeToken: Boolean(runtimeSessionToken && (!runtimeExpiresAt || Date.now() < runtimeExpiresAt)),
+    expiresAt: runtimeExpiresAt,
+  };
+}
+
+/**
+ * 向 POST /api/auth/session 换取短时效 HMAC-SHA256 会话令牌，并在到期前自动静默续期。
+ * 并发调用会自动合并为单次请求；在纯本地 mock 或开放模式下优雅降级且不抛错。
+ */
+export async function refreshAuthSession(options?: {
+  fetchImpl?: typeof fetch;
+  cid?: string;
+  scheduleNext?: boolean;
+}): Promise<string> {
+  if (inflightRefresh) return inflightRefresh;
+  const fetchFn = options?.fetchImpl ?? (typeof fetch === 'function' ? fetch : undefined);
+  if (!fetchFn) return getActiveProxyToken();
+
+  const scheduleNext = options?.scheduleNext !== false;
+
+  inflightRefresh = (async () => {
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (STATIC_CLIENT_TOKEN) headers['X-Proxy-Token'] = STATIC_CLIENT_TOKEN;
+      const resp = await fetchFn('/api/auth/session', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ cid: options?.cid || 'atlas-web' }),
+      });
+      if (!resp.ok) return getActiveProxyToken();
+      const data = (await resp.json().catch(() => null)) as {
+        ok?: boolean;
+        token?: string;
+        expiresInSec?: number;
+        mode?: string;
+      } | null;
+      if (data?.ok && data.mode === 'signed' && typeof data.token === 'string' && data.token.trim()) {
+        const ttl = Number(data.expiresInSec) > 0 ? Number(data.expiresInSec) : 3600;
+        setRuntimeProxyToken(data.token, ttl);
+        if (scheduleNext) {
+          stopAuthSessionRefresh();
+          // 在 TTL 的 80% 处提前静默续期（最短 30 秒）
+          const delayMs = Math.max(30_000, Math.round(ttl * 0.8 * 1000));
+          refreshTimer = setTimeout(() => {
+            void refreshAuthSession({ cid: options?.cid, scheduleNext: true });
+          }, delayMs);
+        }
+        return runtimeSessionToken;
+      }
+      return getActiveProxyToken();
+    } catch {
+      return getActiveProxyToken();
+    } finally {
+      inflightRefresh = null;
+    }
+  })();
+
+  return inflightRefresh;
+}
+
+/** 应用启动时调用一次，自动换取并维持短时效签名会话令牌。 */
+export function initAuthSession(cid?: string): Promise<string> {
+  return refreshAuthSession({ cid, scheduleNext: true });
+}
+
+/** 合并业务需要的头，并在存在有效令牌时补上 X-Proxy-Token。 */
 export function proxyHeaders(extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = { ...(extra ?? {}) };
-  if (CLIENT_TOKEN) headers['X-Proxy-Token'] = CLIENT_TOKEN;
+  const token = getActiveProxyToken();
+  if (token) headers['X-Proxy-Token'] = token;
   return headers;
 }
 
-/** 为无法附带自定义请求头的 <img> 资源 URL（如 /api/pdf/:id/page/:page）在配置了 token 时追加 token 查询参数。 */
+/** 为无法附带自定义请求头的 <img> 资源 URL（如 /api/pdf/:id/page/:page）在存在令牌时追加 token 查询参数。 */
 export function appendProxyTokenQuery(url: string): string {
-  if (!CLIENT_TOKEN || !url) return url;
+  const token = getActiveProxyToken();
+  if (!token || !url) return url;
   const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}token=${encodeURIComponent(CLIENT_TOKEN)}`;
+  return `${url}${sep}token=${encodeURIComponent(token)}`;
 }

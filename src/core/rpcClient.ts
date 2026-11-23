@@ -1,3 +1,4 @@
+import { appendProxyTokenQuery } from './apiClient';
 /**
  * @file rpcClient.ts
  * @description 把浏览器的 /api/* 请求经 WebSocket 转发到服务端处理。
@@ -18,6 +19,7 @@
  */
 
 import type { RpcRequestFrame, RpcResponseFrame } from '../../server/roomServer';
+import { decodeBinaryRpcFrame, encodeBinaryRpcFrame } from './rpcBinaryFrame';
 
 type Pending = {
   resolve: (res: RpcResponseFrame) => void;
@@ -78,7 +80,8 @@ export class RpcClient {
 
       let ws: WebSocket;
       try {
-        ws = new WebSocket(this.wsUrl);
+        ws = new WebSocket(appendProxyTokenQuery(this.wsUrl));
+        ws.binaryType = 'arraybuffer';
       } catch (err) {
         fail(`无法创建 RPC WebSocket：${err instanceof Error ? err.message : String(err)}`);
         return;
@@ -152,6 +155,28 @@ export class RpcClient {
   }
 
   private onFrame(raw: unknown): void {
+    if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
+      const binBytes =
+        raw instanceof ArrayBuffer
+          ? raw
+          : new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+      const decoded = decodeBinaryRpcFrame(binBytes);
+      if (!decoded || decoded.meta.t !== 'rpc_res' || typeof decoded.meta.id !== 'string') return;
+      const p = this.pending.get(decoded.meta.id);
+      if (!p) return;
+      clearTimeout(p.timer);
+      this.pending.delete(decoded.meta.id);
+      p.resolve({
+        t: 'rpc_res',
+        id: decoded.meta.id,
+        status: Number(decoded.meta.status || 200),
+        headers: (decoded.meta.headers as Record<string, string>) || {},
+        body: '',
+        rawBody: decoded.payload,
+        bodyEncoding: 'binary',
+      });
+      return;
+    }
     let msg: RpcResponseFrame | { t?: unknown };
     try {
       msg = JSON.parse(String(raw));
@@ -178,15 +203,8 @@ export class RpcClient {
     const ws = await this.ensureOpen();
     const id = `r${++this.seq}-${Date.now().toString(36)}`;
 
-    let bodyStr: string | undefined;
-    let bodyEncoding: 'text' | 'base64' = 'text';
-    if (typeof init.body === 'string') {
-      bodyStr = init.body;
-    } else if (init.body && init.body.length > 0) {
-      // 二进制统一按 base64 走 JSON 通道；PDF 上传就是这个路径。
-      bodyStr = bytesToBase64(init.body);
-      bodyEncoding = 'base64';
-    }
+    const isBinaryReq = init.body instanceof Uint8Array && init.body.length > 0;
+    const bodyStr = typeof init.body === 'string' ? init.body : undefined;
 
     const frame: RpcRequestFrame = {
       t: 'rpc_req',
@@ -195,7 +213,7 @@ export class RpcClient {
       path: init.path,
       headers: init.headers,
       body: bodyStr,
-      bodyEncoding,
+      bodyEncoding: isBinaryReq ? 'binary' : 'text',
     };
 
     return new Promise<RpcResponseFrame>((resolve, reject) => {
@@ -205,7 +223,22 @@ export class RpcClient {
       }, REQUEST_TIMEOUT_MS);
       this.pending.set(id, { resolve, reject, timer });
       try {
-        ws.send(JSON.stringify(frame));
+        if (isBinaryReq) {
+          const bin = encodeBinaryRpcFrame(
+            {
+              t: 'rpc_req',
+              id,
+              method: init.method,
+              path: init.path,
+              headers: init.headers,
+              bodyEncoding: 'binary',
+            },
+            init.body as Uint8Array
+          );
+          ws.send(bin);
+        } else {
+          ws.send(JSON.stringify(frame));
+        }
       } catch (err) {
         clearTimeout(timer);
         this.pending.delete(id);
@@ -235,19 +268,12 @@ export class RpcClient {
   }
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const chunk = 0x8000; // 分块，避免超长 apply 触发调用栈上限
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
-
 /** 把 RpcResponseFrame 还原成标准 Response，让调用方继续用 res.json() / res.blob()。 */
 export function frameToResponse(frame: RpcResponseFrame): Response {
   let body: BodyInit | null;
-  if (frame.bodyEncoding === 'base64' && frame.body) {
+  if (frame.bodyEncoding === 'binary' && frame.rawBody) {
+    body = new Uint8Array(frame.rawBody);
+  } else if (frame.bodyEncoding === 'base64' && frame.body) {
     const binary = atob(frame.body);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);

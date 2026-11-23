@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 import App from './App';
 import './index.css';
 import { installMockApi } from './core/mockApi';
+import { initAuthSession } from './core/apiClient';
+import { CanvasErrorBoundary } from './components/CanvasErrorBoundary';
 
 // 统一在入口挂载 /api/* 拦截器，开发态与生产态走同一条路径：
 //   - 配置了 VITE_BACKEND_WS_URL  → mockApi 经 WebSocket RPC 转发到真后端（断线再回退本地）
@@ -12,9 +14,12 @@ import { installMockApi } from './core/mockApi';
 // 会要求构建 target 提到 es2022，而 Vite 默认 es2020 会直接报
 // "Top-level await is not available in the configured target environment"。
 installMockApi();
+void initAuthSession();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <CanvasErrorBoundary variant="app">
+      <App />
+    </CanvasErrorBoundary>
   </StrictMode>
 );

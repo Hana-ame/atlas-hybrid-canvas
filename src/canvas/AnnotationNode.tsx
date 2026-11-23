@@ -5,7 +5,8 @@
  * 默认整框可拖、双击进入文字编辑，关闭编辑模式后自动卸载并烘焙回底层穿透 Canvas 瓦片。
  */
 
-import { memo, useEffect, useRef, useState, type ChangeEvent } from 'react';
+import { memo, useEffect, useState } from 'react';
+import { isSafeImageUrl } from '../core/mediaHelper';
 import type { NodeProps } from '@xyflow/react';
 import { SmartNodeResizer } from './SmartNodeResizer';
 import { ImagePlus, Trash2 } from 'lucide-react';
@@ -33,57 +34,41 @@ function hexToRgba(hex: string | undefined, opacity: number): string {
 
 function AnnotationNodeInner({ data, selected }: NodeProps) {
   const { annotation, onUpdateAnnotation, onDeleteAnnotation } = data as AnnotationNodeData;
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [editingText, setEditingText] = useState(false);
+  const [editingImageUrl, setEditingImageUrl] = useState(false);
+  const [imageUrlDraft, setImageUrlDraft] = useState(annotation.imageUrl || '');
+  const [imageUrlError, setImageUrlError] = useState('');
   const [liveSize, setLiveSize] = useState<{ width: number; height: number } | null>(null);
   const displayWidth = liveSize ? liveSize.width : annotation.width;
   const displayHeight = liveSize ? liveSize.height : annotation.height;
 
   useEffect(() => {
-    if (!selected) setEditingText(false);
+    if (!selected) {
+      setEditingText(false);
+      setEditingImageUrl(false);
+      setImageUrlError('');
+    }
   }, [selected]);
   const isImage = annotation.kind === 'image';
   const bgOpacity = annotation.bgOpacity ?? 0.85;
   const bgCss = hexToRgba(annotation.bgColor, bgOpacity);
 
-  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file || file.size > 20 * 1024 * 1024) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const rawUrl = typeof reader.result === 'string' ? reader.result : '';
-      if (!rawUrl) return;
-      // 自动等比压缩超大图（最大边 1280px），防止几 MB 原图撑爆 JSON 保存与快照
-      if (file.type === 'image/svg+xml' || file.size < 180_000) {
-        onUpdateAnnotation(annotation.id, { imageUrl: rawUrl });
-        return;
-      }
-      const img = new Image();
-      img.onload = () => {
-        const maxSide = 1280;
-        const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
-        const w = Math.max(1, Math.round(img.naturalWidth * scale));
-        const h = Math.max(1, Math.round(img.naturalHeight * scale));
-        const c = document.createElement('canvas');
-        c.width = w;
-        c.height = h;
-        const ctx = c.getContext('2d');
-        if (!ctx) {
-          onUpdateAnnotation(annotation.id, { imageUrl: rawUrl });
-          return;
-        }
-        ctx.drawImage(img, 0, 0, w, h);
-        const outMime = file.type === 'image/png' ? 'image/png' : 'image/webp';
-        const compressed = c.toDataURL(outMime, 0.82);
-        onUpdateAnnotation(annotation.id, { imageUrl: compressed.length < rawUrl.length ? compressed : rawUrl });
-      };
-      img.onerror = () => onUpdateAnnotation(annotation.id, { imageUrl: rawUrl });
-      img.src = rawUrl;
-    };
-    reader.readAsDataURL(file);
+  const handleCommitImageUrl = () => {
+    const trimmed = imageUrlDraft.trim();
+    if (!trimmed) {
+      onUpdateAnnotation(annotation.id, { imageUrl: '' });
+      setImageUrlError('');
+      setEditingImageUrl(false);
+      return;
+    }
+    if (!isSafeImageUrl(trimmed)) {
+      setImageUrlError('仅支持 http/https 外链或同源 /api/ 图片地址（拒绝 blob:/本地二进制）');
+      return;
+    }
+    onUpdateAnnotation(annotation.id, { imageUrl: trimmed });
+    setImageUrlError('');
+    setEditingImageUrl(false);
   };
-
   return (
     <div
       className={`group relative rounded-lg transition-shadow ${
@@ -188,20 +173,17 @@ function AnnotationNodeInner({ data, selected }: NodeProps) {
         {isImage && (
           <>
             <span className="text-slate-300">|</span>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              onChange={handleFileChange}
-              className="hidden"
-            />
             <button
               type="button"
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => {
+                setImageUrlDraft(annotation.imageUrl || '');
+                setImageUrlError('');
+                setEditingImageUrl((v) => !v);
+              }}
               className="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-slate-700 hover:bg-slate-100"
             >
               <ImagePlus className="h-3 w-3" />
-              换图
+              外链换图
             </button>
           </>
         )}
@@ -218,8 +200,38 @@ function AnnotationNodeInner({ data, selected }: NodeProps) {
 
       {/* 所见即所得内容区：文本框多行不拉伸 / 插图 object-contain 严格等比不拉伸 */}
       {isImage ? (
-        <div className="flex h-full w-full items-center justify-center overflow-hidden rounded-lg p-2">
-          {annotation.imageUrl ? (
+        <div className="relative flex h-full w-full items-center justify-center overflow-hidden rounded-lg p-2">
+          {editingImageUrl && (
+            <div
+              onMouseDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+              className="nodrag nopan absolute inset-x-2 top-2 z-20 flex flex-col gap-1 rounded-md border border-slate-200 bg-white/95 p-2 shadow-md backdrop-blur"
+            >
+              <div className="flex items-center gap-1">
+                <input
+                  type="url"
+                  autoFocus
+                  value={imageUrlDraft}
+                  onChange={(e) => setImageUrlDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleCommitImageUrl();
+                    if (e.key === 'Escape') setEditingImageUrl(false);
+                  }}
+                  placeholder="输入 https:// 或 /api/ 图片外链…"
+                  className="min-w-0 flex-1 rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-800 outline-none focus:border-blue-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleCommitImageUrl}
+                  className="rounded bg-blue-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-blue-700"
+                >
+                  应用
+                </button>
+              </div>
+              {imageUrlError && <div className="text-[10px] text-rose-600">{imageUrlError}</div>}
+            </div>
+          )}
+          {annotation.imageUrl && isSafeImageUrl(annotation.imageUrl) ? (
             <img
               src={annotation.imageUrl}
               alt={annotation.text || '背景插图'}
@@ -227,7 +239,7 @@ function AnnotationNodeInner({ data, selected }: NodeProps) {
               className="pointer-events-none h-full w-full select-none object-contain"
             />
           ) : (
-            <span className="text-xs text-slate-400">点击上方「换图」选择插图</span>
+            <span className="text-xs text-slate-400">点击上方「外链换图」填写图片 URL</span>
           )}
         </div>
       ) : editingText ? (

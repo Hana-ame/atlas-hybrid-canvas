@@ -15,6 +15,7 @@ import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { loadRoomSnapshotFile, saveRoomSnapshotFile } from './fileStore';
+import { decodeBinaryRpcFrame, encodeBinaryRpcFrame } from '../src/core/rpcBinaryFrame';
 
 /**
  * RPC 帧：让前端把一次 HTTP 调用（也就是原来被 mockApi 在浏览器里就地处理的那些
@@ -30,8 +31,9 @@ export type RpcRequestFrame = {
   method: string;
   path: string;
   headers?: Record<string, string>;
-  body?: string; // 已序列化的请求体；二进制走 base64 并由 contentType 标记
-  bodyEncoding?: 'text' | 'base64';
+  body?: string;
+  rawBody?: Uint8Array;
+  bodyEncoding?: 'text' | 'base64' | 'binary';
 };
 
 export type RpcResponseFrame = {
@@ -40,7 +42,8 @@ export type RpcResponseFrame = {
   status: number;
   headers: Record<string, string>;
   body: string;
-  bodyEncoding: 'text' | 'base64';
+  rawBody?: Uint8Array;
+  bodyEncoding: 'text' | 'base64' | 'binary';
 };
 
 /** 与 roomClient.ts 保持一致的消息形状。服务端只做校验与中继，不解释业务字段。 */
@@ -125,9 +128,44 @@ class RoomState {
     const bucket = this.data[kind];
     const id = rec.id as string;
     const existing = bucket.get(id);
-    if (!beats(rec, existing)) return false;
-    if (!existing && bucket.size >= MAX_RECORDS_PER_COLLECTION) return false;
-    bucket.set(id, rec);
+    if (!existing) {
+      if (bucket.size >= MAX_RECORDS_PER_COLLECTION) return false;
+      bucket.set(id, rec);
+      return true;
+    }
+    const curFields = (existing as { fieldRevs?: Record<string, { rev: number; cid: string }> }).fieldRevs;
+    const incFields = (rec as { fieldRevs?: Record<string, { rev: number; cid: string }> }).fieldRevs;
+    if (!curFields && !incFields) {
+      if (!beats(rec, existing)) return false;
+      bucket.set(id, rec);
+      return true;
+    }
+    const merged: Record<string, unknown> = { ...existing };
+    const nextFieldRevs: Record<string, { rev: number; cid: string }> = { ...(curFields ?? {}) };
+    const curFallback = { rev: Number(existing.rev) || 0, cid: String(existing.cid || '') };
+    const incFallback = { rev: Number(rec.rev) || 0, cid: String(rec.cid || '') };
+    let changed = false;
+    for (const k of new Set([...Object.keys(existing), ...Object.keys(rec)])) {
+      if (k === 'id' || k === 'rev' || k === 'cid' || k === 'fieldRevs') continue;
+      const cs = curFields?.[k] ?? curFallback;
+      const is = incFields?.[k] ?? incFallback;
+      if (k in rec && beats(is, cs)) {
+        merged[k] = rec[k];
+        nextFieldRevs[k] = is;
+        changed = true;
+      } else if (!(k in rec) && (k in existing) && beats(incFallback, cs)) {
+        delete merged[k];
+        nextFieldRevs[k] = incFallback;
+        changed = true;
+      }
+    }
+    if (!changed && !beats(rec, existing)) return false;
+    const win = beats(rec, existing) ? rec : existing;
+    merged.id = existing.id;
+    merged.rev = Math.max(Number(existing.rev) || 0, Number(rec.rev) || 0);
+    merged.cid = win.cid;
+    merged.fieldRevs = nextFieldRevs;
+    bucket.set(id, merged as VersionedRecord);
     return true;
   }
 
@@ -177,7 +215,8 @@ export function attachRoomServer(
   httpServer: HttpServer,
   wsPath = '/ws',
   rpcHandler?: RpcHandler,
-  persistDir?: string
+  persistDir?: string,
+  verifyToken?: (token: string) => boolean
 ): RoomServerHandle {
   const rooms = new Map<string, Room>();
   const states = new Map<string, RoomState>();
@@ -371,7 +410,25 @@ export function attachRoomServer(
           return;
         }
         void rpcHandler(frame)
-          .then((res) => send(socket, res))
+          .then((res) => {
+            if (res.bodyEncoding === 'binary' && res.rawBody) {
+              if (socket.readyState === 1) {
+                const bin = encodeBinaryRpcFrame(
+                  {
+                    t: 'rpc_res',
+                    id: res.id,
+                    status: res.status,
+                    headers: res.headers,
+                    bodyEncoding: 'binary',
+                  },
+                  res.rawBody
+                );
+                socket.send(bin);
+              }
+              return;
+            }
+            send(socket, res);
+          })
           .catch((err: unknown) => {
             // 处理器自己炸了也要回一帧，否则客户端会一直等到超时。
             send(socket, {
@@ -410,6 +467,18 @@ export function attachRoomServer(
       socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
       socket.destroy();
       return;
+    }
+
+    if (verifyToken) {
+      const headerToken = Array.isArray(req.headers['x-proxy-token'])
+        ? req.headers['x-proxy-token'][0]
+        : req.headers['x-proxy-token'];
+      const providedToken = String(url.searchParams.get('token') || headerToken || '').trim();
+      if (!verifyToken(providedToken)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
     }
 
     const roomName = (url.searchParams.get('room') || '').trim();
@@ -463,9 +532,69 @@ export function attachRoomServer(
       }
       broadcast(room, { t: 'peer_joined', cid }, ws);
 
-      ws.on('message', (data) => {
+      ws.on('message', (data, isBinary) => {
         const member = room.members.get(ws);
         if (member) member.alive = true;
+        if (isBinary) {
+          if (room.name !== '__rpc__') {
+            send(ws, { t: 'error', error: '普通协同房间不接受二进制帧' });
+            return;
+          }
+          const rawBuf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+          const decoded = decodeBinaryRpcFrame(rawBuf);
+          if (!decoded || decoded.meta.t !== 'rpc_req') {
+            send(ws, { t: 'error', error: '二进制 RPC 帧格式无效' });
+            return;
+          }
+          const binFrame: RpcRequestFrame = {
+            t: 'rpc_req',
+            id: String(decoded.meta.id || ''),
+            method: String(decoded.meta.method || 'GET'),
+            path: String(decoded.meta.path || '/'),
+            headers: (decoded.meta.headers as Record<string, string>) || undefined,
+            rawBody: decoded.payload,
+            bodyEncoding: 'binary',
+          };
+          if (!binFrame.id) {
+            send(ws, { t: 'error', error: 'rpc_req 缺少 id' });
+            return;
+          }
+          if (!rpcHandler) {
+            send(ws, {
+              t: 'rpc_res',
+              id: binFrame.id,
+              status: 501,
+              headers: { 'content-type': 'application/json; charset=utf-8' },
+              body: JSON.stringify({ ok: false, error: '服务端未启用 RPC 转发' }),
+              bodyEncoding: 'text',
+            } satisfies RpcResponseFrame);
+            return;
+          }
+          void rpcHandler(binFrame)
+            .then((res) => {
+              if (res.bodyEncoding === 'binary' && res.rawBody && ws.readyState === 1) {
+                ws.send(
+                  encodeBinaryRpcFrame(
+                    { t: 'rpc_res', id: res.id, status: res.status, headers: res.headers, bodyEncoding: 'binary' },
+                    res.rawBody
+                  )
+                );
+                return;
+              }
+              send(ws, res);
+            })
+            .catch((err: unknown) => {
+              send(ws, {
+                t: 'rpc_res',
+                id: binFrame.id,
+                status: 500,
+                headers: { 'content-type': 'application/json; charset=utf-8' },
+                body: JSON.stringify({ ok: false, error: `RPC 处理失败：${err instanceof Error ? err.message : String(err)}` }),
+                bodyEncoding: 'text',
+              } satisfies RpcResponseFrame);
+            });
+          return;
+        }
         handleMessage(ws, room, String(data));
       });
       ws.on('pong', () => {

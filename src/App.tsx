@@ -57,6 +57,8 @@ import type { ScriptConsoleEntry } from './components/NodeInspectorPanel';
 import { auditBlueprintScripts, type ScriptAuditEntry } from './core/scriptAudit';
 import { getReactiveTargetNodeIds } from './core/edgeGraph';
 import { useCanvasShortcuts } from './hooks/useCanvasShortcuts';
+import { useRoomCollaboration } from './hooks/useRoomCollaboration';
+import { useBlueprintIO } from './hooks/useBlueprintIO';
 
 // 弹窗与右侧属性面板按需分包，降低首屏主包体积
 const NodeInspectorPanel = lazy(() =>
@@ -68,14 +70,9 @@ const SearchJumpModal = lazy(() =>
 const ScriptTrustModal = lazy(() =>
   import('./components/ScriptTrustModal').then((m) => ({ default: m.ScriptTrustModal }))
 );
-import {
-  CollaborativeRoomClient,
-  mergeRemoteBlueprintCRDT,
-  type RoomStatus,
-} from './core/roomClient';
+import type { RoomStatus } from './core/roomClient';
 import { TEMPLATE_DRAG_MIME, TemplateDrawer } from './components/TemplateDrawer';
 import { ChunkManager } from './core/chunkManager';
-import { beats, computeRecordDiff } from './core/crdt';
 import { findNonOverlappingPosition, type RectBox } from './core/placement';
 import { ChunkTileCache } from './core/chunkTileCache';
 import { computeThreeRingBounds, filterVisibleEdges, isBoxIntersecting } from './core/viewportCulling';
@@ -189,10 +186,7 @@ function HybridCanvasWorkspace() {
   const [roomName, setRoomName] = useState('atlas-main');
   const roomNameRef = useRef(roomName);
   roomNameRef.current = roomName;
-  const maxSyncedMetaRef = useRef<Map<string, { id: string; rev: number; cid: string }>>(new Map());
-  const prevSyncedBaseRef = useRef<BaseBlueprint | null>(null);
   const [roomStatus, setRoomStatus] = useState<RoomStatus>('disconnected');
-  const roomClientRef = useRef<CollaborativeRoomClient | null>(null);
   const [statusLog, setStatusLog] = useState<string>('');
   const [scriptLogsByNode, setScriptLogsByNode] = useState<Record<string, ScriptConsoleEntry[]>>({});
 
@@ -322,343 +316,44 @@ function HybridCanvasWorkspace() {
     return () => window.clearTimeout(timer);
   }, [rf]);
 
-  const handleCopyChunkLink = useCallback(async () => {
-    const [tx, ty, zoom] = rfStore.getState().transform;
-    const centerWorldX = (window.innerWidth * 0.5 - tx) / zoom;
-    const centerWorldY = (window.innerHeight * 0.5 - ty) / zoom;
-    const cx = Math.floor(centerWorldX / 512);
-    const cy = Math.floor(centerWorldY / 512);
-    const hash = `#chunk=${cx},${cy}&zoom=${zoom.toFixed(2)}`;
-    try {
-      window.history.replaceState(null, '', hash);
-    } catch {
-      // about:blank / srcdoc / file:// 下禁止 replaceState，安全降级
-    }
-    const baseOrigin = window.location.origin && window.location.origin !== 'null' ? window.location.origin : '';
-    const fullUrl = `${baseOrigin}${window.location.pathname}${hash}`;
-    try {
-      await navigator.clipboard.writeText(fullUrl);
-      setStatusLog(`已复制分区坐标链接：Chunk (${cx}, ${cy}) @ ${Math.round(zoom * 100)}%`);
-    } catch {
-      setStatusLog(`已更新地址栏坐标：${hash}`);
-    }
-  }, [rfStore]);
+  const renderedScriptsRef = useRef<Set<string>>(new Set());
 
-  const handleExportJSON = useCallback(() => {
-    const merged = applyOverlayToBase(baseRef.current, overlayRef.current, SELF_CID);
-    const blob = new Blob([JSON.stringify(merged, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `atlas-blueprint-v${merged.version}.json`;
-    a.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setStatusLog('已导出完整蓝图 JSON 文件');
-  }, []);
+  const { handleCopyChunkLink, handleExportJSON, handleImportJSONFile } = useBlueprintIO({
+    selfCid: SELF_CID,
+    baseRef,
+    overlayRef,
+    rfStore,
+    pushHistory,
+    setBase,
+    setOverlay,
+    setStatusLog,
+    setChunkSyncTick,
+    setScriptLogsByNode,
+    setUntrustedScriptKeys,
+    setTrustModalState,
+    renderedScriptsRef,
+  });
 
-  const handleImportJSONFile = useCallback((file: File) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const parsed = JSON.parse(String(reader.result || '')) as BaseBlueprint;
-        if (!parsed || typeof parsed !== 'object' || !parsed.nodes || typeof parsed.nodes !== 'object' || Array.isArray(parsed.nodes)) {
-          setStatusLog('导入失败：JSON 缺少有效的 nodes 对象');
-          return;
-        }
-        const safeNodes: Record<string, BlueprintNode> = {};
-        for (const [nid, rawNode] of Object.entries(parsed.nodes as Record<string, Partial<BlueprintNode>>)) {
-          if (!rawNode || typeof rawNode !== 'object') continue;
-          safeNodes[nid] = {
-            ...rawNode,
-            id: typeof rawNode.id === 'string' && rawNode.id ? rawNode.id : nid,
-            x: toFiniteNum(rawNode.x) ?? 0,
-            y: toFiniteNum(rawNode.y) ?? 0,
-            width: Math.max(180, toFiniteNum(rawNode.width) ?? 280),
-            height: Math.max(100, toFiniteNum(rawNode.height) ?? 180),
-            title: typeof rawNode.title === 'string' ? rawNode.title : '未命名控件',
-            body: typeof rawNode.body === 'string' ? rawNode.body : '',
-            color: typeof rawNode.color === 'string' ? rawNode.color : '#2563EB',
-            defaultVars: rawNode.defaultVars && typeof rawNode.defaultVars === 'object' ? rawNode.defaultVars : {},
-            rev: Number.isFinite(Number(rawNode.rev)) ? Number(rawNode.rev) : 1,
-            cid: typeof rawNode.cid === 'string' ? rawNode.cid : 'imported',
-          };
-        }
-        pushHistory();
-        const normalized: BaseBlueprint = {
-          version: Number(parsed.version) || 1,
-          chunkSize: Number(parsed.chunkSize) || 512,
-          nodes: safeNodes,
-          annotations: parsed.annotations && typeof parsed.annotations === 'object' && !Array.isArray(parsed.annotations) ? parsed.annotations : {},
-          edges: parsed.edges && typeof parsed.edges === 'object' && !Array.isArray(parsed.edges) ? parsed.edges : {},
-        };
-        const entries = auditBlueprintScripts(normalized);
-        renderedScriptsRef.current.clear();
-        setScriptLogsByNode({});
-        setBase(normalized);
-        setOverlay(createEmptyOverlay());
-        setChunkSyncTick((t) => t + 1);
-        if (entries.length > 0) {
-          setUntrustedScriptKeys(new Set(entries.map((e) => e.key)));
-          setTrustModalState({ open: true, sourceLabel: file.name, entries });
-          setStatusLog(`已导入「${file.name}」，检测到 ${entries.length} 条外部脚本已默认锁定等待审阅`);
-        } else {
-          setUntrustedScriptKeys(new Set());
-          setStatusLog(`已安全导入蓝图「${file.name}」`);
-        }
-      } catch {
-        setStatusLog('导入失败：文件不是合法的 JSON 格式');
-      }
-    };
-    reader.readAsText(file);
-  }, [pushHistory]);
-
-  const handleConnectRoom = useCallback(() => {
-    // 纯静态模式下 defaultRoomWsUrl() 返回空串，此时不该让协同步骤继续——
-    // 直接给一句人话，而不是把空地址丢给 roomClient 换回一个含糊的格式错误。
-    if (!roomWsUrl.trim()) {
-      setStatusLog('协同不可用：当前是纯静态演示模式，未配置 VITE_BACKEND_WS_URL');
-      return;
-    }
-    if (!roomClientRef.current) {
-      roomClientRef.current = new CollaborativeRoomClient(
-        SELF_CID,
-        (st, info) => {
-          setRoomStatus(st);
-          if (info) setStatusLog(info);
-        },
-        (msg) => {
-          const mergeTrustEntries = (label: string, newEntries: ScriptAuditEntry[]) => {
-            if (newEntries.length === 0) return;
-            setUntrustedScriptKeys((prev) => {
-              const next = new Set(prev);
-              for (const e of newEntries) next.add(e.key);
-              return next;
-            });
-            setTrustModalState((prev) => {
-              const byKey = new Map(prev.entries.map((e) => [e.key, e]));
-              for (const e of newEntries) byKey.set(e.key, e);
-              return { open: true, sourceLabel: label, entries: Array.from(byKey.values()) };
-            });
-          };
-          const recordSyncedMeta = (kind: string, rec: { id: string; rev: number; cid: string }) => {
-            const k = `${kind}:${rec.id}`;
-            const cur = maxSyncedMetaRef.current.get(k);
-            if (!cur || beats(rec, cur)) {
-              maxSyncedMetaRef.current.set(k, { id: rec.id, rev: Number(rec.rev) || 0, cid: String(rec.cid || '') });
-            }
-          };
-          const beatsLocalAndSynced = (kind: string, incoming: { id: string; rev: number; cid: string }, cur: { id: string; rev: number; cid: string } | undefined) => {
-            if (cur && !beats(incoming, cur)) return false;
-            const synced = maxSyncedMetaRef.current.get(`${kind}:${incoming.id}`);
-            if (synced && !beats(incoming, synced)) return false;
-            return true;
-          };
-          if (msg.t === 'state' && msg.blueprint) {
-            const entries = auditBlueprintScripts(msg.blueprint);
-            mergeTrustEntries(`协同房间 ${roomNameRef.current}`, entries);
-            for (const n of Object.values(msg.blueprint.nodes ?? {})) recordSyncedMeta('node', n);
-            for (const a of Object.values(msg.blueprint.annotations ?? {})) recordSyncedMeta('ann', a);
-            for (const e of Object.values(msg.blueprint.edges ?? {})) recordSyncedMeta('edge', e);
-            setBase((prev) => {
-              const merged = mergeRemoteBlueprintCRDT(prev, msg.blueprint);
-              if (prevSyncedBaseRef.current) {
-                prevSyncedBaseRef.current = mergeRemoteBlueprintCRDT(prevSyncedBaseRef.current, msg.blueprint);
-              }
-              return merged;
-            });
-            setChunkSyncTick((t) => t + 1);
-            return;
-          }
-          if (msg.t === 'upsert_node' && msg.node) {
-            const remoteNode = msg.node;
-            const curLocal = baseRef.current.nodes[remoteNode.id];
-            if (beatsLocalAndSynced('node', remoteNode, curLocal)) {
-              recordSyncedMeta('node', remoteNode);
-              const singleBp: BaseBlueprint = {
-                version: baseRef.current.version,
-                chunkSize: baseRef.current.chunkSize,
-                nodes: { [remoteNode.id]: remoteNode },
-                annotations: {},
-                edges: {},
-              };
-              const entries = auditBlueprintScripts(singleBp);
-              const scriptChanged =
-                !curLocal ||
-                curLocal.script !== remoteNode.script ||
-                JSON.stringify(curLocal.buttons ?? []) !== JSON.stringify(remoteNode.buttons ?? []);
-              if (entries.length > 0 && scriptChanged) {
-                mergeTrustEntries(`协同远端更新 (${remoteNode.title})`, entries);
-              }
-              setBase((prev) => {
-                const cur = prev.nodes[remoteNode.id];
-                if (cur && !beats(remoteNode, cur)) return prev;
-                if (prevSyncedBaseRef.current) {
-                  prevSyncedBaseRef.current = {
-                    ...prevSyncedBaseRef.current,
-                    nodes: { ...prevSyncedBaseRef.current.nodes, [remoteNode.id]: remoteNode },
-                  };
-                }
-                return {
-                  ...prev,
-                  version: prev.version + 1,
-                  nodes: { ...prev.nodes, [remoteNode.id]: remoteNode },
-                };
-              });
-              setChunkSyncTick((t) => t + 1);
-            }
-            return;
-          }
-          if (msg.t === 'delete_node' && msg.id) {
-            const delId = msg.id;
-            setBase((prev) => {
-              if (!prev.nodes[delId]) return prev;
-              const nextNodes = { ...prev.nodes };
-              delete nextNodes[delId];
-              const nextEdges: typeof prev.edges = {};
-              for (const [eid, e] of Object.entries(prev.edges)) {
-                if (e.source !== delId && e.target !== delId) nextEdges[eid] = e;
-              }
-              if (prevSyncedBaseRef.current) {
-                const sn = { ...prevSyncedBaseRef.current.nodes };
-                delete sn[delId];
-                const se: typeof prev.edges = {};
-                for (const [eid, e] of Object.entries(prevSyncedBaseRef.current.edges)) {
-                  if (e.source !== delId && e.target !== delId) se[eid] = e;
-                }
-                prevSyncedBaseRef.current = { ...prevSyncedBaseRef.current, nodes: sn, edges: se };
-              }
-              return { ...prev, version: prev.version + 1, nodes: nextNodes, edges: nextEdges };
-            });
-            setOverlay((prev) => {
-              if (!prev.runtimeVars[delId] && !prev.nodePatches[delId]) return prev;
-              const nextRv = { ...prev.runtimeVars };
-              const nextPatches = { ...prev.nodePatches };
-              delete nextRv[delId];
-              delete nextPatches[delId];
-              return { ...prev, runtimeVars: nextRv, nodePatches: nextPatches };
-            });
-            renderedScriptsRef.current.delete(delId);
-            setScriptLogsByNode((prev) => {
-              if (!prev[delId]) return prev;
-              const next = { ...prev };
-              delete next[delId];
-              return next;
-            });
-            setInspectingNodeId((cur) => (cur === delId ? null : cur));
-            setChunkSyncTick((t) => t + 1);
-            return;
-          }
-          if (msg.t === 'upsert_ann' && msg.annotation) {
-            const remoteAnn = msg.annotation;
-            if (!beatsLocalAndSynced('ann', remoteAnn, baseRef.current.annotations[remoteAnn.id])) return;
-            recordSyncedMeta('ann', remoteAnn);
-            setBase((prev) => {
-              const cur = prev.annotations[remoteAnn.id];
-              if (cur && !beats(remoteAnn, cur)) return prev;
-              if (prevSyncedBaseRef.current) {
-                prevSyncedBaseRef.current = {
-                  ...prevSyncedBaseRef.current,
-                  annotations: { ...prevSyncedBaseRef.current.annotations, [remoteAnn.id]: remoteAnn },
-                };
-              }
-              return { ...prev, version: prev.version + 1, annotations: { ...prev.annotations, [remoteAnn.id]: remoteAnn } };
-            });
-            setChunkSyncTick((t) => t + 1);
-            return;
-          }
-          if (msg.t === 'delete_ann' && msg.id) {
-            const delId = msg.id;
-            setBase((prev) => {
-              if (!prev.annotations[delId]) return prev;
-              const nextAnns = { ...prev.annotations };
-              delete nextAnns[delId];
-              if (prevSyncedBaseRef.current) {
-                const sa = { ...prevSyncedBaseRef.current.annotations };
-                delete sa[delId];
-                prevSyncedBaseRef.current = { ...prevSyncedBaseRef.current, annotations: sa };
-              }
-              return { ...prev, version: prev.version + 1, annotations: nextAnns };
-            });
-            setChunkSyncTick((t) => t + 1);
-            return;
-          }
-          if (msg.t === 'upsert_edge' && msg.edge) {
-            const remoteEdge = msg.edge;
-            if (!beatsLocalAndSynced('edge', remoteEdge, baseRef.current.edges[remoteEdge.id])) return;
-            recordSyncedMeta('edge', remoteEdge);
-            setBase((prev) => {
-              const cur = prev.edges[remoteEdge.id];
-              if (cur && !beats(remoteEdge, cur)) return prev;
-              if (prevSyncedBaseRef.current) {
-                prevSyncedBaseRef.current = {
-                  ...prevSyncedBaseRef.current,
-                  edges: { ...prevSyncedBaseRef.current.edges, [remoteEdge.id]: remoteEdge },
-                };
-              }
-              return { ...prev, version: prev.version + 1, edges: { ...prev.edges, [remoteEdge.id]: remoteEdge } };
-            });
-            setChunkSyncTick((t) => t + 1);
-            return;
-          }
-          if (msg.t === 'delete_edge' && msg.id) {
-            const delId = msg.id;
-            setBase((prev) => {
-              if (!prev.edges[delId]) return prev;
-              const nextEdges = { ...prev.edges };
-              delete nextEdges[delId];
-              if (prevSyncedBaseRef.current) {
-                const se = { ...prevSyncedBaseRef.current.edges };
-                delete se[delId];
-                prevSyncedBaseRef.current = { ...prevSyncedBaseRef.current, edges: se };
-              }
-              return { ...prev, version: prev.version + 1, edges: nextEdges };
-            });
-            setChunkSyncTick((t) => t + 1);
-          }
-        }
-      );
-    }
-    maxSyncedMetaRef.current.clear();
-    roomClientRef.current.connect(roomWsUrl, roomName);
-    setRoomModalOpen(false);
-  }, [roomWsUrl, roomName]);
-
-  useEffect(() => {
-    return () => {
-      roomClientRef.current?.disconnect();
-    };
-  }, []);
-
-  // 协同房间上行增量推送：已联机时将本地 base 变更经 computeRecordDiff 增量发送至房间（远端落盘已直接并入 prevSyncedBaseRef，同帧本地修改绝不丢失）
-  useEffect(() => {
-    if (roomStatus !== 'connected' || !roomClientRef.current) {
-      if (roomStatus === 'disconnected') maxSyncedMetaRef.current.clear();
-      prevSyncedBaseRef.current = base;
-      return;
-    }
-    const prev = prevSyncedBaseRef.current;
-    prevSyncedBaseRef.current = base;
-    if (!prev) {
-      roomClientRef.current.send({ t: 'state', blueprint: base });
-      return;
-    }
-    const bumpRev = <T extends { id: string; rev: number; cid: string }>(kind: string, rec: T): T => {
-      const k = `${kind}:${rec.id}`;
-      const highest = Math.max(maxSyncedMetaRef.current.get(k)?.rev ?? 0, Number(rec.rev) || 0);
-      const nextRev = highest + 1;
-      maxSyncedMetaRef.current.set(k, { id: rec.id, rev: nextRev, cid: SELF_CID });
-      return { ...rec, rev: nextRev, cid: SELF_CID };
-    };
-    const nodeDiff = computeRecordDiff(prev.nodes, base.nodes, SELF_CID);
-    for (const node of nodeDiff.upserts) roomClientRef.current.send({ t: 'upsert_node', node: bumpRev('node', node) });
-    for (const id of nodeDiff.deletes) roomClientRef.current.send({ t: 'delete_node', id });
-    const annDiff = computeRecordDiff(prev.annotations, base.annotations, SELF_CID);
-    for (const annotation of annDiff.upserts) roomClientRef.current.send({ t: 'upsert_ann', annotation: bumpRev('ann', annotation) });
-    for (const id of annDiff.deletes) roomClientRef.current.send({ t: 'delete_ann', id });
-    const edgeDiff = computeRecordDiff(prev.edges, base.edges, SELF_CID);
-    for (const edge of edgeDiff.upserts) roomClientRef.current.send({ t: 'upsert_edge', edge: bumpRev('edge', edge) });
-    for (const id of edgeDiff.deletes) roomClientRef.current.send({ t: 'delete_edge', id });
-  }, [base, roomStatus]);
+  const { roomClientRef, handleConnectRoom } = useRoomCollaboration({
+    selfCid: SELF_CID,
+    base,
+    baseRef,
+    roomWsUrl,
+    roomName,
+    roomNameRef,
+    roomStatus,
+    setRoomStatus,
+    setRoomModalOpen,
+    setBase,
+    setOverlay,
+    setStatusLog,
+    setChunkSyncTick,
+    setUntrustedScriptKeys,
+    setTrustModalState,
+    setScriptLogsByNode,
+    setInspectingNodeId,
+    renderedScriptsRef,
+  });
 
   const effectiveNodes = useMemo(() => resolveEffectiveNodes(base, overlay), [base, overlay]);
   const effectiveAnnotations = useMemo(
@@ -1373,7 +1068,6 @@ function HybridCanvasWorkspace() {
   executeUnifiedWidgetScriptRef.current = executeUnifiedWidgetScript;
 
   // 初始化所有带 script 的控件：严格等待 IndexedDB 恢复完成后再首次渲染，避免恢复覆盖冲掉首帧 vars.contents
-  const renderedScriptsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!overlayHydrated) return;
     const preloadBox = threeRingBounds.domPreloadBounds;
