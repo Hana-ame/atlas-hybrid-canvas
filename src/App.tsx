@@ -711,7 +711,13 @@ function HybridCanvasWorkspace() {
       peerOverrides?: Record<string, Partial<PeerWidgetSnapshot>>,
       edgesOverride?: Record<string, BlueprintEdge>
     ) => {
-      if (depth > 4) return;
+      // 断环器：自由拓扑下允许存在环，无限递归全靠这里兜底。只靠 depth 会静默截断、
+      // 用户看不到任何反馈，且每层 emit 都会起 Worker（最坏 5 层扇出把池和 CPU 打满），
+      // 因此先按「同一控件在同一轮里被重复触发」直接掐断，再留 depth 作为最后一道保险。
+      if (depth > 4) {
+        setStatusLog(`事件链已连续传导 5 层，为避免环路无限递归已中止（最后一次触发：${effectiveNodesRef.current[nodeId]?.title ?? nodeId}）`);
+        return;
+      }
       const entity = effectiveNodesRef.current[nodeId];
       if (!entity || !entity.script) return;
       if (untrustedScriptKeys.has(`${nodeId}:__script__`)) {
@@ -822,7 +828,7 @@ function HybridCanvasWorkspace() {
               }
             } else if (op.op === 'connect') {
               const eid = `edge-${op.fromId}-${op.toId}-${Date.now()}`;
-              nextEdges[eid] = {
+              const createdEdge: BlueprintEdge = {
                 id: eid,
                 source: op.fromId,
                 target: op.toId,
@@ -833,10 +839,17 @@ function HybridCanvasWorkspace() {
                 rev: 1,
                 cid: SELF_CID,
               };
+              nextEdges[eid] = createdEdge;
+              // 子控件脚本里 widgets.connect() 新建的边也必须进本批快照，
+              // 否则同批子控件 render 时 checkDag()/topoSort() 看不到这条边，DAG 判断与执行顺序都失真。
+              createdEdges[eid] = createdEdge;
             } else if (op.op === 'remove') {
               delete nextNodes[op.id];
               for (const [eid, e] of Object.entries(nextEdges)) {
-                if (e.source === op.id || e.target === op.id) delete nextEdges[eid];
+                if (e.source === op.id || e.target === op.id) {
+                  delete nextEdges[eid];
+                  delete createdEdges[eid];
+                }
               }
             }
           }
@@ -1528,40 +1541,99 @@ function HybridCanvasWorkspace() {
     });
   }, []);
 
+  // 由起点/终点控件自带脚本（onValidateConnect）决定是否放行连线；未注册钩子时默认允许自由拓扑（含环路）
+  const validateConnectionByWidgets = useCallback(
+    async (
+      source: string,
+      target: string,
+      fromPort: string,
+      toPort: string,
+      activeEdgeMap: Record<string, BlueprintEdge>
+    ): Promise<{ ok: boolean; reason?: string }> => {
+      const dagInfo = validateDagConnection(Object.values(activeEdgeMap), source, target);
+      const peers = buildPeerSnapshots(effectiveNodesRef.current);
+      const edgesSnap = buildEdgeSnapshots(activeEdgeMap);
+      const payload = {
+        source,
+        target,
+        fromPort,
+        toPort,
+        fromNode: peers[source] ?? null,
+        toNode: peers[target] ?? null,
+        wouldCycle: !dagInfo.ok,
+        cyclePath: dagInfo.cyclePath ?? [],
+      };
+      const candidates = Array.from(new Set([source, target])).filter((id) => {
+        const node = effectiveNodesRef.current[id];
+        return Boolean(node?.script) && !untrustedScriptKeys.has(`${id}:__script__`);
+      });
+      if (candidates.length === 0) return { ok: true };
+      const results = await Promise.all(
+        candidates.map((id) => {
+          const node = effectiveNodesRef.current[id]!;
+          return runInIsolatedWorker(node.script!, node.effectiveVars, {
+            selfEntity: peers[id],
+            peers,
+            edges: edgesSnap,
+            trigger: { kind: 'validateConnect', conn: payload },
+          });
+        })
+      );
+      for (const r of results) {
+        // 校验直通：任一控件脚本判定拒绝即拦截
+        if (r.ok && r.connectValidation && !r.connectValidation.ok) {
+          return { ok: false, reason: r.connectValidation.reason };
+        }
+        // 校验脚本自身跑挂了（语法/超时/异常）不能当作「放行」——否则给校验脚本写个错就能静默绕过
+        if (!r.ok) {
+          return { ok: false, reason: `连线校验脚本执行失败，已阻止连线：${r.error || '未知错误'}` };
+        }
+      }
+      return { ok: true };
+    },
+    [buildEdgeSnapshots, buildPeerSnapshots, untrustedScriptKeys]
+  );
+
   const onConnect = useCallback((conn: Connection) => {
     if (!conn.source || !conn.target) return;
-    const dagCheck = validateDagConnection(Object.values(edgesRef.current), conn.source, conn.target);
-    if (!dagCheck.ok) {
-      setStatusLog(dagCheck.reason || '检测到有向环路，已阻止连线');
-      return;
-    }
-    pushHistory();
-    const id = `edge-${conn.source}-${conn.target}-${Date.now()}`;
-    const nextEdge: BlueprintEdge = {
-      id,
-      source: conn.source,
-      target: conn.target,
-      sourceHandle: conn.sourceHandle ?? undefined,
-      targetHandle: conn.targetHandle ?? undefined,
-      color: '#2563EB',
-      rev: 1,
-      cid: SELF_CID,
-    };
-    const nextEdges = { ...edgesRef.current, [id]: nextEdge };
-    edgesRef.current = nextEdges;
-    setBase((prev) => ({
-      ...prev,
-      version: prev.version + 1,
-      edges: {
-        ...prev.edges,
-        [id]: nextEdge,
-      },
-    }));
-    if (effectiveNodesRef.current[conn.target]?.script) {
-      void executeUnifiedWidgetScript(conn.target, { kind: 'render' }, undefined, 1, undefined, nextEdges);
-    }
-    setStatusLog('已建立节点连线并同步下游数据通路（选中连线按 Delete 可删除）');
-  }, [executeUnifiedWidgetScript, pushHistory]);
+    const source = conn.source;
+    const target = conn.target;
+    const fromPort = conn.sourceHandle ?? 'out-1';
+    const toPort = conn.targetHandle ?? 'in-1';
+    void (async () => {
+      const check = await validateConnectionByWidgets(source, target, fromPort, toPort, edgesRef.current);
+      if (!check.ok) {
+        setStatusLog(check.reason || '控件自定义校验拒绝了此连线');
+        return;
+      }
+      pushHistory();
+      const id = `edge-${source}-${target}-${Date.now()}`;
+      const nextEdge: BlueprintEdge = {
+        id,
+        source,
+        target,
+        sourceHandle: conn.sourceHandle ?? undefined,
+        targetHandle: conn.targetHandle ?? undefined,
+        color: '#2563EB',
+        rev: 1,
+        cid: SELF_CID,
+      };
+      const nextEdges = { ...edgesRef.current, [id]: nextEdge };
+      edgesRef.current = nextEdges;
+      setBase((prev) => ({
+        ...prev,
+        version: prev.version + 1,
+        edges: {
+          ...prev.edges,
+          [id]: nextEdge,
+        },
+      }));
+      if (effectiveNodesRef.current[target]?.script) {
+        void executeUnifiedWidgetScript(target, { kind: 'render' }, undefined, 1, undefined, nextEdges);
+      }
+      setStatusLog('已建立节点连线并同步下游数据通路（选中连线按 Delete 可删除）');
+    })();
+  }, [executeUnifiedWidgetScript, pushHistory, validateConnectionByWidgets]);
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
     const removed = changes.filter((c) => c.type === 'remove').map((c) => c.id);

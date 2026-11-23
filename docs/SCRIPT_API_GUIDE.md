@@ -10,7 +10,7 @@ Atlas Hybrid Canvas 的每个控件（`BlueprintNode`）都支持两种脚本模
 1. **静态危险词拦截**：保存/执行前通过 `validateScriptSafety()` 扫描，禁止 `window`、`document`、`globalThis`、`localStorage`、`sessionStorage`、`indexedDB`、`cookie`、`eval`、`Function`、`Proxy`、`Reflect`、`fetch`、`XMLHttpRequest`、`WebSocket`、`Worker`、`importScripts`、`__proto__`、`prototype`、`constructor` 等，且单段脚本上限 `24 KB`。
 2. **一次性 Blob Web Worker 隔离**：每次执行动态拼装启动器并拉起全新 Web Worker，Worker 天然无法访问主页面 DOM、Cookie 与存储，同时在 `AsyncFunction` 参数中把危险全局名显式遮蔽为 `undefined`。
 3. **5 秒 CPU 看门狗强杀**：若脚本包含死循环或超长阻塞计算，超过 `5000ms` 自动 `worker.terminate()` 并释放 Blob URL，页面绝不卡死。
-4. **跨控件消息防环保护**：主线程调度 `emit` / `broadcast` 时限制最大递归深度 `depth <= 4`，防止 A → B → A 无限互发消息。
+4. **跨控件消息防环保护**：主线程调度 `emit` / `broadcast` 时限制最大递归深度 `depth <= 4`，并在超出时写入状态栏提示，防止 A → B → A 无限互发消息。注意：引擎**不再**全局拦截环路连线，是否允许成环由控件脚本通过 `onValidateConnect()` 自主声明（见第五节）。
 
 ## 二、内置全局 API 速查
 
@@ -28,7 +28,10 @@ Atlas Hybrid Canvas 的每个控件（`BlueprintNode`）都支持两种脚本模
 | `widgets.vars(id)` | 读取指定控件的实时变量表 | `widgets.vars(vars.lastChildId)` |
 | `widgets.list()` | 获取画布上全部控件快照数组 | `widgets.list().length` |
 | `await widgets.create(spec)` | 动态创建新子控件并可自动连线 | 见下方示例 |
-| `widgets.connect(from, to, label?)` | 在两个控件间编程式建立带箭头连线 | `widgets.connect(ctx.entity.id, id, '触发')` |
+| `widgets.connect(from, to, label?)` | 在两个控件间编程式建立带箭头连线（**不做**环路校验，需自行 `widgets.checkDag()`） | `widgets.connect(ctx.entity.id, id, '触发')` |
+| `widgets.checkDag(from?, to?)` | 传入两个 id 判断「新增 from→to 是否会成环」，返回 `{ ok, cyclePath }`；不传参则做全图拓扑检测 | `if (!widgets.checkDag(a, b).ok) return;` |
+| `widgets.topoSort()` | 全图 Kahn 拓扑排序，返回 `{ ok, order, cyclicNodeIds }` | `vars.order = widgets.topoSort().order` |
+| `onValidateConnect(fn)` | 注册连线前校验钩子，返回 `{ ok: false, reason }` 可阻止画布拖拽产生的连线 | 见第五节 |
 | `widgets.remove(id)` | 移除指定控件及其连线 | `widgets.remove(oldId)` |
 | `await emit(targetId, event, payload)` | 向指定控件发送消息并触发其 `on(event)` | `await emit(childId, 'ping', { text })` |
 | `await broadcast(event, payload)` | 向全画布所有带脚本控件广播消息 | `await broadcast('resetAll', {})` |
@@ -121,3 +124,23 @@ on('doneReport', (msg) => {
 - `vars.width` / `vars.height`：动态修改控件宽高（自动安全钳位在 `180–1400` / `100–1200`）；
 - `vars.pos`（`{ x, y }` 或 `[x, y]`）或 `vars.x` / `vars.y`：动态移动控件在无限画布中的世界坐标；
 - `vars.locked`：动态切换控件锁定状态。
+
+
+## 自主声明连线约束（v38 新增）
+
+引擎默认**允许自由拓扑（含环路）**，拖动连线时不再全局拦截。若某个控件希望禁止成环，由该控件自己的脚本声明：
+
+```js
+onValidateConnect((conn) => {
+  // conn: { source, target, fromPort, toPort, fromNode, toNode, wouldCycle, cyclePath }
+  if (conn.wouldCycle) {
+    return { ok: false, reason: '本控件不允许成环：' + conn.cyclePath.join(' → ') };
+  }
+  return { ok: true };
+});
+```
+
+- 拖动连线时，起点与终点控件的脚本会**各跑一次**该钩子，任一返回 `{ ok: false }` 即拦截；未注册钩子的控件不参与判断。
+- 钩子执行失败（语法错误 / 超时 / 抛异常）按**拦截**处理，不会静默放行。
+- `wouldCycle` 与 `cyclePath` 由引擎预先算好；也可以在钩子里自己调 `widgets.checkDag(conn.source, conn.target)` 复核。
+- 环路导致的事件无限传导由调度器的递归深度上限兜底，超出时状态栏会给出提示。

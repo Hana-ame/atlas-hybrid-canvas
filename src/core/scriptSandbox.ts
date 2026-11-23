@@ -42,7 +42,7 @@ export function validateScriptSyntax(code: string): { ok: boolean; error?: strin
       ...args: string[]
     ) => unknown;
     new AsyncFunction(
-      'vars', 'ctx', 'lib', 'log', 'canvas', 'widgets', 'emit', 'broadcast', 'emitDownstream', 'on', 'onSubmit',
+      'vars', 'ctx', 'lib', 'log', 'canvas', 'widgets', 'emit', 'broadcast', 'emitDownstream', 'on', 'onSubmit', 'onValidateConnect',
       'window', 'document', 'fetch', 'localStorage',
       trimmed
     );
@@ -59,30 +59,90 @@ export function validateDagConnection(
   edges: Array<{ source: string; target: string }>,
   source: string,
   target: string
-): { ok: boolean; reason?: string } {
+): { ok: boolean; reason?: string; cyclePath?: string[] } {
   if (!source || !target) return { ok: false, reason: '起点或终点无效' };
-  if (source === target) return { ok: false, reason: '禁止控件自连成环' };
+  if (source === target) return { ok: false, reason: '检测到自环连线', cyclePath: [source, target] };
   const adj = new Map<string, string[]>();
   for (const e of edges) {
     const list = adj.get(e.source) ?? [];
     list.push(e.target);
     adj.set(e.source, list);
   }
+  // 判据：从 target 出发能否沿现有边走回 source。能走回 → 接上 source→target 就成环。
+  // 注意不能反过来「从 source 出发能否回到 source」，那会把 source 自身早已存在的环也算到本次连线头上。
+  const parent = new Map<string, string>();
   const visited = new Set<string>([target]);
   const queue: string[] = [target];
   while (queue.length > 0) {
     const cur = queue.shift()!;
     for (const next of adj.get(cur) ?? []) {
       if (next === source) {
-        return { ok: false, reason: '检测到有向环路：该连线会导致上下游数据流循环触发，已自动拦截' };
+        const path = [source, target];
+        const chain: string[] = [];
+        let node: string | undefined = cur;
+        while (node && node !== target) {
+          chain.push(node);
+          node = parent.get(node);
+        }
+        chain.reverse();
+        const cyclePath = [...path, ...chain, source];
+        return {
+          ok: false,
+          reason: `检测到有向环路：${cyclePath.join(' → ')}`,
+          cyclePath,
+        };
       }
       if (!visited.has(next)) {
         visited.add(next);
+        parent.set(next, cur);
         queue.push(next);
       }
     }
   }
   return { ok: true };
+}
+
+/**
+ * 拓扑排序（Kahn 算法）：供控件脚本与测试判断全图是否为 DAG 并获取执行顺序。
+ */
+export function computeTopologicalOrder(
+  nodeIds: string[],
+  edges: Array<{ source: string; target: string }>
+): { ok: boolean; order: string[]; cyclicNodeIds: string[] } {
+  const inDegree = new Map<string, number>();
+  const adj = new Map<string, string[]>();
+  for (const id of nodeIds) {
+    inDegree.set(id, 0);
+    adj.set(id, []);
+  }
+  // 自环单独立账：若只把自环边丢掉，节点入度留在 0，会被 Kahn 当成正常源点出队，环就被抹平了
+  for (const e of edges) {
+    if (!inDegree.has(e.source)) { inDegree.set(e.source, 0); adj.set(e.source, []); }
+    if (!inDegree.has(e.target)) { inDegree.set(e.target, 0); adj.set(e.target, []); }
+    // 自环也要计入入度，否则会被 Kahn 当成正常源点出队、把环抹平；
+    // 但不进邻接表，否则该节点出队时会把自身入度减回 0。
+    inDegree.set(e.target, (inDegree.get(e.target) ?? 0) + 1);
+    if (e.source === e.target) continue;
+    adj.get(e.source)!.push(e.target);
+  }
+  const queue: string[] = [];
+  for (const [id, deg] of inDegree) {
+    if (deg === 0) queue.push(id);
+  }
+  const order: string[] = [];
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    order.push(cur);
+    for (const nx of adj.get(cur) ?? []) {
+      const nextDeg = (inDegree.get(nx) ?? 1) - 1;
+      inDegree.set(nx, nextDeg);
+      if (nextDeg === 0) queue.push(nx);
+    }
+  }
+  const cyclicNodeIds = Array.from(inDegree.entries())
+    .filter(([id, deg]) => deg > 0)
+    .map(([id]) => id);
+  return { ok: cyclicNodeIds.length === 0, order, cyclicNodeIds };
 }
 
 export interface PeerWidgetSnapshot {
@@ -137,11 +197,23 @@ export interface EmitScriptOp {
   payload: unknown;
 }
 
+export interface ConnectValidationPayload {
+  source: string;
+  target: string;
+  fromPort: string;
+  toPort: string;
+  fromNode: PeerWidgetSnapshot | null;
+  toNode: PeerWidgetSnapshot | null;
+  wouldCycle: boolean;
+  cyclePath: string[];
+}
+
 export type ScriptTriggerEvent =
   | { kind: 'render' }
   | { kind: 'click'; buttonId: string }
   | { kind: 'submit'; inputId: string; value: string }
-  | { kind: 'message'; event: string; payload: unknown; fromId: string; fromTitle: string };
+  | { kind: 'message'; event: string; payload: unknown; fromId: string; fromTitle: string }
+  | { kind: 'validateConnect'; conn: ConnectValidationPayload };
 
 export interface SandboxExecutionResult {
   ok: boolean;
@@ -150,6 +222,7 @@ export interface SandboxExecutionResult {
   widgetOps: WidgetScriptOp[];
   emitOps: EmitScriptOp[];
   logs: string[];
+  connectValidation?: { ok: boolean; reason?: string };
   error?: string;
 }
 
@@ -298,9 +371,89 @@ export async function runInIsolatedWorker(
           }
           return { ok: true, id, title };
         },
+        checkDag: (fromId, toId) => {
+          const adj = Object.create(null);
+          const selfLoops = new Set();
+          for (const e of edgeList) {
+            if (!adj[e.source]) adj[e.source] = [];
+            // 自环不入邻接表：否则从 f 反向搜「能否回到 f」会命中这条自环边，把任意连线都判成成环
+            if (e.source === e.target) { selfLoops.add(e.source); continue; }
+            adj[e.source].push(e.target);
+          }
+          if (fromId !== undefined && toId !== undefined) {
+            const f = String(fromId || '');
+            const t = String(toId || '');
+            if (!f || !t) return { ok: false, cyclePath: [] };
+            if (f === t) return { ok: false, cyclePath: [f, t] };
+            // 只看「除这条新边之外的现有拓扑」：fromId→toId 这条边此刻还没进 edgeList。
+            // 判据是「从 t 出发能否走回 f」——能走回，接上新边就成环；f 自身已存在环与本次连线无关。
+            const parent = Object.create(null);
+            const visited = new Set([t]);
+            const queue = [t];
+            while (queue.length > 0) {
+              const cur = queue.shift();
+              for (const nx of (adj[cur] || [])) {
+                if (nx === f) {
+                  // cur → ... → t 的路径反向回溯，再整体翻回正向，拼成 f → t → ... → cur → f
+                  const back = [];
+                  let node = cur;
+                  while (node && node !== t) { back.push(node); node = parent[node]; }
+                  back.reverse();
+                  return { ok: false, cyclePath: [f, t, ...back, f] };
+                }
+                if (!visited.has(nx)) { visited.add(nx); parent[nx] = cur; queue.push(nx); }
+              }
+            }
+            return { ok: true, cyclePath: [] };
+          }
+          // 全图 Kahn 拓扑检测
+          const inDeg = Object.create(null);
+          for (const id of Object.keys(peerMap)) inDeg[id] = 0;
+          for (const e of edgeList) {
+            if (!(e.source in inDeg)) { inDeg[e.source] = 0; adj[e.source] = []; }
+            if (!(e.target in inDeg)) { inDeg[e.target] = 0; if (!adj[e.target]) adj[e.target] = []; }
+            inDeg[e.target] = (inDeg[e.target] || 0) + 1;
+          }
+          const q = Object.keys(inDeg).filter((k) => inDeg[k] === 0);
+          while (q.length > 0) {
+            const cur = q.shift();
+            for (const nx of (adj[cur] || [])) {
+              inDeg[nx] = (inDeg[nx] || 1) - 1;
+              if (inDeg[nx] === 0) q.push(nx);
+            }
+          }
+          const cyclic = Object.keys(inDeg).filter((k) => inDeg[k] > 0);
+          return { ok: cyclic.length === 0, cyclePath: cyclic };
+        },
+        topoSort: () => {
+          const adj = Object.create(null);
+          const inDeg = Object.create(null);
+          for (const id of Object.keys(peerMap)) { inDeg[id] = 0; adj[id] = []; }
+          for (const e of edgeList) {
+            if (!adj[e.source]) { adj[e.source] = []; inDeg[e.source] = 0; }
+            if (!(e.target in inDeg)) { inDeg[e.target] = 0; adj[e.target] = []; }
+            // 自环计入入度（否则被当成源点出队、环被抹平），但不进邻接表（否则出队时把自身入度减回 0）
+            inDeg[e.target] += 1;
+            if (e.source === e.target) continue;
+            adj[e.source].push(e.target);
+          }
+          const q = Object.keys(inDeg).filter((k) => inDeg[k] === 0);
+          const order = [];
+          while (q.length > 0) {
+            const cur = q.shift();
+            order.push(cur);
+            for (const nx of (adj[cur] || [])) {
+              inDeg[nx] -= 1;
+              if (inDeg[nx] === 0) q.push(nx);
+            }
+          }
+          const cyclicNodeIds = Object.keys(inDeg).filter((k) => inDeg[k] > 0);
+          return { ok: cyclicNodeIds.length === 0, order, cyclicNodeIds };
+        },
         connect: (fromId, toId, label) => {
-          const f = String(fromId);
-          const t = String(toId);
+          const f = String(fromId || '');
+          const t = String(toId || '');
+          if (!f || !t) return { ok: false, error: '起点或终点无效' };
           const lbl = label ? String(label) : undefined;
           widgetOps.push({ op: 'connect', fromId: f, toId: t, label: lbl });
           edgeList.push({ id: 'tmp-edge-' + f + '-' + t, source: f, target: t, sourceHandle: 'out-1', targetHandle: 'in-1', label: lbl });
@@ -343,28 +496,47 @@ export async function runInIsolatedWorker(
 
       const handlers = Object.create(null);
       const submitHandlers = Object.create(null);
+      let connectValidator = null;
       const on = (key, fn) => {
         if (typeof fn === 'function') handlers[String(key)] = fn;
       };
       const onSubmit = (inputId, fn) => {
         if (typeof fn === 'function') submitHandlers[String(inputId)] = fn;
       };
+      const onValidateConnect = (fn) => {
+        if (typeof fn === 'function') connectValidator = fn;
+      };
 
       const runUserCode = async () => {
         const fn = new AsyncFunction(
-          'vars', 'ctx', 'lib', 'log', 'canvas', 'widgets', 'emit', 'broadcast', 'emitDownstream', 'on', 'onSubmit',
+          'vars', 'ctx', 'lib', 'log', 'canvas', 'widgets', 'emit', 'broadcast', 'emitDownstream', 'on', 'onSubmit', 'onValidateConnect',
           'window', 'document', 'fetch', 'localStorage',
           code
         );
         await fn(
-          vars, ctx, lib, log, canvas, widgets, emit, broadcast, emitDownstream, on, onSubmit,
+          vars, ctx, lib, log, canvas, widgets, emit, broadcast, emitDownstream, on, onSubmit, onValidateConnect,
           undefined, undefined, undefined, undefined
         );
       };
 
       try {
-        // 第 1 遍：执行顶层代码，产出初始 vars.contents 并注册 on / onSubmit 回调
+        // 第 1 遍：执行顶层代码，产出初始 vars.contents 并注册 on / onSubmit / onValidateConnect 回调
         await runUserCode();
+
+        // 连线前校验钩子：仅运行控件自带的 onValidateConnect，不修改 vars
+        if (trigger && trigger.kind === 'validateConnect') {
+          let connectValidation = { ok: true };
+          if (connectValidator) {
+            const raw = await connectValidator(trigger.conn);
+            if (raw === false) {
+              connectValidation = { ok: false, reason: ctx.entity.title + ' 拒绝了此连线' };
+            } else if (raw && typeof raw === 'object' && raw.ok === false) {
+              connectValidation = { ok: false, reason: String(raw.reason || (ctx.entity.title + ' 拒绝了此连线')) };
+            }
+          }
+          self.postMessage({ ok: true, updatedVars: initialVars, annotationOps: [], widgetOps: [], emitOps: [], logs, connectValidation });
+          return;
+        }
 
         // 第 2 遍：若有事件触发（点击、回车提交或跨控件消息），执行对应回调后再重跑顶层以刷新 vars.contents
         if (trigger && trigger.kind === 'click' && handlers[trigger.buttonId]) {

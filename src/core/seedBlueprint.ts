@@ -442,6 +442,13 @@ on('refresh', () => {
 on('resetBonus', () => {
   vars.bonus = 0;
   vars.lastEvent = '已清零推送加成';
+});
+// 控件自带连线校验：由本控件脚本自主禁止成环连线，画布其余控件仍可自由连环
+onValidateConnect((conn) => {
+  if (conn.wouldCycle) {
+    return { ok: false, reason: '「汇总控件」自带脚本拦截了成环连线：' + conn.cyclePath.join(' → ') };
+  }
+  return { ok: true };
 });`,
       rev: 1,
       cid: 'server-base',
