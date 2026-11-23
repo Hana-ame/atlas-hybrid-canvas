@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>总览 — Atlas Hybrid Canvas 教程</title>
+  <style>
+:root {
+  --paper: #FFFFFF;
+  --surface: #F8FAFC;
+  --ink: #0F172A;
+  --ink2: #334155;
+  --mute: #475569;
+  --hair: #CBD5E1;
+  --accent: #2563EB;
+  --accent-text: #1D4ED8;
+  --accent-2: #059669;
+  --accent-2-text: #047857;
+  --code-bg: #0F172A;
+  --code-ink: #E2E8F0;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+body {
+  margin: 0;
+  padding: 0 0 88px;
+}
+nav.top {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--hair);
+  padding: 12px clamp(20px, 7vw, 96px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+nav.top .brand {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--ink);
+  text-decoration: none;
+  letter-spacing: -0.01em;
+}
+nav.top .links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 13px;
+}
+nav.top .links a {
+  color: var(--ink2);
+  text-decoration: none;
+  padding-bottom: 2px;
+  border-bottom: 2px solid transparent;
+}
+nav.top .links a:hover { color: var(--accent-text); }
+nav.top .links a.active {
+  color: var(--accent-text);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+main {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 48px clamp(20px, 5vw, 48px) 0;
+}
+h1 {
+  font-size: clamp(32px, 4vw, 44px);
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+  margin: 0 0 14px;
+  color: var(--ink);
+}
+.lead {
+  font-size: 17px;
+  color: var(--ink2);
+  margin: 0 0 32px;
+  max-width: 66ch;
+}
+h2 {
+  font-size: clamp(22px, 2.3vw, 27px);
+  line-height: 1.25;
+  margin: 48px 0 14px;
+  padding-top: 24px;
+  border-top: 1px solid var(--hair);
+  color: var(--ink);
+}
+h3 {
+  font-size: 17px;
+  margin: 24px 0 8px;
+  color: var(--ink);
+}
+p { margin: 0 0 14px; color: var(--ink2); max-width: 70ch; }
+ul, ol { margin: 8px 0 18px; padding-left: 20px; color: var(--ink2); max-width: 70ch; }
+li { margin-bottom: 7px; }
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13.5px;
+  background: #F1F5F9;
+  color: #0F172A;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+pre {
+  background: var(--code-bg);
+  color: var(--code-ink);
+  padding: 16px 20px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 14px 0 22px;
+}
+pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: inherit;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0 24px;
+  font-size: 14px;
+}
+th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  padding: 10px 12px 10px 0;
+  border-bottom: 2px solid var(--ink);
+  white-space: nowrap;
+}
+td {
+  padding: 10px 12px 10px 0;
+  border-bottom: 1px solid var(--hair);
+  color: var(--ink2);
+  vertical-align: top;
+}
+.callout {
+  border-left: 3px solid var(--accent);
+  padding: 12px 0 12px 18px;
+  margin: 20px 0;
+  color: var(--ink2);
+}
+.callout.ok { border-left-color: var(--accent-2); }
+.callout strong { color: var(--ink); }
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px 32px;
+  margin: 20px 0;
+}
+.chapter-link {
+  display: block;
+  text-decoration: none;
+  border-top: 2px solid var(--ink);
+  padding: 16px 0 8px;
+  color: inherit;
+}
+.chapter-link:hover .ch-title { color: var(--accent-text); }
+.ch-num {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  color: var(--accent-text);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.ch-title {
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+.ch-desc {
+  font-size: 14px;
+  color: var(--ink2);
+  line-height: 1.55;
+}
+figure {
+  margin: 22px 0 26px;
+  padding: 0;
+}
+figcaption {
+  font-size: 12.5px;
+  color: var(--mute);
+  margin-top: 8px;
+}
+.pager {
+  margin-top: 56px;
+  padding-top: 20px;
+  border-top: 1px solid var(--hair);
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 14px;
+}
+.pager a {
+  color: var(--accent-text);
+  text-decoration: none;
+  font-weight: 600;
+}
+.pager a:hover { text-decoration: underline; }
+@media (max-width: 720px) {
+  .grid-2 { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+  <nav class="top" aria-label="教程导航">
+    <a class="brand" href="index.html">Atlas Hybrid Canvas · 完整技术教程 (v28)</a>
+    <div class="links"><a href="index.html" class="active">总览</a>
+<a href="01-canvas-architecture.html" class="">01 混合画布</a>
+<a href="02-widgets-and-vars.html" class="">02 控件与控形</a>
+<a href="03-dataflow-and-sandbox.html" class="">03 连线与沙箱</a>
+<a href="04-storage-sync-security.html" class="">04 存储与安全</a>
+<a href="05-examples-and-extension.html" class="">05 示例拆解与二开</a></div>
+  </nav>
+  <main>
+
+    <h1>Atlas Hybrid Canvas 完整架构与使用教程</h1>
+    <p class="lead">
+      这套离线静态教程面向开发者与重度使用者，分 4 个章节把 Atlas Hybrid Canvas 的混合无限画布渲染、控件脚本与 <code>vars</code> 控形、连线数据通路（DAG + Worker 池）、双层 IndexedDB 存储、Go 协同房间与防 SSRF 代理全部讲透。
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 760 250" width="100%" role="img" aria-label="Atlas Hybrid Canvas 三层混合架构全景图">
+        <rect x="12" y="14" width="736" height="58" fill="#EFF6FF" stroke="#2563EB" stroke-width="1.4" />
+        <text x="28" y="37" fill="#1D4ED8" font-size="14" font-weight="700">1. 近景交互层（React Flow v12 · 缩放 &gt; 38% 挂载可见区 DOM）</text>
+        <text x="28" y="58" fill="#334155" font-size="12.5">WidgetNode（复选框 / 流式 UI / 内部滚动）· AnnotationNode（编辑态）· NodeResizer · 多端口连线</text>
+
+        <rect x="12" y="92" width="736" height="58" fill="#ECFDF5" stroke="#059669" stroke-width="1.4" />
+        <text x="28" y="115" fill="#047857" font-size="14" font-weight="700">2. 底层空间与脚本引擎（512×512 Chunk Canvas + 常驻 Worker 池 + DAG 数据流）</text>
+        <text x="28" y="136" fill="#334155" font-size="12.5">ChunkManager 空间哈希 · ChunkTileCache LRU（显存回收）· &lt;32% 零 DOM 全景瓦片 · widgets.inputs / emitDownstream</text>
+
+        <rect x="12" y="170" width="736" height="62" fill="#F8FAFC" stroke="#0F172A" stroke-width="1.4" />
+        <text x="28" y="194" fill="#0F172A" font-size="14" font-weight="700">3. 双层持久化、协同与安全防线</text>
+        <text x="28" y="216" fill="#334155" font-size="12.5">BaseBlueprint + LocalOverlayState（300ms 防抖 IndexedDB + BroadcastChannel）· room-go CRDT · /api/proxy SSRF+限流</text>
+      </svg>
+      <figcaption>图 0-1：Atlas Hybrid Canvas 的三层核心职责划分——近景用 DOM 保证输入与交互手感，远景用 512×512 离屏瓦片保证 60 FPS。</figcaption>
+    </figure>
+
+    <h2>五章导读</h2>
+    <div class="grid-2">
+      <a class="chapter-link" href="01-canvas-architecture.html">
+        <div class="ch-num">CHAPTER 01</div>
+        <div class="ch-title">混合无限画布与渲染原理</div>
+        <div class="ch-desc">讲清 512×512 分块索引、迟滞 LOD（&lt;32% / &gt;38%）、零频闪拖拽机制、HiDPI 清晰背景字与背景图自动等比压缩。</div>
+      </a>
+      <a class="chapter-link" href="02-widgets-and-vars.html">
+        <div class="ch-num">CHAPTER 02</div>
+        <div class="ch-title">控件交互、复选框与 vars 控形</div>
+        <div class="ch-desc">讲清整卡拖动/双击编辑、0 端口配置、整行可点复选框（- [] / - [x]）、流式 vars.contents 与 vars.type/title/width/height/pos 控形。</div>
+      </a>
+      <a class="chapter-link" href="03-dataflow-and-sandbox.html">
+        <div class="ch-num">CHAPTER 03</div>
+        <div class="ch-title">连线数据通路、跨控件联动与 Worker 沙箱</div>
+        <div class="ch-desc">讲清 widgets.inputs(portId?)、emitDownstream、DAG 环路拦截、常驻 3-Worker 池、26 词安全黑名单与脚本信任审核弹窗。</div>
+      </a>
+      <a class="chapter-link" href="04-storage-sync-security.html">
+        <div class="ch-num">CHAPTER 04</div>
+        <div class="ch-title">双层存储、多人协同与后端安全</div>
+        <div class="ch-desc">讲清 IndexedDB 300ms 防抖、BroadcastChannel 指纹防回环、50 步安全撤销栈、room-go (rev, cid) CRDT 与 /api/proxy 鉴权限流。</div>
+      </a>
+      <a class="chapter-link" href="05-examples-and-extension.html">
+        <div class="ch-num">CHAPTER 05</div>
+        <div class="ch-title">画布内置示例拆解与二次开发实战</div>
+        <div class="ch-desc">逐个拆解画布上 4 组实时示例控件的源码原理，并给出新增模板、扩展流式 UI 块、注入新沙箱 API 与写单测的完整二开步骤。</div>
+      </a>
+    </div>
+
+    <h2>常用快捷键与操作速查</h2>
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 24%">快捷键 / 操作</th>
+          <th style="width: 34%">触发效果</th>
+          <th style="width: 42%">细节说明</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>Ctrl+K</code> / <code>Cmd+K</code></td>
+          <td>打开全局搜索与区块跃迁弹窗</td>
+          <td>可模糊搜节点/注释标题，也可直接输入 <code>1,-1</code> 或 <code>0,0@0.8</code> 跳到指定 Chunk 与缩放比。</td>
+        </tr>
+        <tr>
+          <td><code>Ctrl+Z</code> / <code>Ctrl+Y</code></td>
+          <td>撤销 / 重做（最多 50 步）</td>
+          <td>在输入框内聚焦时自动放行浏览器原生文本撤销，不误撤画布。</td>
+        </tr>
+        <tr>
+          <td>按住 <code>Shift</code> 拖框</td>
+          <td>框选多个控件批量移动</td>
+          <td>未按 Shift 时拖空白画布为平移视口。</td>
+        </tr>
+        <tr>
+          <td>按住卡片拖动 / 双击文字</td>
+          <td>移动卡片 / 进入原地编辑</td>
+          <td>避免误触进入编辑态；按 <code>Esc</code> 或点击外部退出编辑。</td>
+        </tr>
+        <tr>
+          <td>滚轮缩放到 &lt; 32%</td>
+          <td>切入 Macro 宏观瓦片视图</td>
+          <td>卸载全部上层 DOM 节点，改由底层 Canvas 绘制瓦片与贝塞尔连线箭头。</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>源码目录速查</h2>
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 34%">路径</th>
+          <th style="width: 66%">核心职责</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><code>src/App.tsx</code></td><td>顶层工作台容器：协调 React Flow、LOD 切换、脚本调度、导入导出与协同弹窗。</td></tr>
+        <tr><td><code>src/canvas/ChunkUnderlayCanvas.tsx</code></td><td>底层穿透 Canvas：60 FPS 跟随视口绘制网格、HiDPI 背景文字/等比插图、宏观色块与连线箭头。</td></tr>
+        <tr><td><code>src/canvas/WidgetNode.tsx</code></td><td>React Flow 交互控件：支持动态多端口、整行复选框、<code>vars.contents</code> 流式 UI 与内部滚动。</td></tr>
+        <tr><td><code>src/core/chunkManager.ts</code> / <code>chunkTileCache.ts</code></td><td><code>512×512</code> 空间分块索引与离屏 LRU 瓦片缓存（淘汰主动释显存）。</td></tr>
+        <tr><td><code>src/core/layeredStore.ts</code> / <code>idbStorage.ts</code></td><td>双层状态合并、<code>vars</code> 形态投影、手动修改清理冲突变量、IndexedDB 异步防抖与跨页签同步。</td></tr>
+        <tr><td><code>src/core/scriptSandbox.ts</code></td><td>常驻 Worker 池沙箱、26 词黑名单、即时语法预检与 DAG 环路检测。</td></tr>
+        <tr><td><code>src/hooks/</code></td><td><code>useBlueprintHistory.ts</code>（50 步安全撤销栈）与 <code>useOverlaySync.ts</code>（防回环写盘同步）。</td></tr>
+        <tr><td><code>server/</code> &amp; <code>room-go/</code></td><td>Express 防 SSRF 代理与保存鉴权服务；Go WebSocket 多人协同房间与确定性 CRDT 存储。</td></tr>
+        <tr><td><code>tests/</code></td><td>6 份自动化单元测试（17 条用例），通过 <code>npm test</code> 秒级回归。</td></tr>
+      </tbody>
+    </table>
+
+    <div class="pager">
+      <span></span>
+      <a href="01-canvas-architecture.html">下一章：01 混合无限画布与渲染原理 →</a>
+    </div>
+
+  </main>
+</body>
+</html>

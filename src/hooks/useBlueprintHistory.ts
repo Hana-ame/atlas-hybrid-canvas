@@ -1,6 +1,6 @@
 /**
  * @file useBlueprintHistory.ts
- * @description 画布撤销/重做历史栈 Hook（最多保留 50 步 structuredClone 深拷贝快照，回调引用稳定）。
+ * @description 画布撤销/重做历史栈 Hook（最多保留 50 步深拷贝快照，回调引用稳定）。
  */
 
 import { useCallback, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
@@ -12,6 +12,14 @@ export interface HistorySnapshot {
 }
 
 const MAX_HISTORY_STEPS = 50;
+
+function safeClone<T>(value: T): T {
+  try {
+    return structuredClone(value);
+  } catch {
+    return JSON.parse(JSON.stringify(value)) as T;
+  }
+}
 
 export function useBlueprintHistory(
   baseRef: MutableRefObject<BaseBlueprint>,
@@ -27,8 +35,8 @@ export function useBlueprintHistory(
 
   const pushHistory = useCallback(() => {
     pastRef.current.push({
-      base: structuredClone(baseRef.current),
-      overlay: structuredClone(overlayRef.current),
+      base: safeClone(baseRef.current),
+      overlay: safeClone(overlayRef.current),
     });
     if (pastRef.current.length > MAX_HISTORY_STEPS) {
       pastRef.current.shift();
@@ -41,8 +49,8 @@ export function useBlueprintHistory(
     const prev = pastRef.current.pop();
     if (!prev) return;
     futureRef.current.push({
-      base: structuredClone(baseRef.current),
-      overlay: structuredClone(overlayRef.current),
+      base: safeClone(baseRef.current),
+      overlay: safeClone(overlayRef.current),
     });
     setBase(prev.base);
     setOverlay(prev.overlay);
@@ -58,8 +66,8 @@ export function useBlueprintHistory(
     const next = futureRef.current.pop();
     if (!next) return;
     pastRef.current.push({
-      base: structuredClone(baseRef.current),
-      overlay: structuredClone(overlayRef.current),
+      base: safeClone(baseRef.current),
+      overlay: safeClone(overlayRef.current),
     });
     setBase(next.base);
     setOverlay(next.overlay);

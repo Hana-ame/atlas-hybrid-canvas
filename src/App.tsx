@@ -163,7 +163,12 @@ function HybridCanvasWorkspace() {
   const [roomName, setRoomName] = useState('atlas-main');
   const [roomStatus, setRoomStatus] = useState<RoomStatus>('disconnected');
   const roomClientRef = useRef<CollaborativeRoomClient | null>(null);
-  const [statusLog, setStatusLog] = useState<string>('就绪：直接从左侧拖出控件放到画布，拖动过程零频闪');
+  const [statusLog, setStatusLog] = useState<string>('');
+  useEffect(() => {
+    if (!statusLog) return;
+    const t = window.setTimeout(() => setStatusLog(''), 3500);
+    return () => window.clearTimeout(t);
+  }, [statusLog]);
   const [renderVersion, setRenderVersion] = useState(0);
   const [chunkSyncTick, setChunkSyncTick] = useState(0);
 
@@ -847,16 +852,17 @@ function HybridCanvasWorkspace() {
     [buildEdgeSnapshots, buildPeerSnapshots, untrustedScriptKeys]
   );
 
-  // 初始化所有带 script 的控件，首次自动渲染其 vars.contents
+  // 初始化所有带 script 的控件：严格等待 IndexedDB 恢复完成后再首次渲染，避免恢复覆盖冲掉首帧 vars.contents
   const renderedScriptsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
+    if (!overlayHydrated) return;
     for (const node of Object.values(effectiveNodes)) {
       if (node.script && !Array.isArray(node.effectiveVars?.contents) && !renderedScriptsRef.current.has(node.id)) {
         renderedScriptsRef.current.add(node.id);
         void executeUnifiedWidgetScript(node.id, { kind: 'render' });
       }
     }
-  }, [effectiveNodes, executeUnifiedWidgetScript]);
+  }, [overlayHydrated, effectiveNodes, executeUnifiedWidgetScript]);
 
   const handleRunScriptClick = useCallback(
     async (nodeId: string, buttonId: string) => {
@@ -1648,10 +1654,16 @@ function HybridCanvasWorkspace() {
         onSaveAsTemplate={handleSaveAsTemplate}
       />
 
-      {/* 底部状态日志条 */}
-      <div className="pointer-events-none absolute bottom-3 left-1/2 z-20 -translate-x-1/2 rounded-full border border-slate-200 bg-white/90 px-4 py-1.5 text-xs text-slate-700 shadow-sm backdrop-blur">
-        {statusLog}
-      </div>
+      {/* 浮动通知位（仅在有通知消息时弹出，3.5 秒后自动收起） */}
+      {statusLog && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="pointer-events-none absolute bottom-4 left-1/2 z-30 -translate-x-1/2 rounded-full border border-slate-200 bg-slate-900/90 px-4 py-1.5 text-xs font-medium text-white shadow-lg backdrop-blur"
+        >
+          {statusLog}
+        </div>
+      )}
 
       {/* 上层 React Flow + 底层同步 Canvas 瓦片层 */}
       <ReactFlow
@@ -1694,7 +1706,7 @@ function HybridCanvasWorkspace() {
           annotationEditMode={annotationEditMode}
           renderVersion={renderVersion}
         />
-        <Controls position="bottom-right" />
+        <Controls position="bottom-right" showInteractive={false} />
       </ReactFlow>
 
       {/* Ctrl+K 全局搜索与 Chunk 坐标跳转弹窗 */}

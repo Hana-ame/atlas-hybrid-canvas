@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>03 连线数据通路、跨控件联动与 Worker 沙箱 — Atlas Hybrid Canvas 教程</title>
+  <style>
+:root {
+  --paper: #FFFFFF;
+  --surface: #F8FAFC;
+  --ink: #0F172A;
+  --ink2: #334155;
+  --mute: #475569;
+  --hair: #CBD5E1;
+  --accent: #2563EB;
+  --accent-text: #1D4ED8;
+  --accent-2: #059669;
+  --accent-2-text: #047857;
+  --code-bg: #0F172A;
+  --code-ink: #E2E8F0;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+body {
+  margin: 0;
+  padding: 0 0 88px;
+}
+nav.top {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--hair);
+  padding: 12px clamp(20px, 7vw, 96px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+nav.top .brand {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--ink);
+  text-decoration: none;
+  letter-spacing: -0.01em;
+}
+nav.top .links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 13px;
+}
+nav.top .links a {
+  color: var(--ink2);
+  text-decoration: none;
+  padding-bottom: 2px;
+  border-bottom: 2px solid transparent;
+}
+nav.top .links a:hover { color: var(--accent-text); }
+nav.top .links a.active {
+  color: var(--accent-text);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+main {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 48px clamp(20px, 5vw, 48px) 0;
+}
+h1 {
+  font-size: clamp(32px, 4vw, 44px);
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+  margin: 0 0 14px;
+  color: var(--ink);
+}
+.lead {
+  font-size: 17px;
+  color: var(--ink2);
+  margin: 0 0 32px;
+  max-width: 66ch;
+}
+h2 {
+  font-size: clamp(22px, 2.3vw, 27px);
+  line-height: 1.25;
+  margin: 48px 0 14px;
+  padding-top: 24px;
+  border-top: 1px solid var(--hair);
+  color: var(--ink);
+}
+h3 {
+  font-size: 17px;
+  margin: 24px 0 8px;
+  color: var(--ink);
+}
+p { margin: 0 0 14px; color: var(--ink2); max-width: 70ch; }
+ul, ol { margin: 8px 0 18px; padding-left: 20px; color: var(--ink2); max-width: 70ch; }
+li { margin-bottom: 7px; }
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13.5px;
+  background: #F1F5F9;
+  color: #0F172A;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+pre {
+  background: var(--code-bg);
+  color: var(--code-ink);
+  padding: 16px 20px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 14px 0 22px;
+}
+pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: inherit;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0 24px;
+  font-size: 14px;
+}
+th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  padding: 10px 12px 10px 0;
+  border-bottom: 2px solid var(--ink);
+  white-space: nowrap;
+}
+td {
+  padding: 10px 12px 10px 0;
+  border-bottom: 1px solid var(--hair);
+  color: var(--ink2);
+  vertical-align: top;
+}
+.callout {
+  border-left: 3px solid var(--accent);
+  padding: 12px 0 12px 18px;
+  margin: 20px 0;
+  color: var(--ink2);
+}
+.callout.ok { border-left-color: var(--accent-2); }
+.callout strong { color: var(--ink); }
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px 32px;
+  margin: 20px 0;
+}
+.chapter-link {
+  display: block;
+  text-decoration: none;
+  border-top: 2px solid var(--ink);
+  padding: 16px 0 8px;
+  color: inherit;
+}
+.chapter-link:hover .ch-title { color: var(--accent-text); }
+.ch-num {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  color: var(--accent-text);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.ch-title {
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+.ch-desc {
+  font-size: 14px;
+  color: var(--ink2);
+  line-height: 1.55;
+}
+figure {
+  margin: 22px 0 26px;
+  padding: 0;
+}
+figcaption {
+  font-size: 12.5px;
+  color: var(--mute);
+  margin-top: 8px;
+}
+.pager {
+  margin-top: 56px;
+  padding-top: 20px;
+  border-top: 1px solid var(--hair);
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 14px;
+}
+.pager a {
+  color: var(--accent-text);
+  text-decoration: none;
+  font-weight: 600;
+}
+.pager a:hover { text-decoration: underline; }
+@media (max-width: 720px) {
+  .grid-2 { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+  <nav class="top" aria-label="教程导航">
+    <a class="brand" href="index.html">Atlas Hybrid Canvas · 完整技术教程 (v28)</a>
+    <div class="links"><a href="index.html" class="">总览</a>
+<a href="01-canvas-architecture.html" class="">01 混合画布</a>
+<a href="02-widgets-and-vars.html" class="">02 控件与控形</a>
+<a href="03-dataflow-and-sandbox.html" class="active">03 连线与沙箱</a>
+<a href="04-storage-sync-security.html" class="">04 存储与安全</a>
+<a href="05-examples-and-extension.html" class="">05 示例拆解与二开</a></div>
+  </nav>
+  <main>
+
+    <h1>03 · 连线数据通路、跨控件联动与 Worker 沙箱</h1>
+    <p class="lead">
+      控件之间的连线不只是视觉装饰——它本身就是一条声明式数据管道。下游脚本可以按入口端口直接读取上游的正文（<code>body</code>）与变量（<code>vars</code>），上游也可以沿出口连线向下游推送事件，且全部运行在隔离的常驻 Web Worker 池中。
+    </p>
+
+    <h2>连线数据通路 API（零硬编码 ID）</h2>
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 34%">API</th>
+          <th style="width: 66%">作用与返回值</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><code>widgets.inputs(portId?)</code></td><td>返回连入当前控件（或指定入口如 <code>'in-1'</code>）的上游控件数组，每项含 <code>id / title / body / vars / edgeId / fromPort / toPort / edgeLabel</code>。</td></tr>
+        <tr><td><code>widgets.outputs(portId?)</code></td><td>返回从当前控件出口连出的下游控件数组。</td></tr>
+        <tr><td><code>emitDownstream(event, payload, portId?)</code></td><td>沿出口连线向所有下游控件投递事件，下游用 <code>on(event, (payload, meta) =&gt; ...)</code> 接收。</td></tr>
+        <tr><td><code>widgets.get(id)</code> / <code>vars(id)</code> / <code>list()</code></td><td>按 ID 或全量遍历读取画布上任意控件快照。</td></tr>
+        <tr><td><code>widgets.create(spec)</code> / <code>connect()</code> / <code>remove()</code></td><td>在脚本中动态生成子控件、建立连线或删除控件。</td></tr>
+        <tr><td><code>emit(id, ev, data)</code> / <code>broadcast(ev, data)</code></td><td>向指定控件 ID 定向投递或向全画布带脚本控件广播事件。</td></tr>
+        <tr><td><code>canvas.setAnnotationBg / Color / Text / Image</code></td><td>通过注释 ID 动态修改底层背景色块、文字颜色、内容或插图（本地叠加层生效）。</td></tr>
+      </tbody>
+    </table>
+
+    <h3>自动触发机制</h3>
+    <p>
+      当你<strong>勾选上游清单复选框</strong>、<strong>编辑上游正文</strong>、<strong>点击上游控件按钮</strong>或<strong>新建 / 删除连线</strong>时，调度器会自动将最新的 <code>peerOverrides</code> 与 <code>edges</code> 注入下游连线控件并触发刷新（最大递归深度 4 层），无需手动点刷新按钮。
+    </p>
+
+    <h2>DAG 有向无环图校验</h2>
+    <p>
+      为防止 <code>A → B → C → A</code> 成环导致数据流无限递归，每次在画布上拖端口建边时，<code>onConnect</code> 都会先执行 <code>validateDagConnection(edges, source, target)</code>：从 <code>target</code> 出发做广度优先搜索（BFS），一旦检测到路径能回到 <code>source</code>（或 <code>source === target</code> 自环），立即拦截连线并弹出通知。
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 720 145" width="100%" role="img" aria-label="DAG 有向数据流与环路拦截示意图">
+        <rect x="20" y="38" width="160" height="54" fill="#EFF6FF" stroke="#0284C7" stroke-width="1.4" />
+        <text x="100" y="61" text-anchor="middle" fill="#0369A1" font-size="13" font-weight="700">① 上游任务清单</text>
+        <text x="100" y="80" text-anchor="middle" fill="#475569" font-size="11.5">输出 body（勾选进度）</text>
+
+        <line x1="180" y1="65" x2="262" y2="65" stroke="#0284C7" stroke-width="2" />
+        <polygon points="258,60 268,65 258,70" fill="#0284C7" />
+
+        <rect x="270" y="38" width="175" height="54" fill="#ECFDF5" stroke="#059669" stroke-width="1.4" />
+        <text x="357" y="61" text-anchor="middle" fill="#047857" font-size="13" font-weight="700">③ 下游汇总消费</text>
+        <text x="357" y="80" text-anchor="middle" fill="#475569" font-size="11.5">widgets.inputs('in-1')</text>
+
+        <line x1="445" y1="65" x2="522" y2="65" stroke="#059669" stroke-width="2" />
+        <polygon points="518,60 528,65 518,70" fill="#059669" />
+
+        <rect x="530" y="38" width="170" height="54" fill="#F8FAFC" stroke="#475569" stroke-width="1.4" />
+        <text x="615" y="61" text-anchor="middle" fill="#0F172A" font-size="13" font-weight="700">④ 形态展示 / 下游</text>
+        <text x="615" y="80" text-anchor="middle" fill="#475569" font-size="11.5">on('boost', ...)</text>
+
+        <!-- Blocked cycle arrow -->
+        <path d="M 615 92 C 615 130, 100 130, 100 96" fill="none" stroke="#DC2626" stroke-width="1.6" stroke-dasharray="5 4" />
+        <polygon points="95,100 100,90 105,100" fill="#DC2626" />
+        <text x="357" y="136" text-anchor="middle" fill="#B91C1C" font-size="12" font-weight="600">回连成环会被 validateDagConnection() 立即拦截</text>
+      </svg>
+      <figcaption>图 3-1：合法的有向无环链路会自动实时传播更新；任何试图闭合环路的连线在建边阶段即被阻断。</figcaption>
+    </figure>
+
+    <h2>隔离 Web Worker 池与四重脚本安全防线</h2>
+    <ol>
+      <li><strong>常驻可复用 Worker 池</strong>：<code>scriptSandbox.ts</code> 最多缓存 <code>3</code> 个空闲 Worker 并复用同一个 Blob URL，消除链式事件频繁冷启动带来的延迟与 GC 抖动；每次 <code>onmessage</code> 都在局部作用域重新声明 <code>vars / handlers / logs</code>，无状态串改。</li>
+      <li><strong>5 秒硬超时强杀</strong>：任意死循环脚本超过 <code>5000ms</code> 立即 <code>worker.terminate()</code> 并移出复用池，绝不卡死主线程 UI。</li>
+      <li><strong>26 词黑名单 + 原型键过滤</strong>：静态拦截 <code>window / document / fetch / localStorage / indexedDB / eval / Function / __proto__</code> 等 26 个高危标识符；检查器编辑框下方实时展示语法与安全预检结果。</li>
+      <li><strong>外部脚本信任审核（<code>ScriptTrustModal</code>）</strong>：通过 JSON 导入或远端协同房间同步进来的新脚本默认处于锁定态，必须经用户逐条审阅代码并点击「信任」后才允许执行。</li>
+    </ol>
+
+    <div class="pager">
+      <a href="02-widgets-and-vars.html">← 上一章：02 控件交互、复选框与 vars 控形</a>
+      <a href="04-storage-sync-security.html">下一章：04 存储、协同与安全 →</a>
+    </div>
+
+  </main>
+</body>
+</html>

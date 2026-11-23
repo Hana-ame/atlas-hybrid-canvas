@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>02 控件交互、复选框与 vars 控形 — Atlas Hybrid Canvas 教程</title>
+  <style>
+:root {
+  --paper: #FFFFFF;
+  --surface: #F8FAFC;
+  --ink: #0F172A;
+  --ink2: #334155;
+  --mute: #475569;
+  --hair: #CBD5E1;
+  --accent: #2563EB;
+  --accent-text: #1D4ED8;
+  --accent-2: #059669;
+  --accent-2-text: #047857;
+  --code-bg: #0F172A;
+  --code-ink: #E2E8F0;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+body {
+  margin: 0;
+  padding: 0 0 88px;
+}
+nav.top {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--hair);
+  padding: 12px clamp(20px, 7vw, 96px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+nav.top .brand {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--ink);
+  text-decoration: none;
+  letter-spacing: -0.01em;
+}
+nav.top .links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 13px;
+}
+nav.top .links a {
+  color: var(--ink2);
+  text-decoration: none;
+  padding-bottom: 2px;
+  border-bottom: 2px solid transparent;
+}
+nav.top .links a:hover { color: var(--accent-text); }
+nav.top .links a.active {
+  color: var(--accent-text);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+main {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 48px clamp(20px, 5vw, 48px) 0;
+}
+h1 {
+  font-size: clamp(32px, 4vw, 44px);
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+  margin: 0 0 14px;
+  color: var(--ink);
+}
+.lead {
+  font-size: 17px;
+  color: var(--ink2);
+  margin: 0 0 32px;
+  max-width: 66ch;
+}
+h2 {
+  font-size: clamp(22px, 2.3vw, 27px);
+  line-height: 1.25;
+  margin: 48px 0 14px;
+  padding-top: 24px;
+  border-top: 1px solid var(--hair);
+  color: var(--ink);
+}
+h3 {
+  font-size: 17px;
+  margin: 24px 0 8px;
+  color: var(--ink);
+}
+p { margin: 0 0 14px; color: var(--ink2); max-width: 70ch; }
+ul, ol { margin: 8px 0 18px; padding-left: 20px; color: var(--ink2); max-width: 70ch; }
+li { margin-bottom: 7px; }
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13.5px;
+  background: #F1F5F9;
+  color: #0F172A;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+pre {
+  background: var(--code-bg);
+  color: var(--code-ink);
+  padding: 16px 20px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 14px 0 22px;
+}
+pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: inherit;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0 24px;
+  font-size: 14px;
+}
+th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  padding: 10px 12px 10px 0;
+  border-bottom: 2px solid var(--ink);
+  white-space: nowrap;
+}
+td {
+  padding: 10px 12px 10px 0;
+  border-bottom: 1px solid var(--hair);
+  color: var(--ink2);
+  vertical-align: top;
+}
+.callout {
+  border-left: 3px solid var(--accent);
+  padding: 12px 0 12px 18px;
+  margin: 20px 0;
+  color: var(--ink2);
+}
+.callout.ok { border-left-color: var(--accent-2); }
+.callout strong { color: var(--ink); }
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px 32px;
+  margin: 20px 0;
+}
+.chapter-link {
+  display: block;
+  text-decoration: none;
+  border-top: 2px solid var(--ink);
+  padding: 16px 0 8px;
+  color: inherit;
+}
+.chapter-link:hover .ch-title { color: var(--accent-text); }
+.ch-num {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  color: var(--accent-text);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.ch-title {
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+.ch-desc {
+  font-size: 14px;
+  color: var(--ink2);
+  line-height: 1.55;
+}
+figure {
+  margin: 22px 0 26px;
+  padding: 0;
+}
+figcaption {
+  font-size: 12.5px;
+  color: var(--mute);
+  margin-top: 8px;
+}
+.pager {
+  margin-top: 56px;
+  padding-top: 20px;
+  border-top: 1px solid var(--hair);
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 14px;
+}
+.pager a {
+  color: var(--accent-text);
+  text-decoration: none;
+  font-weight: 600;
+}
+.pager a:hover { text-decoration: underline; }
+@media (max-width: 720px) {
+  .grid-2 { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+  <nav class="top" aria-label="教程导航">
+    <a class="brand" href="index.html">Atlas Hybrid Canvas · 完整技术教程 (v28)</a>
+    <div class="links"><a href="index.html" class="">总览</a>
+<a href="01-canvas-architecture.html" class="">01 混合画布</a>
+<a href="02-widgets-and-vars.html" class="active">02 控件与控形</a>
+<a href="03-dataflow-and-sandbox.html" class="">03 连线与沙箱</a>
+<a href="04-storage-sync-security.html" class="">04 存储与安全</a>
+<a href="05-examples-and-extension.html" class="">05 示例拆解与二开</a></div>
+  </nav>
+  <main>
+
+    <h1>02 · 控件交互、复选框与 vars 控形</h1>
+    <p class="lead">
+      Atlas Hybrid Canvas 中的每一张控件卡片既可以是静态笔记/待办清单，也可以是用几行 JS 驱动的动态交互组件——甚至可以通过 <code>vars</code> 直接改写自己的标题、类型标签、主题色、宽高与画布坐标。
+    </p>
+
+    <h2>卡片交互与防误触设计</h2>
+    <ul>
+      <li><strong>整卡可拖、双击编辑</strong>：默认按住卡片任意非按钮区域均可直接拖动；双击标题或正文才进入原地编辑态，按 <code>Esc</code> 或点外部退出。</li>
+      <li><strong>固定右上角 Lock + 扁平无位移操作栏</strong>：平时右上角只固定留一个锁图标（锁定后禁止拖动与删除）；鼠标悬停时「还原 / 设置 / 复制 / 删除」以无边框无阴影的扁平形态在锁左侧渐显，标题零位移。</li>
+      <li><strong>支持 0 入口 / 0 出口端口</strong>：在右侧属性检查器中可以把 <code>inputPorts</code> 或 <code>outputPorts</code> 减到 0 个（例如纯数据源卡片可设为 0 入口、1 出口）。</li>
+      <li><strong>超长内容内部滚动</strong>：<code>WidgetNode.tsx</code> 主体区设置了 <code>max-h-[420px] overflow-y-auto nowheel</code>，长列表在卡片内部平滑滚动，不会裁切内容，也不会抢占画布滚轮缩放。</li>
+    </ul>
+
+    <h2>整行可点击的待办复选框</h2>
+    <p>
+      在任意普通控件正文或背景文本框里输入以下任意语法，都会自动渲染为自定义 SVG 复选框（支持缩进子任务）：
+    </p>
+<pre><code>- [] 紧凑写法（方括号内可无空格）
+- [ ] 标准未完成项
+  - [x] 带缩进的已完成子任务（自动加删除线）
+* [X] 也兼容 * 与 + 列表符</code></pre>
+    <p>
+      <strong>点击方格或点击整行文字</strong>都会立即切换勾选状态并持久化到 IndexedDB；背景文本框关闭编辑模式烘焙到底层 Canvas 后，会同步渲染为清晰的 <code>☐</code> 与 <code>☑</code>。
+    </p>
+
+    <h2>Code-as-UI：用 <code>vars.contents</code> 声明流式界面</h2>
+    <p>
+      只要在控件的「统一脚本」里给 <code>vars.contents</code> 赋值数组，卡片就会自动切换为声明式流式 UI；嵌套子数组 <code>[ ... ]</code> 表示水平并排一行：
+    </p>
+<pre><code>vars.contents = [
+  { type: 'text', text: '当前计数：' + (vars.count || 0), align: 'center', bold: true, color: '#1D4ED8' },
+  [
+    { type: 'input', id: 'noteInp', bind: 'draft', placeholder: '输入内容按回车提交…' },
+    { type: 'button', id: 'addBtn', label: '+1', width: 64, variant: 'primary' }
+  ]
+];
+
+on('addBtn', () => { vars.count = (Number(vars.count) || 0) + 1; });
+onSubmit('noteInp', (val) => { vars.lastNote = val; vars.draft = ''; });</code></pre>
+
+    <h2>用 <code>vars</code> 直接驱动控件自身形态（type / title / width / height / pos）</h2>
+    <p>
+      <code>src/core/layeredStore.ts</code> 中的 <code>resolveEffectiveNodes()</code> 会将脚本写入的保留变量实时投影到节点属性上，并自动从底部变量胶囊列表中隐藏这些布局键：
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 24%">保留变量名</th>
+          <th style="width: 28%">类型与边界</th>
+          <th style="width: 48%">实时效果与冲突规则</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><code>vars.type</code> / <code>vars.category</code></td><td><code>string</code></td><td>修改左上角类型徽标文字（<code>type</code> 优先于 <code>category</code>）。</td></tr>
+        <tr><td><code>vars.title</code></td><td><code>string</code></td><td>实时修改卡片标题。</td></tr>
+        <tr><td><code>vars.color</code></td><td>CSS 颜色字符串</td><td>实时修改顶部边框与类型徽标主题色。</td></tr>
+        <tr><td><code>vars.width</code> / <code>vars.height</code></td><td>数字，钳位 <code>180–1400</code> / <code>100–1200</code></td><td>四舍五入并安全钳位，防止脚本写非法数值撑爆画布。</td></tr>
+        <tr><td><code>vars.pos</code> / <code>vars.x</code> / <code>vars.y</code></td><td><code>{ x, y }</code>、<code>[x, y]</code> 或数字</td><td>移动控件世界坐标并刷新 <code>ChunkManager</code> 索引；若同时写，显式 <code>x/y</code> 覆盖 <code>pos</code>。</td></tr>
+        <tr><td><code>vars.locked</code></td><td><code>boolean</code></td><td>动态锁定或解锁卡片位置。</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout">
+      <strong>脚本控形与手动操作不打架：</strong>当用户手动拖动卡片、拉边框缩放或双击改标题时，<code>clearConflictingRuntimeVars()</code> 会自动清除 <code>runtimeVars</code> 里对应的冲突布局键（同时完整保留 <code>score</code> 等业务变量），绝不会把手动操作弹回。
+    </div>
+
+    <div class="pager">
+      <a href="01-canvas-architecture.html">← 上一章：01 混合无限画布与渲染原理</a>
+      <a href="03-dataflow-and-sandbox.html">下一章：03 连线数据通路与沙箱 →</a>
+    </div>
+
+  </main>
+</body>
+</html>
