@@ -4,7 +4,7 @@
 
 - **上层近景交互（`@xyflow/react`）**：原生 React DOM 控件、多入/出箭头端口、边框自由缩放（`NodeResizer`）、中文输入法原生支持、所见即所得左侧拖放模板库。
 - **底层无限空间调度（源自 AtlasCanvas）**：`512×512` 正负无限坐标空间哈希分区（`ChunkManager`）、LRU 离屏瓦片缓存（`ChunkTileCache`）、迟滞 LOD 切换（`< 32%` 清空 DOM 切纯瓦片 + 全景大字截断）、Web Worker 安全脚本沙箱与防 SSRF 服务端密钥代理。
-- **协同资产（源自 realtime-whiteboard）**：随包内置 `room-go/` Go 无头常驻房间守护进程与确定性 `(rev, cid)` CRDT 模块（`src/core/crdt.ts`），可按需接入多人实时同步。
+- **协同资产（源自 realtime-whiteboard）**：内建 Node WebSocket 房间服务（`server/roomServer.ts`，与 Express 共用同一端口）与确定性 `(rev, cid)` CRDT 模块（`src/core/crdt.ts`），`npm run dev` 即可开启多人实时同步。
 
 ## 架构分层一览
 
@@ -68,12 +68,13 @@ npm run build       # 构建生产静态产物到 dist/（静态部署自动启�
 ├── docs/                           # 专题工程与开发文档
 │   ├── ARCHITECTURE.md             # 混合渲染架构、防频闪原理与双层状态设计
 │   ├── SCRIPT_API_GUIDE.md         # 统一脚本、vars.contents、跨控件联动与沙箱安全手册
-│   ├── BACKEND_AND_SECURITY.md     # 后端 REST 契约、Save Key 鉴权、防 SSRF 代理与 room-go 说明
+│   ├── BACKEND_AND_SECURITY.md     # 后端 REST 契约、Save Key 鉴权、防 SSRF 代理与协同房间说明
 │   └── EXTENSION_GUIDE.md          # 新增组件类型、注释类型与模板库二次开发指南
 ├── server/
 │   ├── server.ts                   # Express 后端（权威底座读写 + Save Key 鉴权 + /api/proxy）
+│   ├── roomServer.ts               # WebSocket 协同房间服务（/ws，与 Express 共用端口）
+│   ├── pdfUnpack.ts                # PDF 逐页光栅化（pdftoppm / mutool）
 │   └── proxySecurity.ts            # SSRF 防护、私有 IP/DNS 校验与请求头清洗
-├── room-go/                        # 可选 Go 无头常驻协同房间守护进程（PeerJS/WebRTC + CRDT）
 └── src/
     ├── App.tsx                     # 顶层工作台编排（受控 rfNodes、LOD 迟滞、脚本调度、保存弹窗）
     ├── main.tsx                    # 入口文件（生产静态模式自动挂载 mockApi）

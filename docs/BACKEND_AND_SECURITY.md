@@ -40,15 +40,55 @@
 
 > **静态部署安全边界**：在 GitHub Pages / 纯静态 HTML 预览模式下，`src/core/mockApi.ts` 会拦截 `/api/*` 并将蓝图底座存进浏览器 IndexedDB，方便演示交互；但纯静态环境不存在服务端可信边界，**切勿在前端环境变量或静态构建中放入真实私有 API Key**。
 
-## 三、`room-go/` 多人实时协同房间说明
+## 三、WebSocket 协同房间说明（`server/roomServer.ts`）
 
-仓库内置了来自 `realtime-whiteboard` 的 `room-go/` 无头 Go 房间守护进程和 `src/core/crdt.ts`（确定性 `(rev, cid)` LWW 规则与版本化墓碑）：
+协同房间由 Node 服务端内建，与 Express **共用同一个 HTTP server 与端口**，通过 `upgrade` 事件按 `/ws` 分流。不再需要单独的 Go 进程。
+
+### 启动
 
 ```bash
-cd room-go
-go run . my-blueprint-room
+npm run dev          # 同时启动 API 与协同房间，默认端口 8787
 ```
 
-若后续将前端接入 `room-go` 实现多人实时编辑，**请务必遵循两条安全/生产规范**：
-1. **远端脚本信任门禁**：从协同房间同步来的 `entity.script` 或按钮 `code` 变更，不得自动静默执行，必须默认锁定并由本地用户人工审阅或校验管理员签名后放行；
-2. **落盘与图片分离**：当前 `room-go/store.go` 为内存全量快照，生产上线前建议补充 SQLite/PostgreSQL WAL 持久化、按 Chunk 坐标范围查询，以及将插图上传至对象存储（S3/MinIO）只同步 URL。
+启动后：
+- HTTP API：`http://localhost:8787`
+- 协同房间：`ws://localhost:8787/ws?room=<房间名>&cid=<客户端ID>`
+- 房间统计：`GET http://localhost:8787/api/room/stats`
+
+前端 `App.tsx` 的默认房间地址就是 `ws://localhost:8787/ws`，开箱即用。
+
+### 协议
+
+与 `src/core/roomClient.ts` 的 `RoomWireMessage` 逐字对齐：
+
+| 方向 | 消息 |
+| --- | --- |
+| C→S | `{t:'hello', room, cid}`（连接 URL 已带参数，服务端忽略此帧） |
+| C→S | `{t:'state', blueprint}` 覆盖整份房间状态 |
+| C↔S | `{t:'upsert_node', node}` / `{t:'delete_node', id}` |
+| C↔S | `{t:'upsert_ann', annotation}` / `{t:'delete_ann', id}` |
+| C↔S | `{t:'upsert_edge', edge}` / `{t:'delete_edge', id}` |
+| S→C | `{t:'state', blueprint}`（新成员入房时补发全量快照） |
+| S→C | `{t:'peer_joined', cid}` / `{t:'peer_left', cid}` |
+| S→C | `{t:'error', error}` |
+
+### CRDT 裁决
+
+与 `src/core/crdt.ts` 的 `beats()` 逐行等价：`rev` 大的赢，`rev` 相同则 `cid` 字典序大的赢。三处实现（前端 `crdt.ts`、服务端 `roomServer.ts`、历史 `room-go/store.go`）规则一致，可互操作。
+
+### 容量上限
+
+| 项 | 上限 | 超限行为 |
+| --- | --- | --- |
+| 房间数 | 64 | 新建房被拒 |
+| 单房间成员 | 32 | 入房被拒，返回 `error` 帧后关闭 |
+| 单帧大小 | 4MB | `ws` 库直接断开 |
+| 每集合记录数 | 5000 | 拒绝写入（已存在的仍可更新） |
+| 单字符串字段 | 512KB | 消息被判非法 |
+| 心跳 | 30s | 未回 pong 的连接被 terminate |
+
+### 安全说明
+
+1. **远端脚本信任门禁**：从协同房间同步来的 `entity.script` 或按钮 `code` 变更，不得自动静默执行，必须默认锁定并由本地用户人工审阅或校验管理员签名后放行（`App.tsx` 中 `msg.t === 'state'` 分支已接入 `auditBlueprintScripts`）。
+2. **当前无鉴权**：房间名即凭据，知道房间名即可加入。**不要用于公网开放场景**，或在外层加反向代理鉴权。
+3. **纯内存**：房间状态不落盘，进程重启即丢失。生产环境建议补 SQLite/PostgreSQL WAL 持久化，并将插图上传至对象存储（S3/MinIO）只同步 URL。

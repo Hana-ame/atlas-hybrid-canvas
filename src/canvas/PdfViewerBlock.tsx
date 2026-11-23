@@ -19,6 +19,7 @@ import {
   renderClientPdfPageImage,
   unpackPdfBytesInBrowser,
 } from '../core/pdfClientUnpack';
+import { proxyHeaders } from '../core/apiClient';
 
 const MAX_PDF_UPLOAD_BYTES = 50 * 1024 * 1024;
 
@@ -137,7 +138,7 @@ function PdfViewerBlockInner({
       try {
         const resp = await fetch('/api/pdf/unpack', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: proxyHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ url: trimmed }),
         });
         const data = (await resp.json().catch(() => null)) as {
@@ -219,10 +220,10 @@ function PdfViewerBlockInner({
       try {
         const resp = await fetch('/api/pdf/unpack-upload', {
           method: 'POST',
-          headers: {
+          headers: proxyHeaders({
             'Content-Type': 'application/pdf',
             'X-Pdf-Filename': encodeURIComponent(file.name),
-          },
+          }),
           body: file,
         });
         const data = (await resp.json().catch(() => null)) as {

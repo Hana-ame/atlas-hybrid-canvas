@@ -84,6 +84,7 @@ import {
 } from './core/scriptSandbox';
 import { useBlueprintHistory } from './hooks/useBlueprintHistory';
 import { useOverlaySync } from './hooks/useOverlaySync';
+import { proxyHeaders } from './core/apiClient';
 import { createSeedBlueprint, spawnStressChunks } from './core/seedBlueprint';
 import {
   BUILTIN_TEMPLATES,
@@ -688,7 +689,7 @@ function HybridCanvasWorkspace() {
       } else if (btn.actionType === 'proxy_http' && btn.proxyUrl) {
         const resp = await fetch('/api/proxy', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: proxyHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ url: btn.proxyUrl, method: btn.proxyMethod || 'GET' }),
         });
         const data = (await resp.json()) as { ok: boolean; status?: number; error?: string };

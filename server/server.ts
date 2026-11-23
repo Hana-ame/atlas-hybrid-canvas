@@ -20,10 +20,13 @@ import {
   getUnpackedPdfPage,
   unpackPdfBufferToPages,
 } from './pdfUnpack';
+import { attachRoomServer } from './roomServer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const PORT = Number(process.env.PORT || 3000);
+// 端口默认 8787：与前端 App.tsx 里 ws://localhost:8787/ws 的默认房间地址保持一致，
+// 让 `npm run dev` 起的就是"API + 协同房间"合一的单一进程，不需要再单独拉 room-go/。
+const PORT = Number(process.env.PORT || 8787);
 const IS_PROD = process.env.NODE_ENV === 'production';
 
 // PDF 上传单文件上限。走二进制直传，不再有 base64 的 4/3 膨胀，
@@ -591,9 +594,25 @@ async function startServer() {
     }
   );
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const httpServer = app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Atlas Hybrid Canvas] running at http://localhost:${PORT}`);
+    console.log(`[Atlas Hybrid Canvas] 协同房间 WebSocket: ws://localhost:${PORT}/ws`);
   });
+
+  // 房间服务与 Express 共用同一个 HTTP server 与端口，靠 upgrade 事件按 /ws 分流。
+  const roomServer = attachRoomServer(httpServer);
+
+  app.get('/api/room/stats', (_req, res) => {
+    res.json({ ok: true, ...roomServer.stats() });
+  });
+
+  const shutdown = () => {
+    void roomServer.close().finally(() => {
+      httpServer.close(() => process.exit(0));
+    });
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 }
 
 void startServer();
