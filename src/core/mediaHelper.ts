@@ -3,16 +3,14 @@
  * @description 图片节点、视频节点与拖动条控件的纯函数工具（URL 安全校验、滑块数值步进与格式化）。
  */
 
-const SAFE_IMAGE_DATA_RE = /^data:image\/(png|jpe?g|webp|gif|avif|svg\+xml|bmp|x-icon);/i;
-const SAFE_VIDEO_DATA_RE = /^data:video\/(mp4|webm|ogg|quicktime);/i;
+const SAFE_INLINE_SVG_RE = /^data:image\/svg\+xml;/i;
 
-/** 校验图片 URL 安全性：允许 http/https、同源 /api/、blob: 与白名单 data:image/*，拒绝 javascript:/data:text/html。 */
+/** 校验图片 URL 安全性（纯外链策略）：允许 http/https、同源 /api/ 与轻量内置 data:image/svg+xml，拒绝 blob: 与大二进制 data:。 */
 export function isSafeImageUrl(raw: string): boolean {
   const s = raw.trim();
   if (!s) return false;
   if (s.startsWith('/api/')) return true;
-  if (s.startsWith('blob:')) return true;
-  if (SAFE_IMAGE_DATA_RE.test(s)) return true;
+  if (SAFE_INLINE_SVG_RE.test(s) && s.length <= 16_384) return true;
   try {
     const parsed = new URL(s);
     return parsed.protocol === 'http:' || parsed.protocol === 'https:';
@@ -21,13 +19,11 @@ export function isSafeImageUrl(raw: string): boolean {
   }
 }
 
-/** 校验视频 URL 安全性：允许 http/https、同源 /api/、blob: 与白名单 data:video/*，拒绝危险协议。 */
+/** 校验视频 URL 安全性（纯外链策略）：仅允许 http/https 与同源 /api/，拒绝 blob: 与 data:，防止大视频驻留浏览器内存。 */
 export function isSafeVideoUrl(raw: string): boolean {
   const s = raw.trim();
   if (!s) return false;
   if (s.startsWith('/api/')) return true;
-  if (s.startsWith('blob:')) return true;
-  if (SAFE_VIDEO_DATA_RE.test(s)) return true;
   try {
     const parsed = new URL(s);
     return parsed.protocol === 'http:' || parsed.protocol === 'https:';

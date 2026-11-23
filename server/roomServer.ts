@@ -14,6 +14,7 @@
 import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { loadRoomSnapshotFile, saveRoomSnapshotFile } from './fileStore';
 
 /**
  * RPC 帧：让前端把一次 HTTP 调用（也就是原来被 mockApi 在浏览器里就地处理的那些
@@ -175,7 +176,8 @@ export type RpcHandler = (frame: RpcRequestFrame) => Promise<RpcResponseFrame>;
 export function attachRoomServer(
   httpServer: HttpServer,
   wsPath = '/ws',
-  rpcHandler?: RpcHandler
+  rpcHandler?: RpcHandler,
+  persistDir?: string
 ): RoomServerHandle {
   const rooms = new Map<string, Room>();
   const states = new Map<string, RoomState>();
@@ -213,6 +215,23 @@ export function attachRoomServer(
   // 房间状态比连接活得久：最后一个人离开时不立刻销毁，否则房间里已积累的数据全丢，
   // 下一个人进来是空的。改为记一个空闲时间戳，由清扫任务在超过 ROOM_IDLE_TTL_MS 后回收。
   const idleSince = new Map<string, number>();
+  const hydratedRooms = new Set<string>();
+  const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  const schedulePersistRoom = (roomName: string) => {
+    if (!persistDir || roomName === '__rpc__') return;
+    const prev = persistTimers.get(roomName);
+    if (prev) clearTimeout(prev);
+    const timer = setTimeout(() => {
+      persistTimers.delete(roomName);
+      const st = states.get(roomName);
+      if (st) {
+        void saveRoomSnapshotFile(persistDir, roomName, st.snapshot()).catch(() => {});
+      }
+    }, 600);
+    timer.unref?.();
+    persistTimers.set(roomName, timer);
+  };
 
   function leave(room: Room, socket: WebSocket): void {
     const member = room.members.get(socket);
@@ -287,7 +306,10 @@ export function attachRoomServer(
             count += 1;
           }
         }
-        if (changed) broadcast(room, { t: 'state', blueprint: state.snapshot() }, socket);
+        if (changed) {
+          schedulePersistRoom(room.name);
+          broadcast(room, { t: 'state', blueprint: state.snapshot() }, socket);
+        }
         return;
       }
       case 'upsert_node':
@@ -306,6 +328,7 @@ export function attachRoomServer(
           // 被 LWW 判定为过期，静默丢弃——这是正常并发结果，不是错误。
           return;
         }
+        schedulePersistRoom(room.name);
         broadcast(room, msg, socket);
         return;
       }
@@ -321,6 +344,7 @@ export function attachRoomServer(
         }
         // delete 帧不带 rev/cid，直接删除（见 RoomState.remove 的说明）。
         state.remove(kind, id);
+        schedulePersistRoom(room.name);
         broadcast(room, msg, socket);
         return;
       }
@@ -417,6 +441,25 @@ export function attachRoomServer(
       // 新成员立刻拿到全量快照，补齐入房前错过的一切。
       if (state && state.size > 0) {
         send(ws, { t: 'state', blueprint: state.snapshot() });
+      } else if (persistDir && roomName !== '__rpc__' && !hydratedRooms.has(roomName)) {
+        hydratedRooms.add(roomName);
+        void loadRoomSnapshotFile(persistDir, roomName).then((saved) => {
+          if (!saved || !state) return;
+          let restored = false;
+          for (const kind of COLLECTIONS) {
+            const col = saved[kind];
+            if (!col || typeof col !== 'object') continue;
+            for (const rec of Object.values(col as Record<string, unknown>)) {
+              if (isVersionedRecord(rec) && state.upsert(kind, rec)) restored = true;
+            }
+          }
+          if (restored && state.size > 0) {
+            const snapMsg = { t: 'state', blueprint: state.snapshot() };
+            for (const m of room.members.values()) {
+              send(m.socket, snapMsg);
+            }
+          }
+        });
       }
       broadcast(room, { t: 'peer_joined', cid }, ws);
 
@@ -478,6 +521,16 @@ export function attachRoomServer(
     close: () =>
       new Promise<void>((resolve) => {
         clearInterval(heartbeat);
+        const flushTasks: Promise<void>[] = [];
+        for (const [rName, t] of persistTimers.entries()) {
+          clearTimeout(t);
+          const st = states.get(rName);
+          if (persistDir && st) {
+            flushTasks.push(saveRoomSnapshotFile(persistDir, rName, st.snapshot()).catch(() => {}));
+          }
+        }
+        persistTimers.clear();
+        void Promise.all(flushTasks);
         for (const room of rooms.values()) {
           for (const member of room.members.values()) {
             try {

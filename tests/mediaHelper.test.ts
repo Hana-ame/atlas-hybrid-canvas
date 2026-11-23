@@ -12,27 +12,27 @@ import {
 } from '../src/core/mediaHelper.ts';
 import { sanitizeEphemeralBlobVars } from '../src/core/layeredStore.ts';
 
-test('isSafeImageUrl() allows https/http/blob/api/data:image and rejects dangerous schemes', () => {
+test('isSafeImageUrl() allows external http/https, /api/, and lightweight inline SVG while rejecting blob:/binary data:', () => {
   assert.equal(isSafeImageUrl('https://example.com/photo.png'), true);
   assert.equal(isSafeImageUrl('http://example.com/a.jpg'), true);
   assert.equal(isSafeImageUrl('/api/pdf/abc/page/1'), true);
-  assert.equal(isSafeImageUrl('blob:http://localhost:8787/1234'), true);
-  assert.equal(isSafeImageUrl('data:image/png;base64,iVBORw0KGgo='), true);
   assert.equal(isSafeImageUrl('data:image/svg+xml;utf8,<svg></svg>'), true);
 
+  assert.equal(isSafeImageUrl('blob:http://localhost:8787/1234'), false);
+  assert.equal(isSafeImageUrl('data:image/png;base64,iVBORw0KGgo='), false);
   assert.equal(isSafeImageUrl(''), false);
   assert.equal(isSafeImageUrl('javascript:alert(1)'), false);
   assert.equal(isSafeImageUrl('data:text/html,<script>alert(1)</script>'), false);
   assert.equal(isSafeImageUrl('vbscript:msgbox(1)'), false);
 });
 
-test('isSafeVideoUrl() allows https/http/blob/api/data:video and rejects dangerous schemes', () => {
+test('isSafeVideoUrl() allows only external http/https and /api/ while rejecting blob: and data:', () => {
   assert.equal(isSafeVideoUrl('https://example.com/demo.mp4'), true);
   assert.equal(isSafeVideoUrl('http://example.com/demo.webm'), true);
   assert.equal(isSafeVideoUrl('/api/proxy/binary?url=foo'), true);
-  assert.equal(isSafeVideoUrl('blob:http://localhost:8787/vid-1'), true);
-  assert.equal(isSafeVideoUrl('data:video/mp4;base64,AAAA'), true);
 
+  assert.equal(isSafeVideoUrl('blob:http://localhost:8787/vid-1'), false);
+  assert.equal(isSafeVideoUrl('data:video/mp4;base64,AAAA'), false);
   assert.equal(isSafeVideoUrl(''), false);
   assert.equal(isSafeVideoUrl('javascript:alert(1)'), false);
   assert.equal(isSafeVideoUrl('data:text/html;base64,PGh0bWw+'), false);

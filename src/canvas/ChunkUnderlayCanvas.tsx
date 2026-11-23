@@ -437,6 +437,30 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
           ctx.lineTo(tx2 - arrowLen * Math.cos(angle + 0.42), ty2 - arrowLen * Math.sin(angle + 0.42));
           ctx.closePath();
           ctx.fill();
+
+          // 双向连线在起点补画反向入箭头
+          if (edge.bidirectional) {
+            const tStart = 0.08;
+            const uStart = 1 - tStart;
+            const nextX =
+              uStart * uStart * uStart * sx +
+              3 * uStart * uStart * tStart * (sx + dx) +
+              3 * uStart * tStart * tStart * (tx2 - dx) +
+              tStart * tStart * tStart * tx2;
+            const nextY =
+              uStart * uStart * uStart * sy +
+              3 * uStart * uStart * tStart * sy +
+              3 * uStart * tStart * tStart * ty2 +
+              tStart * tStart * tStart * ty2;
+            const startAngle =
+              sx === nextX && sy === nextY ? Math.PI : Math.atan2(sy - nextY, sx - nextX);
+            ctx.beginPath();
+            ctx.moveTo(sx, sy);
+            ctx.lineTo(sx - arrowLen * Math.cos(startAngle - 0.42), sy - arrowLen * Math.sin(startAngle - 0.42));
+            ctx.lineTo(sx - arrowLen * Math.cos(startAngle + 0.42), sy - arrowLen * Math.sin(startAngle + 0.42));
+            ctx.closePath();
+            ctx.fill();
+          }
           ctx.restore();
         }
         const seenNodes = new Set<string>();

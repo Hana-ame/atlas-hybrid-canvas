@@ -1,15 +1,14 @@
 /**
  * @file ImageNodeBlock.tsx
- * @description 画布图片节点组件：支持图片 URL 加载、本地文件上传（<=4MB 转 data URL 持久化）、
- * 等比完整（contain）/ 铺满裁切（cover）切换、点击放大预览以及三环视口裁剪占位。
+ * @description 画布图片节点组件（纯外链模式，禁止本地文件转 blob:/data: 占爆内存）：
+ * 支持图片外链 URL（https/http 或同源 /api/）、等比完整（contain）/ 铺满裁切（cover）切换、
+ * Portal 全屏灯箱预览（支持 Esc 关闭）以及三环视口裁剪占位。
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Eye, Image as ImageIcon, Maximize2, Minimize2, RefreshCw, Upload, X } from 'lucide-react';
+import { Eye, Image as ImageIcon, Maximize2, Minimize2, RefreshCw, X } from 'lucide-react';
 import { isSafeImageUrl } from '../core/mediaHelper';
-
-const MAX_INLINE_IMAGE_BYTES = 4 * 1024 * 1024;
 
 export interface ImageNodeBlockProps {
   url: string;
@@ -35,8 +34,6 @@ export function ImageNodeBlock({
   const [imgFailed, setImgFailed] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [editingSource, setEditingSource] = useState(!safeUrl);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const ownedBlobRef = useRef<string | null>(null);
 
   useEffect(() => {
     setImgFailed(false);
@@ -57,67 +54,19 @@ export function ImageNodeBlock({
     return () => window.removeEventListener('keydown', onKey);
   }, [lightboxOpen]);
 
-  useEffect(() => {
-    return () => {
-      if (ownedBlobRef.current) {
-        URL.revokeObjectURL(ownedBlobRef.current);
-        ownedBlobRef.current = null;
-      }
-    };
-  }, []);
-
   const applyUrl = (raw: string) => {
     const trimmed = raw.trim();
     if (!trimmed) {
-      setErrorMsg('请输入图片链接或选择本地图片');
+      setErrorMsg('请输入图片外链 URL（https://...）');
       return;
     }
     if (!isSafeImageUrl(trimmed)) {
-      setErrorMsg('仅支持 http/https、本地上传或合法图片数据链接');
+      setErrorMsg('仅支持 http/https 外链或同源 /api/ 图片地址（拒绝 blob:/本地二进制）');
       return;
     }
     setErrorMsg('');
     setImgFailed(false);
     onChangeUrl(trimmed);
-    setEditingSource(false);
-  };
-
-  const handleFileSelected = (file: File | null) => {
-    if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      setErrorMsg('请选择有效的图片文件（PNG / JPG / WebP / GIF / SVG）');
-      return;
-    }
-    setErrorMsg('');
-    setImgFailed(false);
-
-    // <= 4MB 转 data URL 以便刷新后仍保留在 IndexedDB 本地覆盖层
-    if (file.size <= MAX_INLINE_IMAGE_BYTES) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string' && isSafeImageUrl(reader.result)) {
-          if (ownedBlobRef.current) {
-            URL.revokeObjectURL(ownedBlobRef.current);
-            ownedBlobRef.current = null;
-          }
-          onChangeUrl(reader.result);
-          setEditingSource(false);
-        } else {
-          setErrorMsg('图片读取失败，请换一张重试');
-        }
-      };
-      reader.onerror = () => setErrorMsg('读取本地图片失败');
-      reader.readAsDataURL(file);
-      return;
-    }
-
-    // 超大图走临时 blob URL（避免膨胀 IndexedDB）
-    if (ownedBlobRef.current) {
-      URL.revokeObjectURL(ownedBlobRef.current);
-    }
-    const blobUrl = URL.createObjectURL(file);
-    ownedBlobRef.current = blobUrl;
-    onChangeUrl(blobUrl);
     setEditingSource(false);
   };
 
@@ -127,17 +76,6 @@ export function ImageNodeBlock({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-slate-50">
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        className="hidden"
-        onChange={(e) => {
-          handleFileSelected(e.target.files?.[0] ?? null);
-          e.target.value = '';
-        }}
-      />
-
       {editingSource || !safeUrl ? (
         <div
           className="nodrag nopan nowheel flex flex-1 flex-col items-center justify-center gap-2.5 p-3"
@@ -147,12 +85,12 @@ export function ImageNodeBlock({
           <div className="flex h-10 w-10 items-center justify-center rounded-full bg-indigo-50 text-indigo-600">
             <ImageIcon className="h-5 w-5" />
           </div>
-          <div className="text-center text-xs font-medium text-slate-700">加载图片到画布</div>
+          <div className="text-center text-xs font-medium text-slate-700">加载外链图片到画布</div>
           <div className="flex w-full max-w-[320px] items-center gap-1.5">
             <input
               type="text"
               value={urlDraft}
-              placeholder="粘贴图片 URL（https://...）"
+              placeholder="粘贴图片外链（https://...）"
               onChange={(e) => setUrlDraft(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
@@ -170,25 +108,15 @@ export function ImageNodeBlock({
               加载
             </button>
           </div>
-          <div className="flex items-center gap-2">
+          {safeUrl && (
             <button
               type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
+              onClick={() => setEditingSource(false)}
+              className="rounded px-2 py-1 text-xs text-slate-500 hover:bg-slate-200/70"
             >
-              <Upload className="h-3.5 w-3.5" />
-              选择本地图片
+              取消
             </button>
-            {safeUrl && (
-              <button
-                type="button"
-                onClick={() => setEditingSource(false)}
-                className="rounded px-2 py-1 text-xs text-slate-500 hover:bg-slate-200/70"
-              >
-                取消
-              </button>
-            )}
-          </div>
+          )}
           {errorMsg && <div className="text-center text-[11px] text-rose-600">{errorMsg}</div>}
         </div>
       ) : (
@@ -200,19 +128,19 @@ export function ImageNodeBlock({
             </div>
           ) : imgFailed ? (
             <div className="nodrag nopan flex flex-col items-center gap-2 p-3 text-center">
-              <div className="text-xs text-rose-600">图片加载失败（可能跨域或链接已失效）</div>
+              <div className="text-xs text-rose-600">图片加载失败（可能跨域或外链已失效）</div>
               <button
                 type="button"
                 onMouseDown={(e) => e.stopPropagation()}
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={() => {
-                  setUrlDraft(safeUrl);
+                  setUrlDraft(safeUrl.startsWith('data:') ? '' : safeUrl);
                   setEditingSource(true);
                 }}
                 className="inline-flex items-center gap-1 rounded bg-slate-800 px-2.5 py-1 text-xs text-white hover:bg-slate-700"
               >
                 <RefreshCw className="h-3 w-3" />
-                更换图片
+                更换图片外链
               </button>
             </div>
           ) : (
@@ -249,7 +177,7 @@ export function ImageNodeBlock({
             </button>
             <button
               type="button"
-              title="更换图片"
+              title="更换图片外链"
               onClick={() => {
                 setUrlDraft(safeUrl.startsWith('data:') ? '' : safeUrl);
                 setEditingSource(true);

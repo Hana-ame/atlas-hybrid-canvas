@@ -10,6 +10,8 @@
  */
 
 import {
+  Suspense,
+  lazy,
   useCallback,
   useEffect,
   useMemo,
@@ -51,13 +53,21 @@ import {
 import { AnnotationNode, type AnnotationNodeData } from './canvas/AnnotationNode';
 import { ChunkUnderlayCanvas } from './canvas/ChunkUnderlayCanvas';
 import { WidgetNode, type WidgetNodeData } from './canvas/WidgetNode';
-import { NodeInspectorPanel, type ScriptConsoleEntry } from './components/NodeInspectorPanel';
-import { SearchJumpModal } from './components/SearchJumpModal';
-import {
-  ScriptTrustModal,
-  auditBlueprintScripts,
-  type ScriptAuditEntry,
-} from './components/ScriptTrustModal';
+import type { ScriptConsoleEntry } from './components/NodeInspectorPanel';
+import { auditBlueprintScripts, type ScriptAuditEntry } from './core/scriptAudit';
+import { getReactiveTargetNodeIds } from './core/edgeGraph';
+import { useCanvasShortcuts } from './hooks/useCanvasShortcuts';
+
+// 弹窗与右侧属性面板按需分包，降低首屏主包体积
+const NodeInspectorPanel = lazy(() =>
+  import('./components/NodeInspectorPanel').then((m) => ({ default: m.NodeInspectorPanel }))
+);
+const SearchJumpModal = lazy(() =>
+  import('./components/SearchJumpModal').then((m) => ({ default: m.SearchJumpModal }))
+);
+const ScriptTrustModal = lazy(() =>
+  import('./components/ScriptTrustModal').then((m) => ({ default: m.ScriptTrustModal }))
+);
 import {
   CollaborativeRoomClient,
   mergeRemoteBlueprintCRDT,
@@ -290,30 +300,12 @@ function HybridCanvasWorkspace() {
     bumpChunkSyncTick
   );
 
-  // 全局快捷键：Ctrl+K 搜索跳转，Ctrl+Z / Ctrl+Y 撤销重做（输入框聚焦时放行原生撤销）
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      const mod = e.ctrlKey || e.metaKey;
-      if (!mod) return;
-      const key = e.key.toLowerCase();
-      if (key === 'k') {
-        e.preventDefault();
-        setSearchOpen((v) => !v);
-        return;
-      }
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-      if (key === 'z' && !e.shiftKey) {
-        e.preventDefault();
-        handleUndo();
-      } else if (key === 'y' || (key === 'z' && e.shiftKey)) {
-        e.preventDefault();
-        handleRedo();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleUndo, handleRedo]);
+  const toggleSearchOpen = useCallback(() => setSearchOpen((v) => !v), []);
+  useCanvasShortcuts({
+    onToggleSearch: toggleSearchOpen,
+    onUndo: handleUndo,
+    onRedo: handleRedo,
+  });
 
   // URL Hash 精确分区跳转（/#chunk=cx,cy&zoom=z）
   useEffect(() => {
@@ -1463,13 +1455,9 @@ function HybridCanvasWorkspace() {
           nextVars
         );
       }
-      const downstreamIds = Array.from(
-        new Set(
-          Object.values(edgesRef.current)
-            .filter((e) => e.source === nodeId && e.target !== nodeId)
-            .map((e) => e.target)
-        )
-      ).filter((dstId) => Boolean(effectiveNodesRef.current[dstId]?.script));
+      const downstreamIds = getReactiveTargetNodeIds(edgesRef.current, nodeId).filter((dstId) =>
+        Boolean(effectiveNodesRef.current[dstId]?.script)
+      );
       for (const dstId of downstreamIds) {
         void executeUnifiedWidgetScript(dstId, { kind: 'render' }, undefined, 1, {
           [nodeId]: { vars: nextVars },
@@ -1520,13 +1508,9 @@ function HybridCanvasWorkspace() {
           nextVars
         );
       }
-      const downstreamIds = Array.from(
-        new Set(
-          Object.values(edgesRef.current)
-            .filter((e) => e.source === nodeId && e.target !== nodeId)
-            .map((e) => e.target)
-        )
-      ).filter((dstId) => Boolean(effectiveNodesRef.current[dstId]?.script));
+      const downstreamIds = getReactiveTargetNodeIds(edgesRef.current, nodeId).filter((dstId) =>
+        Boolean(effectiveNodesRef.current[dstId]?.script)
+      );
       for (const dstId of downstreamIds) {
         void executeUnifiedWidgetScript(dstId, { kind: 'render' }, undefined, 1, {
           [nodeId]: { vars: nextVars },
@@ -1591,13 +1575,9 @@ function HybridCanvasWorkspace() {
         },
       }));
       if (!notifyDownstream) return;
-      const downstreamIds = Array.from(
-        new Set(
-          Object.values(edgesRef.current)
-            .filter((e) => e.source === nodeId && e.target !== nodeId)
-            .map((e) => e.target)
-        )
-      ).filter((dstId) => Boolean(effectiveNodesRef.current[dstId]?.script));
+      const downstreamIds = getReactiveTargetNodeIds(edgesRef.current, nodeId).filter((dstId) =>
+        Boolean(effectiveNodesRef.current[dstId]?.script)
+      );
       for (const dstId of downstreamIds) {
         void executeUnifiedWidgetScript(dstId, { kind: 'render' }, undefined, 1, {
           [nodeId]: { vars: nextVars },
@@ -1730,13 +1710,9 @@ function HybridCanvasWorkspace() {
   const handleEditTitle = useCallback(
     (nodeId: string, nextTitle: string) => {
       handlePatchNode(nodeId, { title: nextTitle });
-      const downstreamIds = Array.from(
-        new Set(
-          Object.values(edgesRef.current)
-            .filter((e) => e.source === nodeId && e.target !== nodeId)
-            .map((e) => e.target)
-        )
-      ).filter((dstId) => Boolean(effectiveNodesRef.current[dstId]?.script));
+      const downstreamIds = getReactiveTargetNodeIds(edgesRef.current, nodeId).filter((dstId) =>
+        Boolean(effectiveNodesRef.current[dstId]?.script)
+      );
       if (downstreamIds.length > 0) {
         void Promise.all(
           downstreamIds.map((dstId) =>
@@ -2209,6 +2185,16 @@ function HybridCanvasWorkspace() {
         label: e.label,
         animated: Boolean(e.dashed),
         style: { stroke, strokeWidth: 2 },
+        ...(e.bidirectional
+          ? {
+              markerStart: {
+                type: MarkerType.ArrowClosed,
+                width: 18,
+                height: 18,
+                color: stroke,
+              },
+            }
+          : {}),
         markerEnd: {
           type: MarkerType.ArrowClosed,
           width: 18,
@@ -2694,21 +2680,25 @@ function HybridCanvasWorkspace() {
         onDeleteCustomTemplate={handleDeleteCustomTemplate}
       />
 
-      {/* 右侧控件属性与脚本编辑器 */}
-      <NodeInspectorPanel
-        node={inspectingNode}
-        scriptLogs={inspectingNode ? (scriptLogsByNode[inspectingNode.id] ?? []) : []}
-        onClearScriptLogs={handleClearScriptLogs}
-        onClose={() => setInspectingNodeId(null)}
-        onPatchNode={handlePatchNode}
-        onRunScriptRefresh={handleRunScriptRefresh}
-        onUpdateDefaultVar={handleUpdateDefaultVar}
-        onDeleteDefaultVar={handleDeleteDefaultVar}
-        onDuplicateNode={handleDuplicateNode}
-        onDeleteNode={handleDeleteNode}
-        onResetLocal={handleResetNodeLocal}
-        onSaveAsTemplate={handleSaveAsTemplate}
-      />
+      {/* 右侧控件属性与脚本编辑器（按需懒加载分包） */}
+      {inspectingNode && (
+        <Suspense fallback={null}>
+          <NodeInspectorPanel
+            node={inspectingNode}
+            scriptLogs={scriptLogsByNode[inspectingNode.id] ?? []}
+            onClearScriptLogs={handleClearScriptLogs}
+            onClose={() => setInspectingNodeId(null)}
+            onPatchNode={handlePatchNode}
+            onRunScriptRefresh={handleRunScriptRefresh}
+            onUpdateDefaultVar={handleUpdateDefaultVar}
+            onDeleteDefaultVar={handleDeleteDefaultVar}
+            onDuplicateNode={handleDuplicateNode}
+            onDeleteNode={handleDeleteNode}
+            onResetLocal={handleResetNodeLocal}
+            onSaveAsTemplate={handleSaveAsTemplate}
+          />
+        </Suspense>
+      )}
 
       {/* 浮动通知位（仅在有通知消息时弹出，3.5 秒后自动收起） */}
       {statusLog && (
@@ -2731,6 +2721,26 @@ function HybridCanvasWorkspace() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onEdgeContextMenu={(ev, edge) => {
+          ev.preventDefault();
+          const initial = baseRef.current.edges[edge.id];
+          if (!initial) return;
+          const nextBi = !initial.bidirectional;
+          pushHistory();
+          setBase((prev) => {
+            const cur = prev.edges[edge.id];
+            if (!cur) return prev;
+            return {
+              ...prev,
+              version: prev.version + 1,
+              edges: {
+                ...prev.edges,
+                [edge.id]: { ...cur, bidirectional: nextBi, rev: cur.rev + 1, cid: SELF_CID },
+              },
+            };
+          });
+          setStatusLog(nextBi ? '已切换为单线双向连线（<——>）' : '已切换为单向连线（——>）');
+        }}
         onEdgeDoubleClick={(_ev, edge) => {
           const initial = baseRef.current.edges[edge.id];
           if (!initial) return;
@@ -2772,20 +2782,26 @@ function HybridCanvasWorkspace() {
         <Controls position="bottom-right" showInteractive={false} />
       </ReactFlow>
 
-      {/* Ctrl+K 全局搜索与 Chunk 坐标跳转弹窗 */}
-      <SearchJumpModal
-        open={searchOpen}
-        nodes={effectiveNodes}
-        annotations={effectiveAnnotations}
-        onClose={() => setSearchOpen(false)}
-        onJumpToPoint={(wx, wy, z, selectId) => {
-          rf.setCenter(wx, wy, { zoom: z ?? 0.95, duration: 350 });
-          if (selectId) setInspectingNodeId(selectId);
-        }}
-      />
+      {/* Ctrl+K 全局搜索与 Chunk 坐标跳转弹窗（按需懒加载分包） */}
+      {searchOpen && (
+        <Suspense fallback={null}>
+          <SearchJumpModal
+            open={searchOpen}
+            nodes={effectiveNodes}
+            annotations={effectiveAnnotations}
+            onClose={() => setSearchOpen(false)}
+            onJumpToPoint={(wx, wy, z, selectId) => {
+              rf.setCenter(wx, wy, { zoom: z ?? 0.95, duration: 350 });
+              if (selectId) setInspectingNodeId(selectId);
+            }}
+          />
+        </Suspense>
+      )}
 
-      {/* 外部导入 / 远端同步脚本安全审计门禁 */}
-      <ScriptTrustModal
+      {/* 外部导入 / 远端同步脚本安全审计门禁（按需懒加载分包） */}
+      {trustModalState.open && (
+        <Suspense fallback={null}>
+          <ScriptTrustModal
         open={trustModalState.open}
         sourceLabel={trustModalState.sourceLabel}
         entries={trustModalState.entries}
@@ -2805,7 +2821,9 @@ function HybridCanvasWorkspace() {
           setChunkSyncTick((t) => t + 1);
           setStatusLog('已信任并启用已审阅的外部脚本');
         }}
-      />
+          />
+        </Suspense>
+      )}
 
       {/* 多人实时协同房间（WebSocket + CRDT）弹窗 */}
       {roomModalOpen && (

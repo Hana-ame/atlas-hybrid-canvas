@@ -1,9 +1,12 @@
 /**
  * @file pdfClientUnpack.ts
- * @description 纯前端 PDF 高清逐页解包引擎（静态无后端模式兜底）：
+ * @description 纯前端 PDF 高清逐页解包引擎（静态无后端模式兜底 + IndexedDB 分级缓存减压）：
  * - 绝不使用浏览器内置 PDF 渲染器；
+ * - L1 内存仅保留最近 4 页热数据，L2 冷页卸载至 IndexedDB（全局上限 80 页 LRU 淘汰），大幅降低浏览器堆内存占用；
  * - 按当前控件物理像素宽度动态档位（1100/1700/2500/3600px）渲染离屏 Canvas 并导出 PNG，放大不发糊。
  */
+
+import { idbCacheClearPrefix, idbCacheGet, idbCacheSet } from './idbStorage';
 
 interface PdfJsViewport {
   width: number;
@@ -32,22 +35,40 @@ interface ClientUnpackedDoc {
   id: string;
   totalPages: number;
   doc: PdfJsDoc;
+  /** L1 热内存缓存（严格上限 MAX_HOT_RAM_PAGES 页，超限自动踢出内存并保留在 IndexedDB L2） */
   pageCache: Map<string, string>;
 }
 
 const PDFJS_CDN_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.min.mjs';
 const PDFJS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs';
 const MAX_CANVAS_EDGE = 4096;
-const MAX_CLIENT_DOCS = 6;
+const MAX_CLIENT_DOCS = 3;
+const MAX_HOT_RAM_PAGES = 4;
+const MAX_IDB_PDF_PAGES = 80;
 
 let pdfJsPromise: Promise<PdfJsModule> | null = null;
 const clientDocStore = new Map<string, ClientUnpackedDoc>();
+
+function makeIdbPageKey(clientDocId: string, cacheKey: string): string {
+  return `pdf-page:${clientDocId}:${cacheKey}`;
+}
+
+function putHotPage(rec: ClientUnpackedDoc, cacheKey: string, dataUrl: string): void {
+  rec.pageCache.delete(cacheKey);
+  rec.pageCache.set(cacheKey, dataUrl);
+  while (rec.pageCache.size > MAX_HOT_RAM_PAGES) {
+    const oldest = rec.pageCache.keys().next().value;
+    if (oldest === undefined) break;
+    rec.pageCache.delete(oldest);
+  }
+}
 
 export function disposeClientPdfDoc(clientDocId: string): void {
   const rec = clientDocStore.get(clientDocId);
   if (!rec) return;
   clientDocStore.delete(clientDocId);
   rec.pageCache.clear();
+  void idbCacheClearPrefix(`pdf-page:${clientDocId}:`);
   try {
     void rec.doc.destroy?.();
   } catch {
@@ -115,9 +136,23 @@ export async function renderClientPdfPageImage(
   const safePage = Math.max(1, Math.min(Math.max(1, rec.totalPages), rawPage));
   const bucketW = quantizeClientWidth(targetPixelWidth);
   const cacheKey = `${safePage}@${bucketW}`;
-  const cached = rec.pageCache.get(cacheKey);
-  if (cached) return cached;
 
+  // 1) L1 热内存命中
+  const hotHit = rec.pageCache.get(cacheKey);
+  if (hotHit) {
+    putHotPage(rec, cacheKey, hotHit);
+    return hotHit;
+  }
+
+  // 2) L2 IndexedDB 冷缓存命中（无需重新跑 pdf.js 渲染，也不常驻内存）
+  const idbKey = makeIdbPageKey(clientDocId, cacheKey);
+  const coldHit = await idbCacheGet<string>(idbKey);
+  if (coldHit && clientDocStore.has(clientDocId)) {
+    putHotPage(rec, cacheKey, coldHit);
+    return coldHit;
+  }
+
+  // 3) 离屏 Canvas 渲染并同时回写 L1（4页热上限）+ L2 IndexedDB（80页冷上限）
   const page = await rec.doc.getPage(safePage);
   const baseViewport = page.getViewport({ scale: 1 });
   const desiredScale = bucketW / Math.max(1, baseViewport.width);
@@ -136,10 +171,9 @@ export async function renderClientPdfPageImage(
   canvas.width = 0;
   canvas.height = 0;
 
-  if (rec.pageCache.size >= 32) {
-    const oldest = rec.pageCache.keys().next().value;
-    if (oldest !== undefined) rec.pageCache.delete(oldest);
+  if (clientDocStore.has(clientDocId)) {
+    putHotPage(rec, cacheKey, dataUrl);
+    void idbCacheSet(idbKey, dataUrl, MAX_IDB_PDF_PAGES);
   }
-  rec.pageCache.set(cacheKey, dataUrl);
   return dataUrl;
 }

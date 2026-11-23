@@ -245,6 +245,8 @@ export interface BlueprintEdge {
   label?: string;
   color?: string;
   dashed?: boolean;
+  /** 是否为单线双向连线（双头箭头 <——>，任一端变更自动通知对端） */
+  bidirectional?: boolean;
   rev: number;
   cid: string;
 }

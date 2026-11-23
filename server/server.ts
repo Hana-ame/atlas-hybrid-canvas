@@ -20,8 +20,8 @@ import {
   unpackPdfBufferToPages,
 } from './pdfUnpack';
 import { attachRoomServer, type RoomServerHandle, type RpcHandler } from './roomServer';
+import { createFileBlueprintStore } from './fileStore';
 import {
-  createMemoryStore,
   handleApiRequest,
   type ApiDeps,
   type ApiRequest,
@@ -41,8 +41,9 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 const PDF_UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
 const PDF_UPLOAD_MAX_LABEL = '50MB';
 
-// 权威底座存储。业务逻辑在 apiCore 里，这里只提供存储实现。
-const sharedStore = createMemoryStore();
+// 权威底座与协同房间持久化目录（默认 .atlas-data/，可通过 ATLAS_DATA_DIR 覆盖）。
+const DATA_DIR = path.resolve(process.env.ATLAS_DATA_DIR || path.join(__dirname, '../.atlas-data'));
+const sharedStore = createFileBlueprintStore(DATA_DIR);
 
 // 房间服务实例。必须在 httpServer 建好之后才能 attach，而 stats 路由又要注册在
 // SPA fallback 之前，所以用模块级变量在注册时先捕获引用、attach 后再赋值。
@@ -841,7 +842,7 @@ async function startServer() {
   });
 
   // 房间服务与 Express 共用同一个 HTTP server 与端口，靠 upgrade 事件按 /ws 分流。
-  roomServer = attachRoomServer(httpServer, '/ws', makeRpcHandler(PORT));
+  roomServer = attachRoomServer(httpServer, '/ws', makeRpcHandler(PORT), DATA_DIR);
 
   const shutdown = () => {
     void roomServer!.close().finally(() => {

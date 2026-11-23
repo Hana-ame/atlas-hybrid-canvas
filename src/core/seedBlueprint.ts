@@ -468,7 +468,7 @@ onValidateConnect((conn) => {
       defaultVars: {
         imageUrl: "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 360 220'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%23EEF2FF'/%3E%3Cstop offset='100%25' stop-color='%23E0E7FF'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='360' height='220' fill='url(%23g)'/%3E%3Ccircle cx='118' cy='86' r='30' fill='%234F46E5' fill-opacity='0.22'/%3E%3Cpath d='M52 174 L142 104 L212 152 L262 118 L314 174 Z' fill='%234F46E5' fill-opacity='0.3'/%3E%3Ctext x='180' y='198' text-anchor='middle' font-family='sans-serif' font-size='13' fill='%23312E81'%3E悬停右上角：切铺满/等比 · 灯箱全屏 · 换图%3C/text%3E%3C/svg%3E",
         imageFit: 'contain',
-        imageCaption: '支持 URL 与本地上传（<=4MB 持久保存）',
+        imageCaption: '纯外链图片（悬停右上角切铺满/灯箱/换外链）',
       },
       script: String.raw`vars.contents = [
   { type: 'image', id: 'imgMain', bindUrl: 'imageUrl', bindFit: 'imageFit', bindCaption: 'imageCaption' }
