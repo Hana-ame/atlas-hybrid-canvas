@@ -19,6 +19,8 @@ export interface PdfViewerBlockProps {
   page: number;
   totalPages?: number;
   useProxy: boolean;
+  /** 是否处于当前视口或紧邻预加载环内；远端离屏时卸载重型 iframe 节省内存与 GPU */
+  mediaActive?: boolean;
   onChangeUrl: (nextUrl: string) => void;
   onChangePage: (nextPage: number) => void;
   onChangeTotalPages?: (nextTotal: number) => void;
@@ -30,6 +32,7 @@ function PdfViewerBlockInner({
   page,
   totalPages,
   useProxy,
+  mediaActive = true,
   onChangeUrl,
   onChangePage,
   onChangeTotalPages,
@@ -238,14 +241,21 @@ function PdfViewerBlockInner({
         </div>
       )}
 
-      {/* 沉浸式 PDF 视口：零外框、零 padding，随卡片尺寸自动铺满 */}
+      {/* 沉浸式 PDF 视口：仅在视口或紧邻预热区挂载重型 iframe，远端离屏自动休眠释放进程开销 */}
       {iframeSrc ? (
-        <iframe
-          key={iframeSrc}
-          src={iframeSrc}
-          title="PDF 预览"
-          className="min-h-0 w-full flex-1 border-0 bg-white"
-        />
+        mediaActive ? (
+          <iframe
+            key={iframeSrc}
+            src={iframeSrc}
+            title="PDF 预览"
+            className="min-h-0 w-full flex-1 border-0 bg-white"
+          />
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 bg-slate-50 px-4 text-center text-xs text-slate-400">
+            <FileText className="h-6 w-6 text-slate-300" />
+            <div>PDF 离屏休眠中（移近视口自动恢复第 {safePage} 页）</div>
+          </div>
+        )
       ) : (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2.5 bg-white px-4 text-center text-xs text-slate-500">
           <FileText className="h-7 w-7 text-slate-300" />

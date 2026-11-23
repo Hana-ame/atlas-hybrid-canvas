@@ -171,6 +171,66 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
       }
     };
 
+    let idleHandle: number | null = null;
+    const cancelIdlePrefetch = () => {
+      if (idleHandle === null) return;
+      if (typeof window !== 'undefined' && 'cancelIdleCallback' in window) {
+        (window as Window & { cancelIdleCallback: (id: number) => void }).cancelIdleCallback(idleHandle);
+      } else {
+        globalThis.clearTimeout(idleHandle);
+      }
+      idleHandle = null;
+    };
+
+    const scheduleIdleTilePrefetch = (worldBounds: { minX: number; minY: number; maxX: number; maxY: number }, scale: number) => {
+      // draw() 在平移/拖拽时几乎每帧都会跑到这里（store.subscribe + RAF 自递归）。
+      // 若每次都 cancel 再重排，idle 回调永远等不到执行窗口，预取形同虚设。
+      // 因此只在「当前没有待执行的预取」时排程；已在排队就让它跑完。
+      if (idleHandle !== null) return;
+      const p = propsRef.current;
+      const cs = p.chunkManager.chunkSize;
+      const prefetchBounds = {
+        minX: worldBounds.minX - cs,
+        minY: worldBounds.minY - cs,
+        maxX: worldBounds.maxX + cs,
+        maxY: worldBounds.maxY + cs,
+      };
+      const runPrefetch = () => {
+        idleHandle = null;
+        const cur = propsRef.current;
+        // 用当前视口重算，避免排程时的旧 bounds 在平移后烘焙到错误区域
+        const ringChunks = cur.chunkManager.queryVisibleChunks(prefetchBounds);
+        let bakedCount = 0;
+        for (const chunk of ringChunks) {
+          if (bakedCount >= 2) break;
+          const cached = cur.tileCache.get(chunk, cur.lod, scale);
+          if (cached) continue;
+          cur.tileCache.bake(chunk, cur.chunkManager.chunkSize, cur.lod, scale, (bctx) => {
+            if (cur.lod === 'macro') {
+              for (const nid of chunk.nodeIds) {
+                const n = cur.nodes[nid];
+                if (!n) continue;
+                bctx.fillStyle = n.color;
+                bctx.globalAlpha = 0.86;
+                bctx.fillRect(n.x, n.y, n.width, n.height);
+                bctx.globalAlpha = 1;
+              }
+            }
+          });
+          cur.chunkManager.markClean(chunk.key);
+          bakedCount += 1;
+        }
+      };
+      if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+        idleHandle = (window as Window & { requestIdleCallback: (cb: () => void, opts?: { timeout: number }) => number }).requestIdleCallback(
+          runPrefetch,
+          { timeout: 120 }
+        );
+      } else {
+        idleHandle = Number(globalThis.setTimeout(runPrefetch, 40));
+      }
+    };
+
     const draw = (force = false) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -422,6 +482,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
 
       ctx.restore();
 
+      if (!hasPendingBakes && p.lod === 'macro') scheduleIdleTilePrefetch(worldBounds, tileScale);
       if (hasPendingBakes && !pendingRaf) {
         pendingRaf = requestAnimationFrame(() => {
           pendingRaf = 0;
@@ -443,6 +504,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
     return () => {
       unsubscribe();
       window.removeEventListener('resize', onResize);
+      cancelIdlePrefetch();
       if (pendingRaf) cancelAnimationFrame(pendingRaf);
     };
   }, [store]);

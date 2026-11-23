@@ -66,6 +66,7 @@ import {
 import { TEMPLATE_DRAG_MIME, TemplateDrawer } from './components/TemplateDrawer';
 import { ChunkManager } from './core/chunkManager';
 import { ChunkTileCache } from './core/chunkTileCache';
+import { computeThreeRingBounds, filterVisibleEdges, isBoxIntersecting } from './core/viewportCulling';
 import {
   applyOverlayToBase,
   clearConflictingRuntimeVars,
@@ -180,17 +181,34 @@ function HybridCanvasWorkspace() {
   const rf = useReactFlow();
   const rfStore = useStoreApi();
 
+  // 粗粒度视口桶 Key：按 256px 步进量化视口范围，平移每像素绝不触发 App 重渲染
   const viewportBucketKey = useStore((s) => {
     const [tx, ty, zoom] = s.transform;
     const w = s.width || 1280;
     const h = s.height || 800;
-    const cs = 512;
-    const minCx = Math.floor((-tx / zoom - 256) / cs);
-    const maxCx = Math.floor(((w - tx) / zoom + 256) / cs);
-    const minCy = Math.floor((-ty / zoom - 256) / cs);
-    const maxCy = Math.floor(((h - ty) / zoom + 256) / cs);
-    return `${minCx},${maxCx},${minCy},${maxCy}`;
+    const step = 256;
+    const minX = Math.floor((-tx / zoom) / step) * step;
+    const maxX = Math.ceil(((w - tx) / zoom) / step) * step;
+    const minY = Math.floor((-ty / zoom) / step) * step;
+    const maxY = Math.ceil(((h - ty) / zoom) / step) * step;
+    return `${minX},${maxX},${minY},${maxY}`;
   });
+  const prevViewportCenterRef = useRef<{ cx: number; cy: number } | null>(null);
+  const threeRingBounds = useMemo(() => {
+    const [minX, maxX, minY, maxY] = viewportBucketKey.split(',').map(Number);
+    const cx = (minX + maxX) * 0.5;
+    const cy = (minY + maxY) * 0.5;
+    let dirX = 0;
+    let dirY = 0;
+    if (prevViewportCenterRef.current) {
+      const dx = cx - prevViewportCenterRef.current.cx;
+      const dy = cy - prevViewportCenterRef.current.cy;
+      if (Math.abs(dx) >= 128) dirX = dx > 0 ? 1 : -1;
+      if (Math.abs(dy) >= 128) dirY = dy > 0 ? 1 : -1;
+    }
+    prevViewportCenterRef.current = { cx, cy };
+    return computeThreeRingBounds({ minX, minY, maxX, maxY }, 512, dirX, dirY);
+  }, [viewportBucketKey]);
 
   const chunkManagerRef = useRef<ChunkManager | null>(null);
   const tileCacheRef = useRef(new ChunkTileCache(160));
@@ -400,9 +418,13 @@ function HybridCanvasWorkspace() {
     }
     if (draggingNodeIdsRef.current.size > 0) return;
     chunkManagerRef.current?.rebuild(effectiveNodesRef.current, effectiveAnnotationsRef.current);
-    tileCacheRef.current.clear();
     setRenderVersion((v) => v + 1);
   }, [base.version, effectiveAnnotations, lod, annotationEditMode, chunkSyncTick]);
+
+  // 仅在切换注释编辑模式时清空瓦片缓存，常规节点编辑由分块级签名精准失效
+  useEffect(() => {
+    tileCacheRef.current.clear();
+  }, [annotationEditMode]);
 
   // 启动时从 IndexedDB 恢复本地叠加层、自定义模板与已发布底座
   useEffect(() => {
@@ -946,13 +968,22 @@ function HybridCanvasWorkspace() {
   const renderedScriptsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!overlayHydrated) return;
+    const preloadBox = threeRingBounds.domPreloadBounds;
     for (const node of Object.values(effectiveNodes)) {
-      if (node.script && !Array.isArray(node.effectiveVars?.contents) && !renderedScriptsRef.current.has(node.id)) {
-        renderedScriptsRef.current.add(node.id);
-        void executeUnifiedWidgetScript(node.id, { kind: 'render' });
+      if (!node.script || Array.isArray(node.effectiveVars?.contents) || renderedScriptsRef.current.has(node.id)) {
+        continue;
       }
+      const nodeBox = {
+        minX: node.x,
+        minY: node.y,
+        maxX: node.x + node.width,
+        maxY: node.y + node.height,
+      };
+      if (!isBoxIntersecting(nodeBox, preloadBox)) continue;
+      renderedScriptsRef.current.add(node.id);
+      void executeUnifiedWidgetScript(node.id, { kind: 'render' });
     }
-  }, [overlayHydrated, effectiveNodes, executeUnifiedWidgetScript]);
+  }, [overlayHydrated, effectiveNodes, threeRingBounds, executeUnifiedWidgetScript]);
 
   const handleRunScriptClick = useCallback(
     async (nodeId: string, buttonId: string) => {
@@ -1292,15 +1323,7 @@ function HybridCanvasWorkspace() {
       return;
     }
 
-    const [minCx, maxCx, minCy, maxCy] = viewportBucketKey.split(',').map(Number);
-    const cs = 512;
-    const worldBounds = {
-      minX: minCx * cs,
-      minY: minCy * cs,
-      maxX: (maxCx + 1) * cs,
-      maxY: (maxCy + 1) * cs,
-    };
-    const visibleChunks = chunkManagerRef.current.queryVisibleChunks(worldBounds);
+    const visibleChunks = chunkManagerRef.current.queryVisibleChunks(threeRingBounds.domPreloadBounds);
     const visibleIds = new Set<string>();
     const visibleAnnIds = new Set<string>();
     for (const c of visibleChunks) {
@@ -1373,6 +1396,10 @@ function HybridCanvasWorkspace() {
             onDuplicateNode: handleDuplicateNode,
             onDeleteNode: handleDeleteNode,
             busyButtonKey,
+            mediaActive: isBoxIntersecting(
+              { minX: entity.x, minY: entity.y, maxX: entity.x + entity.width, maxY: entity.y + entity.height },
+              threeRingBounds.mediaActiveBounds
+            ),
           } satisfies WidgetNodeData,
         });
       }
@@ -1402,9 +1429,17 @@ function HybridCanvasWorkspace() {
     renderVersion,
   ]);
 
+  const mountedWidgetIdSet = useMemo(() => {
+    const s = new Set<string>();
+    for (const n of rfNodes) {
+      if (!n.id.startsWith('ann-node:')) s.add(n.id);
+    }
+    return s;
+  }, [rfNodes]);
+
   const rfEdges: Edge[] = useMemo(() => {
     if (lod === 'macro') return [];
-    return Object.values(base.edges).map((e) => {
+    return filterVisibleEdges(base.edges, mountedWidgetIdSet).map((e) => {
       const stroke = e.color || '#64748B';
       return {
         id: e.id,
@@ -1423,7 +1458,7 @@ function HybridCanvasWorkspace() {
         },
       };
     });
-  }, [lod, base.edges]);
+  }, [lod, base.edges, mountedWidgetIdSet]);
 
   // 关键修复：onNodesChange 直接交给 applyNodeChanges 处理拖动/测量/选中，
   // 拖动过程中不触碰 overlay/base，只在松手（dragging === false）时一次性落盘，0 闪烁！

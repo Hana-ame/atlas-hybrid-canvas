@@ -36,6 +36,7 @@ export interface WidgetNodeData extends Record<string, unknown> {
   onDuplicateNode: (nodeId: string) => void;
   onDeleteNode: (nodeId: string) => void;
   busyButtonKey: string | null;
+  mediaActive?: boolean;
 }
 
 const DEFAULT_INPUT_PORTS: NodePortSpec[] = [
@@ -70,6 +71,7 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
     onDuplicateNode,
     onDeleteNode,
     busyButtonKey,
+    mediaActive = true,
   } = data as WidgetNodeData;
 
   // 默认单击/按住整卡可拖动，双击标题或正文才进入编辑态！
@@ -219,6 +221,7 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
           page={curPage}
           totalPages={curTotal > 0 ? curTotal : undefined}
           useProxy={curProxy}
+          mediaActive={mediaActive}
           onChangeUrl={(nextUrl) => onScriptInputChange(entity.id, urlKey, nextUrl)}
           onChangePage={(nextPage) => onScriptInputChange(entity.id, pageKey, String(nextPage))}
           onChangeTotalPages={(nextTotal) =>
