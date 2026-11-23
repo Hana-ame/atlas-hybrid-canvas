@@ -20,7 +20,7 @@ import {
   getUnpackedPdfPage,
   unpackPdfBufferToPages,
 } from './pdfUnpack';
-import { attachRoomServer } from './roomServer';
+import { attachRoomServer, type RoomServerHandle } from './roomServer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,6 +38,10 @@ const PDF_UPLOAD_MAX_LABEL = '50MB';
 let serverBaseBlueprint: Record<string, unknown> | null = null;
 let serverRevision = 1;
 
+// 房间服务实例。必须在 httpServer 建好之后才能 attach，而 stats 路由又要注册在
+// SPA fallback 之前，所以用模块级变量在注册时先捕获引用、attach 后再赋值。
+let roomServer: RoomServerHandle | null = null;
+
 async function startServer() {
   const app = express();
   app.disable('x-powered-by');
@@ -49,6 +53,17 @@ async function startServer() {
   app.use(express.json({ limit: '10mb' }));
   app.use('/api/pdf/upload', express.raw({ type: 'application/pdf', limit: PDF_UPLOAD_MAX_BYTES }));
   app.use('/api/pdf/unpack-upload', express.raw({ type: 'application/pdf', limit: PDF_UPLOAD_MAX_BYTES }));
+
+  // 协同房间在线统计。必须注册在 Vite / SPA fallback 之前，否则会被 `app.get('*')`
+  // 的兜底先吃掉、返回首页 HTML。房间服务实例要等 httpServer 建好才能 attach，
+  // 所以这里通过闭包读模块级变量，等 listen 之后再赋值。
+  app.get('/api/room/stats', (_req, res) => {
+    if (!roomServer) {
+      res.status(503).json({ ok: false, error: '房间服务尚未就绪' });
+      return;
+    }
+    res.json({ ok: true, ...roomServer.stats() });
+  });
 
   const blueprintSaveKey = (process.env.BLUEPRINT_SAVE_KEY || '').trim();
   const upstreamBaseUrl = (process.env.PROXY_UPSTREAM_BASE_URL || '').trim();
@@ -600,14 +615,10 @@ async function startServer() {
   });
 
   // 房间服务与 Express 共用同一个 HTTP server 与端口，靠 upgrade 事件按 /ws 分流。
-  const roomServer = attachRoomServer(httpServer);
-
-  app.get('/api/room/stats', (_req, res) => {
-    res.json({ ok: true, ...roomServer.stats() });
-  });
+  roomServer = attachRoomServer(httpServer);
 
   const shutdown = () => {
-    void roomServer.close().finally(() => {
+    void roomServer!.close().finally(() => {
       httpServer.close(() => process.exit(0));
     });
   };
