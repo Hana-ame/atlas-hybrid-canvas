@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -109,4 +110,93 @@ test('validateDagConnection() ignores pre-existing cycles that are unrelated to 
     'A'
   );
   assert.equal(realCycle.ok, false, '构成环的连线必须拦下');
+});
+
+// Extract the exact workerBootstrap string from src/core/scriptSandbox.ts and run it in an isolated harness
+async function runWorkerBootstrapInNode(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const src = fs.readFileSync(new URL('../src/core/scriptSandbox.ts', import.meta.url), 'utf8');
+  const m = src.match(/const workerBootstrap = `([\s\S]*?)`;\n\n  const worker = acquirePooledWorker/);
+  assert.ok(m, 'workerBootstrap template must exist in scriptSandbox.ts');
+  let posted: Record<string, unknown> | null = null;
+  const mockSelf: { onmessage?: (ev: { data: unknown }) => Promise<void>; postMessage: (msg: Record<string, unknown>) => void } = {
+    postMessage: (msg) => { posted = msg; },
+  };
+  const boot = new Function('self', m[1]);
+  boot(mockSelf);
+  assert.ok(mockSelf.onmessage, 'workerBootstrap must attach self.onmessage');
+  await mockSelf.onmessage({ data: payload });
+  assert.ok(posted, 'workerBootstrap must call self.postMessage');
+  return posted;
+}
+
+test('Worker sandbox checkDag() handles orphan edge source not in peerMap without wiping adjacency list (v40 regression)', async () => {
+  const res = await runWorkerBootstrapInNode({
+    code: 'vars.dagRes = widgets.checkDag();',
+    initialVars: {},
+    selfEntity: { id: 'n1', title: 'N1', label: 'N1', body: '', x: 0, y: 0, width: 200, height: 120, color: '#000', vars: {} },
+    peers: { n1: { id: 'n1', title: 'N1', label: 'N1', body: '', x: 0, y: 0, width: 200, height: 120, color: '#000', vars: {} } },
+    edges: [
+      { id: 'e1', source: 'orphanA', target: 'orphanB' },
+      { id: 'e2', source: 'orphanB', target: 'orphanA' },
+    ],
+    trigger: { kind: 'render' },
+  });
+  assert.equal(res.ok, true);
+  const updated = res.updatedVars as { dagRes: { ok: boolean; cyclePath: string[] } };
+  assert.equal(updated.dagRes.ok, false);
+  assert.equal(updated.dagRes.cyclePath.length, 2);
+});
+
+test('Worker sandbox emitDownstream() deduplicates parallel edges to the same target widget', async () => {
+  const res = await runWorkerBootstrapInNode({
+    code: "on('go', async () => { vars.pushRes = await emitDownstream('ping', { v: 1 }); });",
+    initialVars: {},
+    selfEntity: { id: 'src', title: 'Src', label: 'Src', body: '', x: 0, y: 0, width: 200, height: 120, color: '#000', vars: {} },
+    peers: {
+      src: { id: 'src', title: 'Src', label: 'Src', body: '', x: 0, y: 0, width: 200, height: 120, color: '#000', vars: {} },
+      dst: { id: 'dst', title: 'Dst', label: 'Dst', body: '', x: 300, y: 0, width: 200, height: 120, color: '#000', vars: {} },
+    },
+    edges: [
+      { id: 'e1', source: 'src', target: 'dst', sourceHandle: 'out-1', targetHandle: 'in-1' },
+      { id: 'e2', source: 'src', target: 'dst', sourceHandle: 'out-1', targetHandle: 'in-2' },
+    ],
+    trigger: { kind: 'click', buttonId: 'go' },
+  });
+  assert.equal(res.ok, true);
+  const updated = res.updatedVars as { pushRes: { ok: boolean; count: number } };
+  assert.equal(updated.pushRes.count, 1);
+  assert.equal((res.emitOps as unknown[]).length, 1);
+});
+
+test('Worker sandbox onValidateConnect() rejects cyclic wire with custom reason and allows acyclic wire', async () => {
+  const code = "onValidateConnect((c) => c.wouldCycle ? { ok: false, reason: 'custom cycle block' } : { ok: true });";
+  const selfEntity = { id: 'a', title: 'A', label: 'A', body: '', x: 0, y: 0, width: 200, height: 120, color: '#000', vars: {} };
+
+  const blocked = await runWorkerBootstrapInNode({
+    code,
+    initialVars: {},
+    selfEntity,
+    peers: { a: selfEntity },
+    edges: [],
+    trigger: {
+      kind: 'validateConnect',
+      conn: { source: 'b', target: 'a', fromPort: 'out-1', toPort: 'in-1', fromNode: null, toNode: selfEntity, wouldCycle: true, cyclePath: ['b', 'a', 'b'] },
+    },
+  });
+  assert.equal(blocked.ok, true);
+  assert.deepEqual(blocked.connectValidation, { ok: false, reason: 'custom cycle block' });
+
+  const allowed = await runWorkerBootstrapInNode({
+    code,
+    initialVars: {},
+    selfEntity,
+    peers: { a: selfEntity },
+    edges: [],
+    trigger: {
+      kind: 'validateConnect',
+      conn: { source: 'b', target: 'a', fromPort: 'out-1', toPort: 'in-1', fromNode: null, toNode: selfEntity, wouldCycle: false, cyclePath: [] },
+    },
+  });
+  assert.equal(allowed.ok, true);
+  assert.deepEqual(allowed.connectValidation, { ok: true });
 });

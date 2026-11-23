@@ -134,8 +134,10 @@ export interface ProxyTargetValidationError {
  * - Restricts schemes strictly to `http:` / `https:`.
  * - Rejects embedded credentials, localhost/internal hostnames, and private/metadata IPs.
  * - Enforces `allowedHosts` when configured.
- * - Authorizes server-side secret header injection (`injectSecret`) ONLY for explicitly
- *   configured `upstreamBaseUrl` or `allowedHosts` targets so secrets never leak to arbitrary domains.
+ * - Authorizes server-side secret header injection (`injectSecret`) with these rules:
+ *   - If `upstreamBaseUrl` is configured, ONLY that exact host receives the secret;
+ *     allowlisted third-party hosts stay proxyable but never receive it.
+ *   - If `upstreamBaseUrl` is NOT configured, fall back to `allowedHosts` (legacy behaviour).
  */
 export function validateProxyTargetUrl(
   rawUrl: string,
@@ -217,10 +219,14 @@ export function validateProxyTargetUrl(
     };
   }
 
-  // Only inject server-side secret credentials to explicitly trusted configured upstream/allowlist hosts
-  const injectSecret =
-    (Boolean(upstreamHost) && host === upstreamHost) ||
-    (allowedHosts.length > 0 && hostMatchesAllowlist(host, allowedHosts));
+  // When upstreamBaseUrl is configured, inject PROXY_API_KEY strictly to upstreamHost only
+  // (never leak upstream secrets to unrelated third-party hosts such as httpbin.org in allowedHosts).
+  // 注意：判「是否配置了上游」必须看 upstreamBase 原始字符串，不能看 upstreamHost。
+  // upstreamHost 在上游 URL 解析失败时会退化成空串，若用它做判据，配置写错的部署会静默回落到
+  // allowedHosts 分支，把密钥重新发给 httpbin.org 这类演示域名 —— 正是本版要堵的那个洞。
+  const injectSecret = upstreamBase
+    ? host === upstreamHost // upstreamHost 为空时恒为 false，即配置非法时不向任何主机注入
+    : allowedHosts.length > 0 && hostMatchesAllowlist(host, allowedHosts);
 
   return {
     ok: true,

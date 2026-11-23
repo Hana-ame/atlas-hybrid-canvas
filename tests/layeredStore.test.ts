@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { clearConflictingRuntimeVars, createEmptyOverlay, resolveEffectiveNodes } from '../src/core/layeredStore.ts';
+import { applyOverlayToBase, clearConflictingRuntimeVars, createEmptyOverlay, resolveEffectiveAnnotations, resolveEffectiveNodes } from '../src/core/layeredStore.ts';
 import { createSeedBlueprint } from '../src/core/seedBlueprint.ts';
 
 test('resolveEffectiveNodes() lets vars control type, title, color, width, height, and pos/x/y', () => {
@@ -63,4 +63,36 @@ test('manual drag/resize/title patch wins over previous script vars once conflic
   assert.equal(resolved.width, 300);
   assert.equal(resolved.title, '手动标题');
   assert.equal(resolved.effectiveVars.score, 9);
+});
+
+test('resolveEffectiveNodes() lets explicit vars.x/y override vars.pos when both are present', () => {
+  const bp = createSeedBlueprint();
+  const overlay = createEmptyOverlay();
+  overlay.runtimeVars['node-world-hub'] = { pos: { x: 100, y: 200 }, x: 555 };
+  const resolved = resolveEffectiveNodes(bp, overlay)['node-world-hub'];
+  assert.equal(resolved.x, 555);
+  assert.equal(resolved.y, 200);
+});
+
+test('resolveEffectiveAnnotations() merges script annotationOverrides onto base annotations', () => {
+  const bp = createSeedBlueprint();
+  const overlay = createEmptyOverlay();
+  overlay.annotationOverrides['ann-zone-0'] = { bgColor: '#FCE7F3', bgOpacity: 0.9, text: '动态区域' };
+  const anns = resolveEffectiveAnnotations(bp, overlay);
+  assert.equal(anns['ann-zone-0'].bgColor, '#FCE7F3');
+  assert.equal(anns['ann-zone-0'].text, '动态区域');
+});
+
+test('applyOverlayToBase() commits patches, increments rev, and ignores orphan nodeIds', () => {
+  const bp = createSeedBlueprint();
+  const prevRev = bp.nodes['node-world-hub'].rev;
+  const overlay = createEmptyOverlay();
+  overlay.nodePatches['node-world-hub'] = { title: 'Published Title' };
+  overlay.nodePatches['deleted-orphan'] = { title: 'Should Be Ignored' };
+
+  const published = applyOverlayToBase(bp, overlay, 'publisher-cid');
+  assert.equal(published.nodes['node-world-hub'].title, 'Published Title');
+  assert.equal(published.nodes['node-world-hub'].rev, prevRev + 1);
+  assert.equal(published.nodes['node-world-hub'].cid, 'publisher-cid');
+  assert.equal(published.nodes['deleted-orphan'], undefined);
 });

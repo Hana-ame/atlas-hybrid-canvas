@@ -1,59 +1,14 @@
 /**
  * @file ScriptTrustModal.tsx
- * @description 外部导入 JSON 或远端协同同步脚本的安全审计弹窗。
+ * @description 外部导入 JSON 或远端协同同步脚本的安全审计弹窗（纯展示层）。
+ * 审计逻辑本身在 `src/core/scriptAudit.ts`，此处仅做 re-export 保持既有导入路径可用。
  * 凡来自外部文件或远端房间的脚本与外部 HTTP 按钮默认锁死，需人工审阅后显式批准才允许执行。
  */
 import { ShieldAlert, ShieldCheck, X } from 'lucide-react';
-import type { BaseBlueprint } from '../core/types';
-import { validateScriptSafety } from '../core/scriptSandbox';
+import type { ScriptAuditEntry } from '../core/scriptAudit';
 
-export interface ScriptAuditEntry {
-  key: string;
-  nodeId: string;
-  nodeTitle: string;
-  kind: 'unified_script' | 'button_script' | 'proxy_http';
-  preview: string;
-  warning?: string;
-}
-
-export function auditBlueprintScripts(bp: BaseBlueprint): ScriptAuditEntry[] {
-  const entries: ScriptAuditEntry[] = [];
-  for (const node of Object.values(bp.nodes || {})) {
-    if (node.script && node.script.trim()) {
-      const check = validateScriptSafety(node.script);
-      entries.push({
-        key: `${node.id}:__script__`,
-        nodeId: node.id,
-        nodeTitle: node.title,
-        kind: 'unified_script',
-        preview: node.script.trim().slice(0, 180),
-        warning: check.ok ? undefined : check.reason,
-      });
-    }
-    for (const btn of node.buttons ?? []) {
-      if (btn.actionType === 'script' && btn.code?.trim()) {
-        const check = validateScriptSafety(btn.code);
-        entries.push({
-          key: `${node.id}:${btn.id}`,
-          nodeId: node.id,
-          nodeTitle: `${node.title} / ${btn.label}`,
-          kind: 'button_script',
-          preview: btn.code.trim().slice(0, 180),
-          warning: check.ok ? undefined : check.reason,
-        });
-      } else if (btn.actionType === 'proxy_http' && btn.proxyUrl) {
-        entries.push({
-          key: `${node.id}:${btn.id}`,
-          nodeId: node.id,
-          nodeTitle: `${node.title} / ${btn.label}`,
-          kind: 'proxy_http',
-          preview: `${btn.proxyMethod || 'GET'} ${btn.proxyUrl}`,
-        });
-      }
-    }
-  }
-  return entries;
-}
+export { auditBlueprintScripts } from '../core/scriptAudit';
+export type { ScriptAuditEntry } from '../core/scriptAudit';
 
 interface ScriptTrustModalProps {
   open: boolean;

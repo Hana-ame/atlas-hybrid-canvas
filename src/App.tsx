@@ -711,9 +711,7 @@ function HybridCanvasWorkspace() {
       peerOverrides?: Record<string, Partial<PeerWidgetSnapshot>>,
       edgesOverride?: Record<string, BlueprintEdge>
     ) => {
-      // 断环器：自由拓扑下允许存在环，无限递归全靠这里兜底。只靠 depth 会静默截断、
-      // 用户看不到任何反馈，且每层 emit 都会起 Worker（最坏 5 层扇出把池和 CPU 打满），
-      // 因此先按「同一控件在同一轮里被重复触发」直接掐断，再留 depth 作为最后一道保险。
+      // 断环器：自由拓扑下允许存在环，递归超过 5 层（depth > 4）时立即中止并在通知位提示，防止无限递归。
       if (depth > 4) {
         setStatusLog(`事件链已连续传导 5 层，为避免环路无限递归已中止（最后一次触发：${effectiveNodesRef.current[nodeId]?.title ?? nodeId}）`);
         return;

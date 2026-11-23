@@ -140,7 +140,7 @@ export function computeTopologicalOrder(
     }
   }
   const cyclicNodeIds = Array.from(inDegree.entries())
-    .filter(([id, deg]) => deg > 0)
+    .filter(([, deg]) => deg > 0)
     .map(([id]) => id);
   return { ok: cyclicNodeIds.length === 0, order, cyclicNodeIds };
 }
@@ -373,11 +373,10 @@ export async function runInIsolatedWorker(
         },
         checkDag: (fromId, toId) => {
           const adj = Object.create(null);
-          const selfLoops = new Set();
           for (const e of edgeList) {
             if (!adj[e.source]) adj[e.source] = [];
-            // 自环不入邻接表：否则从 f 反向搜「能否回到 f」会命中这条自环边，把任意连线都判成成环
-            if (e.source === e.target) { selfLoops.add(e.source); continue; }
+            // 自环不入邻接表：否则 BFS 会把自环误当成普通出边
+            if (e.source === e.target) continue;
             adj[e.source].push(e.target);
           }
           if (fromId !== undefined && toId !== undefined) {
@@ -410,7 +409,7 @@ export async function runInIsolatedWorker(
           const inDeg = Object.create(null);
           for (const id of Object.keys(peerMap)) inDeg[id] = 0;
           for (const e of edgeList) {
-            if (!(e.source in inDeg)) { inDeg[e.source] = 0; adj[e.source] = []; }
+            if (!(e.source in inDeg)) { inDeg[e.source] = 0; if (!adj[e.source]) adj[e.source] = []; }
             if (!(e.target in inDeg)) { inDeg[e.target] = 0; if (!adj[e.target]) adj[e.target] = []; }
             inDeg[e.target] = (inDeg[e.target] || 0) + 1;
           }
