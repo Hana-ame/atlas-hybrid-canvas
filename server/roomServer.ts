@@ -79,7 +79,8 @@ interface Room {
 // ── 容量上限：全部显式设限，避免无界增长（原 Go 实现缺这一层） ────────────
 const MAX_ROOMS = 64;
 const MAX_MEMBERS_PER_ROOM = 32;
-const MAX_FRAME_BYTES = 4 * 1024 * 1024; // 单帧 4MB，够放下整份 blueprint
+const MAX_FRAME_BYTES = 4 * 1024 * 1024; // 协同房间单帧 4MB，够放下整份 blueprint
+const MAX_RPC_WS_PAYLOAD_BYTES = 72 * 1024 * 1024; // WS RPC 允许承载 50MB PDF base64 编码帧
 const MAX_RECORDS_PER_COLLECTION = 5000; // 每个集合最多 5000 条，超出拒绝写入
 const MAX_STRING_FIELD = 512 * 1024; // 单字段（正文/脚本）上限
 const HEARTBEAT_MS = 30_000;
@@ -178,7 +179,7 @@ export function attachRoomServer(
 ): RoomServerHandle {
   const rooms = new Map<string, Room>();
   const states = new Map<string, RoomState>();
-  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_RPC_WS_PAYLOAD_BYTES });
 
   function send(socket: WebSocket, msg: unknown): boolean {
     if (socket.readyState !== socket.OPEN) return false;
@@ -198,15 +199,12 @@ export function attachRoomServer(
     }
     for (const socket of targets) {
       if (!send(socket, msg)) {
-        // 发送失败即视为死连接，摘掉，避免它继续占着成员位。
-        const m = room.members.get(socket);
-        if (m) {
-          room.members.delete(socket);
-          try {
-            socket.terminate();
-          } catch {
-            /* ignore */
-          }
+        // 发送失败即视为死连接，走 leave 广播 peer_left 并记录空闲时间后再终结连接。
+        leave(room, socket);
+        try {
+          socket.terminate();
+        } catch {
+          /* ignore */
         }
       }
     }
@@ -248,6 +246,10 @@ export function attachRoomServer(
     }
     if (!msg || typeof msg !== 'object' || typeof (msg as { t?: unknown }).t !== 'string') {
       send(socket, { t: 'error', error: '缺少消息类型 t' });
+      return;
+    }
+    if (msg.t !== 'rpc_req' && Buffer.byteLength(raw, 'utf8') > MAX_FRAME_BYTES) {
+      send(socket, { t: 'error', error: '协同消息超过 4MB 单帧上限' });
       return;
     }
 
@@ -439,7 +441,7 @@ export function attachRoomServer(
     for (const room of rooms.values()) {
       for (const member of [...room.members.values()]) {
         if (!member.alive) {
-          room.members.delete(member.socket);
+          leave(room, member.socket);
           try {
             member.socket.terminate();
           } catch {

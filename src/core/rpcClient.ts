@@ -32,6 +32,8 @@ const RECONNECT_MAX_DELAY_MS = 15_000;
 
 export class RpcClient {
   private ws: WebSocket | null = null;
+  private connectingWs: WebSocket | null = null;
+  private abortConnecting: ((msg: string) => void) | null = null;
   private connecting: Promise<WebSocket> | null = null;
   private pending = new Map<string, Pending>();
   private seq = 0;
@@ -39,7 +41,19 @@ export class RpcClient {
   private reconnectDelay = 500;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private readonly url: string) {}
+  private readonly wsUrl: string;
+  constructor(private readonly url: string) {
+    let target = url;
+    try {
+      const u = new URL(url);
+      if (!u.searchParams.get('room')) u.searchParams.set('room', '__rpc__');
+      if (!u.searchParams.get('cid')) u.searchParams.set('cid', `rpc-${Math.random().toString(36).slice(2, 10)}`);
+      target = u.toString();
+    } catch {
+      // keep raw url
+    }
+    this.wsUrl = target;
+  }
 
   /** 复用已建立的连接；没有则建一条。并发调用共享同一次握手。 */
   private ensureOpen(): Promise<WebSocket> {
@@ -48,19 +62,30 @@ export class RpcClient {
     }
     if (this.connecting) return this.connecting;
 
-    this.connecting = new Promise<WebSocket>((resolve, reject) => {
-      let settled = false;
-      const ws = new WebSocket(this.url);
+    let settled = false;
+    const p = new Promise<WebSocket>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
 
       const fail = (msg: string) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        if (timer !== null) clearTimeout(timer);
         this.connecting = null;
+        this.abortConnecting = null;
         reject(new Error(msg));
       };
+      this.abortConnecting = fail;
 
-      const timer = setTimeout(() => {
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(this.wsUrl);
+      } catch (err) {
+        fail(`无法创建 RPC WebSocket：${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      this.connectingWs = ws;
+
+      timer = setTimeout(() => {
         try {
           ws.close();
         } catch {
@@ -70,11 +95,18 @@ export class RpcClient {
       }, CONNECT_TIMEOUT_MS);
 
       ws.onopen = () => {
+        if (this.connectingWs === ws) this.connectingWs = null;
+        if (this.closedByUser) {
+          try { ws.close(); } catch { /* ignore */ }
+          fail('RPC 客户端已关闭');
+          return;
+        }
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        if (timer !== null) clearTimeout(timer);
         this.ws = ws;
         this.connecting = null;
+        this.abortConnecting = null;
         this.reconnectDelay = 500;
         resolve(ws);
       };
@@ -87,19 +119,25 @@ export class RpcClient {
       };
 
       ws.onclose = () => {
-        if (this.ws === ws) this.ws = null;
-        // 所有在途请求立刻失败，而不是让调用方干等到超时。
-        for (const [id, p] of this.pending) {
-          clearTimeout(p.timer);
-          p.reject(new Error('RPC 连接已断开'));
-          this.pending.delete(id);
+        const wasActive = this.ws === ws;
+        const wasConnecting = this.connectingWs === ws;
+        if (wasActive) this.ws = null;
+        if (wasConnecting) this.connectingWs = null;
+        if (!wasActive && !wasConnecting) return;
+        if (wasActive) {
+          // 仅当关闭的是当前活跃连接时才中止在途请求，避免旧连接延迟 onclose 误杀新连接
+          for (const [id, p] of this.pending) {
+            clearTimeout(p.timer);
+            p.reject(new Error('RPC 连接已断开'));
+            this.pending.delete(id);
+          }
         }
         fail(`RPC 连接被关闭：${this.url}`);
         if (!this.closedByUser) this.scheduleReconnect();
       };
     });
-
-    return this.connecting;
+    if (!settled) this.connecting = p;
+    return p;
   }
 
   private scheduleReconnect(): void {
@@ -182,8 +220,18 @@ export class RpcClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    this.ws?.close();
+    const cws = this.connectingWs;
+    this.connectingWs = null;
+    this.abortConnecting?.('RPC 客户端已关闭');
+    try { cws?.close(); } catch { /* ignore */ }
+    const aws = this.ws;
     this.ws = null;
+    try { aws?.close(); } catch { /* ignore */ }
+    for (const [id, p] of this.pending) {
+      clearTimeout(p.timer);
+      p.reject(new Error('RPC 客户端已关闭'));
+      this.pending.delete(id);
+    }
   }
 }
 

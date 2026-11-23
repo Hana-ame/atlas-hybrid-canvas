@@ -20,6 +20,8 @@ import {
   pickPdfRenderDpi,
 } from '../core/pdfHelper';
 import {
+  disposeClientPdfDoc,
+  hasClientPdfDoc,
   renderClientPdfPageImage,
   unpackPdfBytesInBrowser,
 } from '../core/pdfClientUnpack';
@@ -100,7 +102,11 @@ function PdfViewerBlockInner({
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
-  const [clientDocId, setClientDocId] = useState<string | null>(null);
+  const restoredClientId =
+    url.startsWith('client-pdf://') && hasClientPdfDoc(url.slice('client-pdf://'.length))
+      ? url.slice('client-pdf://'.length)
+      : null;
+  const [clientDocId, setClientDocId] = useState<string | null>(restoredClientId);
   const [clientPageImg, setClientPageImg] = useState<string | null>(null);
   const [displayedServerSrc, setDisplayedServerSrc] = useState<string | null>(null);
 
@@ -108,6 +114,44 @@ function PdfViewerBlockInner({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const preloadedSetRef = useRef<Set<string>>(new Set());
   const autoUnpackedUrlRef = useRef<string>('');
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // 外部重置 url（例如点击卡片「还原」）时同步解锁并清理缓存态
+  useEffect(() => {
+    const trimmed = url.trim();
+    if (!trimmed) {
+      setClientDocId(null);
+      setClientPageImg(null);
+      setDisplayedServerSrc(null);
+      setUrlDraft('');
+      setErrorMsg('');
+      autoUnpackedUrlRef.current = '';
+      return;
+    }
+    if (trimmed.startsWith('client-pdf://')) {
+      const id = trimmed.slice('client-pdf://'.length);
+      if (hasClientPdfDoc(id)) {
+        setClientDocId(id);
+      } else {
+        setClientDocId(null);
+        setClientPageImg(null);
+      }
+    } else {
+      setClientDocId(null);
+      setClientPageImg(null);
+      if (!isUnpackedPdfTemplate(trimmed)) {
+        setDisplayedServerSrc(null);
+        setUrlDraft(trimmed);
+      }
+    }
+  }, [url]);
 
   const isLocked = isServerLocked || Boolean(clientDocId);
 
@@ -276,7 +320,12 @@ function PdfViewerBlockInner({
         }
         const bytes = new Uint8Array(await directResp.arrayBuffer());
         const unpacked = await unpackPdfBytesInBrowser(bytes);
+        if (!mountedRef.current) {
+          disposeClientPdfDoc(unpacked.clientDocId);
+          return;
+        }
         setClientDocId(unpacked.clientDocId);
+        onChangeUrl(`client-pdf://${unpacked.clientDocId}`);
         onChangeTotalPages?.(unpacked.totalPages);
         onChangePage(1);
       } catch {
@@ -344,7 +393,12 @@ function PdfViewerBlockInner({
 
       const bytes = new Uint8Array(await file.arrayBuffer());
       const unpacked = await unpackPdfBytesInBrowser(bytes);
+      if (!mountedRef.current) {
+        disposeClientPdfDoc(unpacked.clientDocId);
+        return;
+      }
       setClientDocId(unpacked.clientDocId);
+      onChangeUrl(`client-pdf://${unpacked.clientDocId}`);
       onChangeTotalPages?.(unpacked.totalPages);
       onChangePage(1);
     } catch (err) {

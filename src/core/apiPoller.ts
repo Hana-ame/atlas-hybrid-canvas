@@ -58,6 +58,8 @@ export function extractJsonPath(data: unknown, rawPath: string): unknown {
   const path = rawPath.trim();
   if (!path) return data;
 
+  // 严格词法校验：仅允许由点号或 [非负整数] 连接的合法段，拒绝未闭合括号、空段及非数字下标
+  if (!/^(?:[^.[\]]+|\[\d+\])(?:\.[^.[\]]+|\[\d+\])*$/.test(path)) return undefined;
   const segments: Array<string | number> = [];
   const tokenRe = /[^.[\]]+|\[(\d+)\]/g;
   let match: RegExpExecArray | null;
@@ -71,7 +73,7 @@ export function extractJsonPath(data: unknown, rawPath: string): unknown {
       segments.push(seg);
     }
   }
-  if (segments.length === 0) return data;
+  if (segments.length === 0) return undefined;
 
   let cur: unknown = data;
   for (const seg of segments) {

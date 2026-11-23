@@ -79,7 +79,8 @@ export class ChunkTileCache {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, pixelSize, pixelSize);
       ctx.save();
-      ctx.scale(scale, scale);
+      const actualScale = pixelSize / chunkSize;
+      ctx.scale(actualScale, actualScale);
       ctx.translate(-chunk.bounds.minX, -chunk.bounds.minY);
       drawFn(ctx);
       ctx.restore();

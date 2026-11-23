@@ -26,6 +26,39 @@ export const PROXY_ALLOWED_METHODS: ReadonlySet<string> = new Set([
 export const PROXY_MAX_RESPONSE_CHARS = 256 * 1024;
 export const PROXY_DEFAULT_TIMEOUT_MS = 10_000;
 
+
+function bigIntToIpv4(n: bigint): string {
+  return `${(n >> 24n) & 0xffn}.${(n >> 16n) & 0xffn}.${(n >> 8n) & 0xffn}.${n & 0xffn}`;
+}
+
+function parseIpv6ToBigInt(raw: string): bigint | null {
+  const noZone = raw.split('%')[0];
+  let work = noZone;
+  const lastColon = work.lastIndexOf(':');
+  if (lastColon !== -1 && work.slice(lastColon + 1).includes('.')) {
+    const octets = parseIpv4Octets(work.slice(lastColon + 1));
+    if (!octets) return null;
+    const hi = ((octets[0] << 8) | octets[1]).toString(16);
+    const lo = ((octets[2] << 8) | octets[3]).toString(16);
+    work = `${work.slice(0, lastColon)}:${hi}:${lo}`;
+  }
+  const halves = work.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const missing = 8 - (left.length + right.length);
+  if (halves.length === 1 && missing !== 0) return null;
+  if (halves.length === 2 && missing < 0) return null;
+  const groups = halves.length === 2 ? [...left, ...Array(missing).fill('0'), ...right] : left;
+  if (groups.length !== 8) return null;
+  let val = 0n;
+  for (const g of groups) {
+    if (!/^[0-9a-f]{1,4}$/i.test(g)) return null;
+    val = (val << 16n) | BigInt(parseInt(g, 16));
+  }
+  return val;
+}
+
 function parseIpv4Octets(ip: string): number[] | null {
   const parts = ip.split('.');
   if (parts.length !== 4) return null;
@@ -67,28 +100,30 @@ export function isPrivateOrReservedIP(rawIp: string): boolean {
   }
 
   if (version === 6) {
-    if (ip === '::' || ip === '::1') return true;
-    // IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1 or ::ffff:169.254.169.254)
-    if (ip.startsWith('::ffff:')) {
-      const mapped = ip.slice('::ffff:'.length);
-      if (net.isIP(mapped) === 4) {
-        return isPrivateOrReservedIP(mapped);
-      }
-      return true;
+    const v6 = parseIpv6ToBigInt(ip);
+    if (v6 === null) return true;
+    // ::/128 (unspecified) & ::1/128 (loopback)
+    if (v6 === 0n || v6 === 1n) return true;
+    // ::ffff:0:0/96 (IPv4-mapped) & ::/96 (IPv4-compatible)
+    if ((v6 >> 32n) === 0xffffn || (v6 >> 32n) === 0n) {
+      const v4 = bigIntToIpv4(v6 & 0xffffffffn);
+      return isPrivateOrReservedIP(v4);
     }
-    const firstHextet = ip.split(':')[0] || '';
-    // fc00::/7 unique local, fe80::/10 link-local, ff00::/8 multicast
-    if (
-      firstHextet.startsWith('fc') ||
-      firstHextet.startsWith('fd') ||
-      firstHextet.startsWith('fe8') ||
-      firstHextet.startsWith('fe9') ||
-      firstHextet.startsWith('fea') ||
-      firstHextet.startsWith('feb') ||
-      firstHextet.startsWith('ff')
-    ) {
-      return true;
+    // 64:ff9b::/96 (NAT64 well-known prefix)
+    if ((v6 >> 32n) === 0x0064ff9b0000000000000000n) {
+      return isPrivateOrReservedIP(bigIntToIpv4(v6 & 0xffffffffn));
     }
+    // 2002::/16 (6to4 embedding IPv4 in bits 16..47)
+    if ((v6 >> 112n) === 0x2002n) {
+      return isPrivateOrReservedIP(bigIntToIpv4((v6 >> 80n) & 0xffffffffn));
+    }
+    // 100::/64 (Discard-Only)
+    if ((v6 >> 64n) === 0x0100000000000000n) return true;
+    // fc00::/7 (Unique local), fe80::/10 (Link-local), ff00::/8 (Multicast)
+    const top16 = Number(v6 >> 112n);
+    if ((top16 & 0xfe00) === 0xfc00) return true;
+    if ((top16 & 0xffc0) === 0xfe80) return true;
+    if ((top16 & 0xff00) === 0xff00) return true;
     return false;
   }
 
@@ -283,6 +318,7 @@ export async function readResponseBufferWithLimit(
   const declared = Number(response.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > maxBytes) {
     controller?.abort();
+    await response.body?.cancel().catch(() => {});
     return { ok: false, tooLarge: true };
   }
 

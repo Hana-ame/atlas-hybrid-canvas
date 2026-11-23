@@ -7,6 +7,7 @@
 
 import { useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
 import {
+  cancelPendingLocalOverlaySave,
   flushLocalOverlaySave,
   scheduleSaveLocalOverlay,
   subscribeCrossTabOverlay,
@@ -25,14 +26,21 @@ export function useOverlaySync(
   overlay: LocalOverlayState,
   isReady: boolean,
   setOverlay: Dispatch<SetStateAction<LocalOverlayState>>,
-  onRemoteNotice?: (msg: string) => void
+  onRemoteNotice?: (msg: string) => void,
+  onRemoteApplied?: () => void
 ) {
   const lastSyncedFingerprintRef = useRef<string>('');
+  const hydratedInitRef = useRef(false);
 
-  // 防抖落盘（300ms 合并高频输入/勾选），仅当内容与最新已同步指纹不同才写盘与广播
+  // 防抖落盘（300ms 合并高频输入/勾选），首次水合仅建立指纹基线，绝不向其他页签广播旧快照
   useEffect(() => {
     if (!isReady) return;
     const fp = fingerprintOverlay(overlay);
+    if (!hydratedInitRef.current) {
+      hydratedInitRef.current = true;
+      lastSyncedFingerprintRef.current = fp;
+      return;
+    }
     if (fp && fp === lastSyncedFingerprintRef.current) {
       return;
     }
@@ -57,9 +65,11 @@ export function useOverlaySync(
     return subscribeCrossTabOverlay((remoteOverlay) => {
       const fp = fingerprintOverlay(remoteOverlay);
       if (fp && fp === lastSyncedFingerprintRef.current) return;
+      cancelPendingLocalOverlaySave();
       lastSyncedFingerprintRef.current = fp;
       setOverlay(remoteOverlay);
+      onRemoteApplied?.();
       onRemoteNotice?.('已自动同步同一浏览器其他标签页的本地修改');
     });
-  }, [isReady, setOverlay, onRemoteNotice]);
+  }, [isReady, setOverlay, onRemoteNotice, onRemoteApplied]);
 }

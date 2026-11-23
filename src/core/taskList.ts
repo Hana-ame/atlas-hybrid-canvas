@@ -21,7 +21,8 @@ const TASK_LINE_RE = /^(\s*)([-*+]\s*)\[([ xX]?)\](\s*)(.*)$/;
  * 解析单行文本是否为待办复选框语法。
  */
 export function parseTaskLine(line: string): ParsedTaskLine | null {
-  const m = TASK_LINE_RE.exec(line);
+  const clean = line.endsWith('\r') ? line.slice(0, -1) : line;
+  const m = TASK_LINE_RE.exec(clean);
   if (!m) return null;
   return {
     indent: m[1],
@@ -37,11 +38,14 @@ export function parseTaskLine(line: string): ParsedTaskLine | null {
 export function toggleTaskLine(text: string, lineIndex: number): string {
   const lines = text.split('\n');
   if (lineIndex < 0 || lineIndex >= lines.length) return text;
-  const m = TASK_LINE_RE.exec(lines[lineIndex]);
+  const rawLine = lines[lineIndex];
+  const hasCr = rawLine.endsWith('\r');
+  const clean = hasCr ? rawLine.slice(0, -1) : rawLine;
+  const m = TASK_LINE_RE.exec(clean);
   if (!m) return text;
   const nextMark = m[3].toLowerCase() === 'x' ? ' ' : 'x';
   const gap = m[4] || (m[5] ? ' ' : '');
-  lines[lineIndex] = `${m[1]}${m[2]}[${nextMark}]${gap}${m[5]}`;
+  lines[lineIndex] = `${m[1]}${m[2]}[${nextMark}]${gap}${m[5]}${hasCr ? '\r' : ''}`;
   return lines.join('\n');
 }
 

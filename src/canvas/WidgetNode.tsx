@@ -333,8 +333,7 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
       } ${selected ? 'ring-2 ring-blue-500/40' : ''}`}
       style={{
         width: displayWidth,
-        height: isImmersivePdf || liveSize ? displayHeight : undefined,
-        minHeight: displayHeight,
+        height: displayHeight,
         borderColor: entity.color,
         borderTopWidth: 4,
       }}
@@ -427,8 +426,8 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
           )}
         </div>
 
-        {/* 平时右上角只固定留一个 Lock 按钮；hover 时其余操作在 Lock 左侧浮现，0 位移不挤标题 */}
-        <div className="nodrag nopan relative flex shrink-0 items-center">
+        {/* 平时右上角只固定留一个 Lock 按钮；z-[25] 高于缩放角点热区(z-20)避免选中态遮挡锁按钮 */}
+        <div className="nodrag nopan relative z-[25] flex shrink-0 items-center">
           <div
             className={`absolute right-6 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 bg-gradient-to-r from-transparent via-white via-20% to-white pl-3 pr-0.5 transition-opacity ${
               selected
@@ -509,7 +508,7 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
         className={
           isImmersivePdf
             ? 'flex min-h-0 flex-1 flex-col overflow-hidden rounded-b-lg'
-            : 'nowheel flex max-h-[560px] flex-1 flex-col gap-2 overflow-y-auto px-3 py-2.5'
+            : 'nowheel flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-2.5'
         }
       >
         {hasScriptContents ? (

@@ -13,6 +13,8 @@ export interface ScriptAuditEntry {
   nodeTitle: string;
   kind: 'unified_script' | 'button_script' | 'proxy_http';
   preview: string;
+  fullCode?: string;
+  truncated?: boolean;
   warning?: string;
 }
 
@@ -21,24 +23,30 @@ export function auditBlueprintScripts(bp: BaseBlueprint): ScriptAuditEntry[] {
   for (const node of Object.values(bp.nodes || {})) {
     if (node.script && node.script.trim()) {
       const check = validateScriptSafety(node.script);
+      const trimmed = node.script.trim();
       entries.push({
         key: `${node.id}:__script__`,
         nodeId: node.id,
         nodeTitle: node.title,
         kind: 'unified_script',
-        preview: node.script.trim().slice(0, 180),
+        preview: trimmed.length > 180 ? `${trimmed.slice(0, 180)}…` : trimmed,
+        fullCode: trimmed,
+        truncated: trimmed.length > 180,
         warning: check.ok ? undefined : check.reason,
       });
     }
     for (const btn of node.buttons ?? []) {
       if (btn.actionType === 'script' && btn.code?.trim()) {
         const check = validateScriptSafety(btn.code);
+        const trimmed = btn.code.trim();
         entries.push({
           key: `${node.id}:${btn.id}`,
           nodeId: node.id,
           nodeTitle: `${node.title} / ${btn.label}`,
           kind: 'button_script',
-          preview: btn.code.trim().slice(0, 180),
+          preview: trimmed.length > 180 ? `${trimmed.slice(0, 180)}…` : trimmed,
+          fullCode: trimmed,
+          truncated: trimmed.length > 180,
           warning: check.ok ? undefined : check.reason,
         });
       } else if (btn.actionType === 'proxy_http' && btn.proxyUrl) {

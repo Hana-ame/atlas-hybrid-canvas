@@ -51,11 +51,13 @@ export class CollaborativeRoomClient {
       this.ws = ws;
 
       ws.onopen = () => {
+        if (this.ws !== ws) return;
         this.onStatus('connected', `已加入房间 ${roomName}`);
         this.send({ t: 'hello', room: roomName, cid: this.cid });
       };
 
       ws.onmessage = (ev) => {
+        if (this.ws !== ws) return;
         try {
           const msg = JSON.parse(String(ev.data)) as RoomWireMessage;
           if (msg && typeof msg === 'object' && typeof msg.t === 'string') {
@@ -67,6 +69,7 @@ export class CollaborativeRoomClient {
       };
 
       ws.onerror = () => {
+        if (this.ws !== ws) return;
         this.onStatus('error', 'WebSocket 房间连接失败（请确认协同房间服务已启动）');
       };
 

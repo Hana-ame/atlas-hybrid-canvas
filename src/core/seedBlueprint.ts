@@ -355,7 +355,7 @@ on('toggleSize', () => {
   vars.height = nextExp ? 270 : 205;
 });
 on('nudgeRight', () => {
-  vars.pos = { x: (ctx.entity.x || 960) + 80, y: ctx.entity.y || 1005 };
+  vars.pos = { x: (ctx.entity.x ?? 960) + 80, y: ctx.entity.y ?? 1005 };
 });
 on('resetAll', () => {
   vars.modeIdx = 0;

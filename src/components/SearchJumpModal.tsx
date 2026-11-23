@@ -4,7 +4,7 @@
  * - 支持按标题、正文、分类、ID 模糊搜索全部控件与背景注释并一键飞跃；
  * - 支持直接输入 Chunk 坐标如 `1,-1` 或 `0,0@0.85` 精确跳转。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Compass, Search, X } from 'lucide-react';
 import type { CanvasAnnotation, EffectiveBlueprintNode } from '../core/types';
 
@@ -24,6 +24,10 @@ export function SearchJumpModal({
   onJumpToPoint,
 }: SearchJumpModalProps) {
   const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    if (open) setQuery('');
+  }, [open]);
 
   const parsedChunk = useMemo(() => {
     const m = query.trim().match(/^(-?\d+)\s*[,，\s]\s*(-?\d+)(?:\s*@\s*(\d+(?:\.\d+)?))?$/);
@@ -50,10 +54,12 @@ export function SearchJumpModal({
     }> = [];
 
     for (const n of Object.values(nodes)) {
+      const title = n.title ?? '';
+      const body = n.body ?? '';
       if (
         !q ||
-        n.title.toLowerCase().includes(q) ||
-        n.body.toLowerCase().includes(q) ||
+        title.toLowerCase().includes(q) ||
+        body.toLowerCase().includes(q) ||
         (n.category || '').toLowerCase().includes(q) ||
         n.id.toLowerCase().includes(q)
       ) {
@@ -72,11 +78,12 @@ export function SearchJumpModal({
     }
 
     for (const a of Object.values(annotations)) {
-      if (!q || a.text.toLowerCase().includes(q) || a.id.toLowerCase().includes(q)) {
+      const text = a.text ?? '';
+      if (!q || text.toLowerCase().includes(q) || a.id.toLowerCase().includes(q)) {
         out.push({
           id: a.id,
           kind: 'annotation',
-          title: a.text.split('\n')[0] || (a.kind === 'image' ? '背景插图' : '背景注释'),
+          title: text.split('\n')[0] || (a.kind === 'image' ? '背景插图' : '背景注释'),
           subtitle: `${a.kind === 'image' ? '背景插图' : '背景注释'} · Chunk (${Math.floor(a.x / 512)}, ${Math.floor(a.y / 512)})`,
           color: a.color || '#0F766E',
           cx: Math.floor(a.x / 512),

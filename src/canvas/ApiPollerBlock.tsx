@@ -172,11 +172,10 @@ function ApiPollerBlockInner({
           });
           if (!mountedRef.current || mySeq !== seqRef.current) return false;
           statusText = `HTTP ${resp.status}`;
-          const ct = (resp.headers.get('content-type') || '').toLowerCase();
-          if (ct.includes('application/json')) {
-            payload = await resp.json().catch(async () => resp.text());
+          const rawText = await resp.text();
+          if (!rawText) {
+            payload = '';
           } else {
-            const rawText = await resp.text();
             try {
               payload = JSON.parse(rawText);
             } catch {
@@ -227,6 +226,12 @@ function ApiPollerBlockInner({
 
   const executePollOnceRef = useRef(executePollOnce);
   executePollOnceRef.current = executePollOnce;
+
+  // 变更目标配置或开关轮询时重置连续失败退避计数，避免旧目标的退避时间沿用到新目标
+  useEffect(() => {
+    consecutiveErrRef.current = 0;
+    setConsecutiveErrors(0);
+  }, [url, safeMethod, useProxy, enabled]);
 
   // 串行链式定时轮询（不会出现 setInterval 堆积重叠，且不受父组件内联回调引用变化干扰）
   useEffect(() => {
@@ -311,8 +316,12 @@ function ApiPollerBlockInner({
             e.stopPropagation();
             if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
               e.preventDefault();
-              commitUrl();
-              void executePollOnce(urlDraft);
+              const nextTrimmed = e.currentTarget.value.trim();
+              const changed = nextTrimmed !== url.trim();
+              commitUrl(nextTrimmed);
+              if (!enabled || !changed) {
+                void executePollOnce(nextTrimmed);
+              }
             }
           }}
           className="nodrag nopan nowheel min-w-0 flex-1 cursor-text select-text rounded border border-slate-300 bg-white px-2 py-1 font-mono text-[11px] text-slate-900 outline-none focus:border-blue-500"
@@ -338,9 +347,9 @@ function ApiPollerBlockInner({
             onBlur={(e) => commitInterval(e.currentTarget.value)}
             onKeyDown={(e) => {
               e.stopPropagation();
-              if (e.key === 'Enter') {
+              if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
                 e.preventDefault();
-                commitInterval();
+                commitInterval(e.currentTarget.value);
               }
             }}
             className="nodrag nopan nowheel w-12 cursor-text select-text rounded border border-slate-300 bg-white px-1 py-0.5 text-center font-mono text-[11px] text-slate-900 outline-none focus:border-blue-500"
@@ -358,10 +367,15 @@ function ApiPollerBlockInner({
           onBlur={(e) => onChangeJsonPath(e.currentTarget.value.trim())}
           onKeyDown={(e) => {
             e.stopPropagation();
-            if (e.key === 'Enter') {
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
               e.preventDefault();
-              onChangeJsonPath(pathDraft.trim());
-              void executePollOnce();
+              const nextPath = e.currentTarget.value.trim();
+              const changed = nextPath !== jsonPath.trim();
+              pathDraftRef.current = nextPath;
+              onChangeJsonPath(nextPath);
+              if (!enabled || !changed) {
+                void executePollOnce();
+              }
             }
           }}
           className="nodrag nopan nowheel min-w-0 flex-1 cursor-text select-text rounded border border-slate-300 bg-white px-2 py-0.5 font-mono text-[11px] text-slate-800 outline-none focus:border-blue-500"
@@ -411,6 +425,7 @@ function ApiPollerBlockInner({
             onClick={(e) => {
               e.stopPropagation();
               commitUrl();
+              onChangeJsonPath(pathDraft.trim());
               void executePollOnce(urlDraft);
             }}
             className="inline-flex cursor-pointer items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
@@ -421,16 +436,18 @@ function ApiPollerBlockInner({
         </div>
 
         <div className="inline-flex items-center gap-1 text-[10.5px] text-slate-500">
-          <Activity className={`h-3 w-3 ${enabled && mediaActive && pageVisible ? 'text-emerald-500' : 'text-slate-400'}`} />
+          <Activity className={`h-3 w-3 ${enabled && mediaActive && pageVisible && isSafePollUrl(url) ? 'text-emerald-500' : 'text-slate-400'}`} />
           <span>
             {!mediaActive
               ? '离屏暂停'
               : !pageVisible
                 ? '后台暂停'
                 : enabled
-                  ? consecutiveErrors > 0
-                    ? `退避 ${nextDelaySec}s`
-                    : `每 ${safeInterval}s`
+                  ? !isSafePollUrl(url)
+                    ? 'URL 无效'
+                    : consecutiveErrors > 0
+                      ? `退避 ${nextDelaySec}s`
+                      : `每 ${safeInterval}s`
                   : '已暂停'}
           </span>
         </div>

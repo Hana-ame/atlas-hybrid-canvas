@@ -111,6 +111,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
 
   useEffect(() => {
     let pendingRaf = 0;
+    let disposed = false;
     let lastTx = NaN;
     let lastTy = NaN;
     let lastZoom = NaN;
@@ -120,16 +121,55 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
       const cache = imgCacheRef.current;
       let img = cache.get(url);
       if (!img) {
+        if (cache.size >= 64) {
+          const oldest = cache.keys().next().value;
+          if (oldest !== undefined) cache.delete(oldest);
+        }
         img = new Image();
         img.crossOrigin = 'anonymous';
         img.onload = () => {
+          if (disposed) return;
           propsRef.current.tileCache.clear();
           draw(true);
+        };
+        img.onerror = () => {
+          cache.delete(url);
         };
         img.src = url;
         cache.set(url, img);
       }
       return img.complete && img.naturalWidth > 0 ? img : null;
+    };
+
+    const bakeMacroChunk = (
+      bctx: CanvasRenderingContext2D,
+      chunk: ReturnType<ChunkManager['queryVisibleChunks']>[number],
+      cur: ChunkUnderlayCanvasProps
+    ) => {
+      // macro 全景视图下上层 DOM 已全部卸载，注释背景块与插图必须始终烘焙进瓦片
+      for (const annId of chunk.annotationIds) {
+        const ann = cur.annotations[annId];
+        if (!ann) continue;
+        if (ann.kind === 'text') {
+          const fill = hexToRgba(ann.bgColor, ann.bgOpacity ?? 0.85);
+          if (fill) {
+            bctx.fillStyle = fill;
+            drawRoundedRect(bctx, ann.x, ann.y, ann.width, ann.height || 56, 8);
+            bctx.fill();
+          }
+        } else {
+          drawAnnotation(bctx, ann);
+        }
+      }
+      for (const nodeId of chunk.nodeIds) {
+        const n = cur.nodes[nodeId];
+        if (!n) continue;
+        bctx.fillStyle = `${n.color}26`;
+        bctx.strokeStyle = n.color;
+        bctx.lineWidth = 3;
+        bctx.fillRect(n.x, n.y, n.width, n.height);
+        bctx.strokeRect(n.x, n.y, n.width, n.height);
+      }
     };
 
     const drawAnnotation = (bctx: CanvasRenderingContext2D, ann: CanvasAnnotation) => {
@@ -182,45 +222,32 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
       idleHandle = null;
     };
 
-    const scheduleIdleTilePrefetch = (worldBounds: { minX: number; minY: number; maxX: number; maxY: number }, scale: number) => {
-      // draw() 在平移/拖拽时几乎每帧都会跑到这里（store.subscribe + RAF 自递归）。
-      // 若每次都 cancel 再重排，idle 回调永远等不到执行窗口，预取形同虚设。
-      // 因此只在「当前没有待执行的预取」时排程；已在排队就让它跑完。
+    const scheduleIdleTilePrefetch = (_worldBounds: { minX: number; minY: number; maxX: number; maxY: number }, scale: number) => {
       if (idleHandle !== null) return;
-      const p = propsRef.current;
-      const cs = p.chunkManager.chunkSize;
-      const prefetchBounds = {
-        minX: worldBounds.minX - cs,
-        minY: worldBounds.minY - cs,
-        maxX: worldBounds.maxX + cs,
-        maxY: worldBounds.maxY + cs,
-      };
       const runPrefetch = () => {
         idleHandle = null;
+        if (disposed) return;
         const cur = propsRef.current;
-        // 用当前视口重算，避免排程时的旧 bounds 在平移后烘焙到错误区域
-        const ringChunks = cur.chunkManager.queryVisibleChunks(prefetchBounds);
+        if (cur.lod !== 'macro') return;
+        const canvas = canvasRef.current;
+        const parent = canvas?.parentElement;
+        if (!parent || parent.clientWidth <= 0 || parent.clientHeight <= 0) return;
+        const [tx, ty, zoom] = store.getState().transform;
+        const cs = cur.chunkManager.chunkSize;
+        const livePrefetchBounds = {
+          minX: -tx / zoom - 64 - cs,
+          minY: -ty / zoom - 64 - cs,
+          maxX: (parent.clientWidth - tx) / zoom + 64 + cs,
+          maxY: (parent.clientHeight - ty) / zoom + 64 + cs,
+        };
+        const ringChunks = cur.chunkManager.queryVisibleChunks(livePrefetchBounds);
         let bakedCount = 0;
         for (const chunk of ringChunks) {
           if (bakedCount >= 2) break;
-          const cached = cur.tileCache.get(chunk, cur.lod, scale);
+          if (chunk.nodeIds.size === 0 && chunk.annotationIds.size === 0) continue;
+          const cached = cur.tileCache.get(chunk, 'macro', scale);
           if (cached) continue;
-          cur.tileCache.bake(chunk, cur.chunkManager.chunkSize, cur.lod, scale, (bctx) => {
-            for (const aid of chunk.annotationIds) {
-              const ann = cur.annotations[aid];
-              if (ann) drawAnnotation(bctx, ann);
-            }
-            if (cur.lod === 'macro') {
-              for (const nid of chunk.nodeIds) {
-                const n = cur.nodes[nid];
-                if (!n) continue;
-                bctx.fillStyle = n.color;
-                bctx.globalAlpha = 0.86;
-                bctx.fillRect(n.x, n.y, n.width, n.height);
-                bctx.globalAlpha = 1;
-              }
-            }
-          });
+          cur.tileCache.bake(chunk, cs, 'macro', scale, (bctx) => bakeMacroChunk(bctx, chunk, cur));
           cur.chunkManager.markClean(chunk.key);
           bakedCount += 1;
         }
@@ -335,34 +362,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
               (bakesThisFrame === 0 || performance.now() - bakeStart < MAX_BAKE_MS);
 
             if (withinBudget) {
-              tile = p.tileCache.bake(chunk, cs, p.lod, tileScale, (bctx) => {
-                if (!p.annotationEditMode) {
-                  for (const annId of chunk.annotationIds) {
-                    const ann = p.annotations[annId];
-                    if (!ann) continue;
-                    if (ann.kind === 'text') {
-                      const fill = hexToRgba(ann.bgColor, ann.bgOpacity ?? 0.85);
-                      if (fill) {
-                        bctx.fillStyle = fill;
-                        drawRoundedRect(bctx, ann.x, ann.y, ann.width, ann.height || 56, 8);
-                        bctx.fill();
-                      }
-                    } else {
-                      drawAnnotation(bctx, ann);
-                    }
-                  }
-                }
-
-                for (const nodeId of chunk.nodeIds) {
-                  const n = p.nodes[nodeId];
-                  if (!n) continue;
-                  bctx.fillStyle = `${n.color}26`;
-                  bctx.strokeStyle = n.color;
-                  bctx.lineWidth = 3;
-                  bctx.fillRect(n.x, n.y, n.width, n.height);
-                  bctx.strokeRect(n.x, n.y, n.width, n.height);
-                }
-              });
+              tile = p.tileCache.bake(chunk, cs, p.lod, tileScale, (bctx) => bakeMacroChunk(bctx, chunk, p));
               p.chunkManager.markClean(chunk.key);
               bakesThisFrame++;
             } else {
@@ -506,6 +506,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
     draw(true);
 
     return () => {
+      disposed = true;
       unsubscribe();
       window.removeEventListener('resize', onResize);
       cancelIdlePrefetch();

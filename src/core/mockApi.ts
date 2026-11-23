@@ -68,18 +68,25 @@ const browserStore: BlueprintStore = {
  * 写个判断只会是自我安慰。真正的 SSRF 防护只能在服务端做——这也是为什么
  * 配了 VITE_BACKEND_WS_URL 时要把请求交给服务端。
  */
+let rawWindowFetch: typeof window.fetch | null = null;
+
 const browserFetcher: HttpFetcher = {
   async fetch(url, init) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10_000);
+    const doFetch = rawWindowFetch ?? fetch;
     try {
-      const res = await fetch(url, {
+      const res = await doFetch(url, {
         method: init.method,
         headers: init.headers,
         body: init.body ? new Uint8Array(init.body) : undefined,
         redirect: 'manual',
         signal: controller.signal,
       });
+      // 浏览器 redirect:'manual' 遇到 3xx 返回 opaqueredirect (status === 0)，映射为 302 由 apiCore 统一拦截
+      if (res.type === 'opaqueredirect' || res.status === 0) {
+        return { status: 302, headers: {}, body: new Uint8Array(0) };
+      }
       const buf = new Uint8Array(await res.arrayBuffer());
       const headers: Record<string, string> = {};
       res.headers.forEach((v, k) => {
@@ -201,6 +208,7 @@ async function toApiRequest(req: Request, url: URL): Promise<ApiRequest> {
  */
 export function installMockApi(): void {
   const originalFetch = window.fetch.bind(window);
+  rawWindowFetch = originalFetch;
   const hasRemote = RPC_WS_URL !== null;
 
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -218,15 +226,23 @@ export function installMockApi(): void {
       url = new URL(typeof input === 'string' ? input : input.toString(), baseHref);
     }
 
-    if (!url.pathname.startsWith('/api/')) {
+    const baseOrigin = new URL(baseHref).origin;
+    if (url.origin !== baseOrigin || !url.pathname.startsWith('/api/')) {
       return originalFetch(input as RequestInfo, init);
     }
 
     const method = (init?.method ?? req?.method ?? 'GET').toUpperCase();
+    let reqBody: BodyInit | undefined = init?.body ?? undefined;
+    if (method === 'GET' || method === 'HEAD') {
+      reqBody = undefined;
+    } else if (reqBody === undefined && req) {
+      const buf = await req.clone().arrayBuffer();
+      if (buf.byteLength > 0) reqBody = buf;
+    }
     const merged: RequestInit = {
       method,
       headers: init?.headers ?? req?.headers,
-      body: init?.body ?? (req ? await req.clone().text() : undefined),
+      ...(reqBody !== undefined ? { body: reqBody } : {}),
     };
     const syntheticReq = new Request(url.toString(), merged);
 

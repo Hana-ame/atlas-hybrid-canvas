@@ -65,12 +65,12 @@ export function findNonOverlappingPosition(
   const anchorCandidates: Array<{ x: number; y: number }> = [];
   for (const b of blockers) {
     anchorCandidates.push(
-      { x: Math.round(b.x + b.width + gap), y: startY },
-      { x: startX, y: Math.round(b.y + b.height + gap) },
-      { x: Math.round(b.x + b.width + gap), y: Math.round(b.y) },
-      { x: Math.round(b.x), y: Math.round(b.y + b.height + gap) },
-      { x: Math.round(b.x - width - gap), y: startY },
-      { x: startX, y: Math.round(b.y - height - gap) }
+      { x: Math.ceil(b.x + b.width + gap), y: startY },
+      { x: startX, y: Math.ceil(b.y + b.height + gap) },
+      { x: Math.ceil(b.x + b.width + gap), y: Math.round(b.y) },
+      { x: Math.round(b.x), y: Math.ceil(b.y + b.height + gap) },
+      { x: Math.floor(b.x - width - gap), y: startY },
+      { x: startX, y: Math.floor(b.y - height - gap) }
     );
   }
 
@@ -119,7 +119,7 @@ export function findNonOverlappingPosition(
   // 极端密集兜底：放到最右侧障碍物之外
   let maxRight = startX;
   for (const b of existing) {
-    if (b.x + b.width + gap > maxRight) maxRight = Math.round(b.x + b.width + gap);
+    if (b.x + b.width + gap > maxRight) maxRight = Math.ceil(b.x + b.width + gap);
   }
   return { x: maxRight, y: startY };
 }

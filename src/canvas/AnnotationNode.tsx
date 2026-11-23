@@ -48,7 +48,8 @@ function AnnotationNodeInner({ data, selected }: NodeProps) {
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    e.target.value = '';
+    if (!file || file.size > 20 * 1024 * 1024) return;
     const reader = new FileReader();
     reader.onload = () => {
       const rawUrl = typeof reader.result === 'string' ? reader.result : '';

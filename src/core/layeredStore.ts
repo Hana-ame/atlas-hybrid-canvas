@@ -106,6 +106,15 @@ export function scheduleSaveLocalOverlay(overlay: LocalOverlayState, delayMs = 3
   }, delayMs);
 }
 
+/** 收到同浏览器其他标签页的新快照时取消尚未落盘的旧防抖写盘，防止反写覆盖 */
+export function cancelPendingLocalOverlaySave(): void {
+  if (pendingSaveTimer) {
+    clearTimeout(pendingSaveTimer);
+    pendingSaveTimer = null;
+  }
+  pendingOverlay = null;
+}
+
 /** 页面关闭前兜底立即刷盘 */
 export function flushLocalOverlaySave(): void {
   if (pendingSaveTimer) {
@@ -149,6 +158,15 @@ export const RESERVED_WIDGET_PROP_VARS = new Set([
   'locked',
 ]);
 
+function toFiniteNum(v: unknown): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
 function extractVarDrivenProps(vars: Record<string, unknown>): Partial<LocalNodePatch> {
   const out: Partial<LocalNodePatch> = {};
   if (typeof vars.title === 'string') {
@@ -161,30 +179,28 @@ function extractVarDrivenProps(vars: Record<string, unknown>): Partial<LocalNode
   if (typeof vars.color === 'string' && vars.color.trim()) {
     out.color = vars.color.trim();
   }
-  if (vars.width !== undefined && Number.isFinite(Number(vars.width))) {
-    out.width = Math.max(180, Math.min(1400, Math.round(Number(vars.width))));
-  }
-  if (vars.height !== undefined && Number.isFinite(Number(vars.height))) {
-    out.height = Math.max(100, Math.min(1200, Math.round(Number(vars.height))));
-  }
+  const w = toFiniteNum(vars.width);
+  if (w !== null) out.width = Math.max(180, Math.min(1400, Math.round(w)));
+  const h = toFiniteNum(vars.height);
+  if (h !== null) out.height = Math.max(100, Math.min(1200, Math.round(h)));
   if (vars.pos && typeof vars.pos === 'object') {
     if (Array.isArray(vars.pos) && vars.pos.length >= 2) {
-      const px = Number(vars.pos[0]);
-      const py = Number(vars.pos[1]);
-      if (Number.isFinite(px)) out.x = Math.round(px);
-      if (Number.isFinite(py)) out.y = Math.round(py);
+      const px = toFiniteNum(vars.pos[0]);
+      const py = toFiniteNum(vars.pos[1]);
+      if (px !== null) out.x = Math.round(px);
+      if (py !== null) out.y = Math.round(py);
     } else {
       const p = vars.pos as { x?: unknown; y?: unknown };
-      if (p.x !== undefined && Number.isFinite(Number(p.x))) out.x = Math.round(Number(p.x));
-      if (p.y !== undefined && Number.isFinite(Number(p.y))) out.y = Math.round(Number(p.y));
+      const px = toFiniteNum(p.x);
+      const py = toFiniteNum(p.y);
+      if (px !== null) out.x = Math.round(px);
+      if (py !== null) out.y = Math.round(py);
     }
   }
-  if (vars.x !== undefined && Number.isFinite(Number(vars.x))) {
-    out.x = Math.round(Number(vars.x));
-  }
-  if (vars.y !== undefined && Number.isFinite(Number(vars.y))) {
-    out.y = Math.round(Number(vars.y));
-  }
+  const vx = toFiniteNum(vars.x);
+  if (vx !== null) out.x = Math.round(vx);
+  const vy = toFiniteNum(vars.y);
+  if (vy !== null) out.y = Math.round(vy);
   if (typeof vars.locked === 'boolean') {
     out.locked = vars.locked;
   }
@@ -234,12 +250,14 @@ export function resolveEffectiveNodes(
       ...baseNode.defaultVars,
       ...(rtVars ?? {}),
     };
-    const varDriven = extractVarDrivenProps(effectiveVars);
+    const defaultVarDriven = extractVarDrivenProps(baseNode.defaultVars ?? {});
+    const rtVarDriven = rtVars ? extractVarDrivenProps(rtVars) : {};
 
     result[id] = {
       ...baseNode,
+      ...defaultVarDriven,
       ...(patch ?? {}),
-      ...varDriven,
+      ...rtVarDriven,
       effectiveVars,
       hasLocalOverride,
       hasRuntimeVars,

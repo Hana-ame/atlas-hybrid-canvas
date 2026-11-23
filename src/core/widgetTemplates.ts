@@ -142,7 +142,7 @@ on('toggleSize', () => {
   vars.height = nextExp ? 270 : 205;
 });
 on('nudgeRight', () => {
-  vars.pos = { x: (ctx.entity.x || 960) + 80, y: ctx.entity.y || 1005 };
+  vars.pos = { x: (ctx.entity.x ?? 960) + 80, y: ctx.entity.y ?? 1005 };
 });
 on('resetAll', () => {
   vars.modeIdx = 0;
@@ -563,6 +563,7 @@ export function nodeToCustomTemplate(node: BlueprintNode, name: string): Bluepri
       body: node.body,
       category: node.category,
       color: node.color,
+      script: node.script,
       defaultVars: { ...node.defaultVars },
       buttons: node.buttons ? node.buttons.map((b) => ({ ...b })) : [],
       inputPorts: node.inputPorts ? node.inputPorts.map((p) => ({ ...p })) : undefined,

@@ -71,9 +71,16 @@ const RPC_DROP_RES_HEADERS = new Set([
 function makeRpcHandler(port: number): RpcHandler {
   return (frame) =>
     new Promise((resolve) => {
-      const path = String(frame.path || '/');
-      // 只允许内部 API 路径，避免 WS 被当成任意站点的代理跳板。
-      if (!path.startsWith('/api/')) {
+      const rawPath = String(frame.path || '/');
+      let normalizedPath = '/';
+      try {
+        const parsed = new URL(rawPath, 'http://127.0.0.1');
+        normalizedPath = `${parsed.pathname}${parsed.search}`;
+      } catch {
+        normalizedPath = '/';
+      }
+      // 规范化 .. 段后再校验 /api/ 前缀，防止路径遍历绕过
+      if (!normalizedPath.startsWith('/api/')) {
         resolve({
           t: 'rpc_res',
           id: frame.id,
@@ -92,26 +99,64 @@ function makeRpcHandler(port: number): RpcHandler {
 
       const headers: Record<string, string | number> = {};
       for (const [k, v] of Object.entries(frame.headers || {})) {
-        if (typeof v === 'string') headers[k] = v;
+        const lk = k.toLowerCase();
+        if (lk === 'host' || lk === 'content-length' || lk === 'transfer-encoding') continue;
+        if (typeof v === 'string') headers[lk] = v;
       }
       // 标记来源，方便服务端日志区分"浏览器直连"与"经 WS 转发"。
       headers['x-atlas-rpc'] = '1';
       if (bodyBuf.length > 0) headers['content-length'] = bodyBuf.length;
+
+      let settled = false;
+      const done = (r: Awaited<ReturnType<RpcHandler>>) => {
+        if (settled) return;
+        settled = true;
+        resolve(r);
+      };
+      const MAX_RPC_RES_BYTES = 64 * 1024 * 1024;
 
       const req = http.request(
         {
           host: '127.0.0.1',
           port,
           method: String(frame.method || 'GET').toUpperCase(),
-          path,
+          path: normalizedPath,
           headers,
           timeout: 60_000,
         },
         (res) => {
           const chunks: Buffer[] = [];
-          res.on('data', (c: Buffer) => chunks.push(c));
+          let totalBytes = 0;
+          res.on('data', (c: Buffer) => {
+            totalBytes += c.byteLength;
+            if (totalBytes > MAX_RPC_RES_BYTES) {
+              req.destroy(new Error('RPC 响应体超过上限'));
+              return;
+            }
+            chunks.push(c);
+          });
+          res.on('error', (err) => {
+            done({
+              t: 'rpc_res',
+              id: frame.id,
+              status: 502,
+              headers: { 'content-type': 'application/json; charset=utf-8' },
+              body: JSON.stringify({ ok: false, error: `RPC 响应流异常：${err.message}` }),
+              bodyEncoding: 'text',
+            });
+          });
+          res.on('aborted', () => {
+            done({
+              t: 'rpc_res',
+              id: frame.id,
+              status: 502,
+              headers: { 'content-type': 'application/json; charset=utf-8' },
+              body: JSON.stringify({ ok: false, error: 'RPC 响应流异常中断' }),
+              bodyEncoding: 'text',
+            });
+          });
           res.on('end', () => {
-            const buf = Buffer.concat(chunks);
+            const buf = Buffer.concat(chunks, totalBytes);
             const resHeaders: Record<string, string> = {};
             for (const [k, v] of Object.entries(res.headers)) {
               if (RPC_DROP_RES_HEADERS.has(k.toLowerCase())) continue;
@@ -119,7 +164,7 @@ function makeRpcHandler(port: number): RpcHandler {
               else if (Array.isArray(v)) resHeaders[k] = v.join(', ');
             }
             recordRpcStatus(res.statusCode ?? 0);
-            resolve({
+            done({
               t: 'rpc_res',
               id: frame.id,
               status: res.statusCode ?? 502,
@@ -135,7 +180,7 @@ function makeRpcHandler(port: number): RpcHandler {
         req.destroy(new Error('上游处理超时'));
       });
       req.on('error', (err) => {
-        resolve({
+        done({
           t: 'rpc_res',
           id: frame.id,
           status: 502,
@@ -246,7 +291,8 @@ async function startServer() {
       // b) DNS 解析后逐个检查是否内网/元数据地址。
       //    必须在真正发请求前查，因为 parse URL 阶段拿到的只是域名字符串，
       //    域名可以解析到 127.0.0.1 或 169.254.169.254。
-      const records = await dns.lookup(target.url.hostname, { all: true });
+      const lookupHost = target.url.hostname.replace(/^\[|\]$/g, '');
+      const records = await dns.lookup(lookupHost, { all: true });
       if (records.length === 0) throw new Error('目标域名解析失败');
       for (const rec of records) {
         if (isPrivateOrReservedIP(rec.address)) {
@@ -303,6 +349,7 @@ async function startServer() {
     store: sharedStore,
     proxy: {
       allowedHosts,
+      upstreamBaseUrl,
       hasUpstreamSecret: Boolean(proxyApiKey),
       saveKey: blueprintSaveKey,
       rateLimitPerMin: proxyRateLimitPerMin,
@@ -350,7 +397,8 @@ async function startServer() {
    * 存放位置（前端 bundle 里的常量谁都能读）。所以它只在这一侧成立。
    */
   app.use('/api/proxy', (req, res, next) => {
-    const provided = String(req.header('x-proxy-token') || '').trim();
+    const isBinaryRoute = req.path === '/binary';
+    const provided = String(req.header('x-proxy-token') || (isBinaryRoute ? req.query.token || '' : '')).trim();
     if (!verifyProxyClientToken(provided)) {
       res.status(401).json({
         ok: false,
@@ -405,7 +453,7 @@ async function startServer() {
       return;
     }
     try {
-      const records = await dns.lookup(target.url.hostname, { all: true });
+      const records = await dns.lookup(target.url.hostname.replace(/^\[|\]$/g, ''), { all: true });
       if (records.length === 0 || records.some((r) => isPrivateOrReservedIP(r.address))) {
         res.status(403).json({ ok: false, error: '安全限制：目标域名解析到受保护地址' });
         return;
@@ -521,7 +569,7 @@ async function startServer() {
       return;
     }
     try {
-      const records = await dns.lookup(target.url.hostname, { all: true });
+      const records = await dns.lookup(target.url.hostname.replace(/^\[|\]$/g, ''), { all: true });
       if (records.length === 0 || records.some((r) => isPrivateOrReservedIP(r.address))) {
         res.status(403).json({ ok: false, error: '安全限制：目标域名解析到受保护地址' });
         return;

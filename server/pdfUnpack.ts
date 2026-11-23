@@ -37,9 +37,10 @@ interface UnpackedPdfRecord {
 }
 
 const unpackedStore = new Map<string, UnpackedPdfRecord>();
+const inFlightPageRenders = new Map<string, Promise<Buffer>>();
 let globalCachedBytes = 0;
 
-function evictGlobalIfNeeded(keepDocId?: string): void {
+function evictGlobalIfNeeded(keepDocId?: string, keepPageKey?: string): void {
   while (
     unpackedStore.size > MAX_UNPACKED_DOCS ||
     (globalCachedBytes > MAX_UNPACKED_TOTAL_BYTES && unpackedStore.size > 1)
@@ -56,6 +57,22 @@ function evictGlobalIfNeeded(keepDocId?: string): void {
     unpackedStore.delete(victimKey);
     if (victim) {
       globalCachedBytes = Math.max(0, globalCachedBytes - victim.totalBytes);
+    }
+  }
+  // 单文档本身若缓存过多高 DPI 页图突破 256MB，也按 LRU 淘汰其旧页图（保留当前页）
+  if (globalCachedBytes > MAX_UNPACKED_TOTAL_BYTES && keepDocId) {
+    const rec = unpackedStore.get(keepDocId);
+    if (rec) {
+      for (const key of Array.from(rec.pageCache.keys())) {
+        if (globalCachedBytes <= MAX_UNPACKED_TOTAL_BYTES) break;
+        if (key === keepPageKey || rec.pageCache.size <= 1) continue;
+        const evicted = rec.pageCache.get(key);
+        rec.pageCache.delete(key);
+        if (evicted) {
+          rec.totalBytes = Math.max(rec.pdfBytes.byteLength, rec.totalBytes - evicted.byteLength);
+          globalCachedBytes = Math.max(0, globalCachedBytes - evicted.byteLength);
+        }
+      }
     }
   }
 }
@@ -231,22 +248,40 @@ export async function getUnpackedPdfPage(
     return { buffer: cached, totalPages: rec.totalPages, dpi };
   }
 
-  const rendered = await renderSinglePageToPng(rec.pdfBytes, pageNum, dpi);
-  rec.pageCache.set(cacheKey, rendered);
-  rec.totalBytes += rendered.byteLength;
-  globalCachedBytes += rendered.byteLength;
-
-  while (rec.pageCache.size > MAX_CACHED_PAGE_IMAGES) {
-    const oldest = rec.pageCache.keys().next().value;
-    if (!oldest) break;
-    const evicted = rec.pageCache.get(oldest);
-    rec.pageCache.delete(oldest);
-    if (evicted) {
-      rec.totalBytes = Math.max(rec.pdfBytes.byteLength, rec.totalBytes - evicted.byteLength);
-      globalCachedBytes = Math.max(0, globalCachedBytes - evicted.byteLength);
-    }
+  const flightKey = `${docId}:${cacheKey}`;
+  let renderPromise = inFlightPageRenders.get(flightKey);
+  if (!renderPromise) {
+    renderPromise = renderSinglePageToPng(rec.pdfBytes, pageNum, dpi).finally(() => {
+      inFlightPageRenders.delete(flightKey);
+    });
+    inFlightPageRenders.set(flightKey, renderPromise);
   }
-  evictGlobalIfNeeded(docId);
+  const rendered = await renderPromise;
+
+  // 若渲染耗时期间该文档已被淘汰，不再入缓存也不累加 globalCachedBytes，杜绝僵尸字节泄漏
+  if (unpackedStore.get(docId) === rec) {
+    const prevBuf = rec.pageCache.get(cacheKey);
+    if (prevBuf) {
+      rec.totalBytes = Math.max(rec.pdfBytes.byteLength, rec.totalBytes - prevBuf.byteLength);
+      globalCachedBytes = Math.max(0, globalCachedBytes - prevBuf.byteLength);
+      rec.pageCache.delete(cacheKey);
+    }
+    rec.pageCache.set(cacheKey, rendered);
+    rec.totalBytes += rendered.byteLength;
+    globalCachedBytes += rendered.byteLength;
+
+    while (rec.pageCache.size > MAX_CACHED_PAGE_IMAGES) {
+      const oldest = rec.pageCache.keys().next().value;
+      if (!oldest) break;
+      const evicted = rec.pageCache.get(oldest);
+      rec.pageCache.delete(oldest);
+      if (evicted) {
+        rec.totalBytes = Math.max(rec.pdfBytes.byteLength, rec.totalBytes - evicted.byteLength);
+        globalCachedBytes = Math.max(0, globalCachedBytes - evicted.byteLength);
+      }
+    }
+    evictGlobalIfNeeded(docId, cacheKey);
+  }
 
   return { buffer: rendered, totalPages: rec.totalPages, dpi };
 }

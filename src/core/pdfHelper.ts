@@ -17,6 +17,7 @@ export function isSafePdfUrl(rawUrl: string): boolean {
   if (!trimmed) return false;
   if (
     trimmed.startsWith('blob:') ||
+    trimmed.startsWith('client-pdf://') ||
     trimmed.startsWith('/api/pdf/') ||
     trimmed.startsWith('/api/proxy/binary')
   ) {
@@ -65,11 +66,16 @@ export function countPdfPagesFromBytes(bytes: Uint8Array): number | null {
   try {
     const text = new TextDecoder('latin1').decode(bytes);
     const counts: number[] = [];
-    const pagesRe = /\/Type\s*\/Pages\b[\s\S]{0,4096}?\/Count\s+(\d+)/g;
-    let m: RegExpExecArray | null;
-    while ((m = pagesRe.exec(text)) !== null) {
-      const n = Number(m[1]);
-      if (Number.isFinite(n) && n > 0 && n <= 9999) counts.push(n);
+    const dictRe = /<<[\s\S]{0,4096}?>>/g;
+    let dm: RegExpExecArray | null;
+    while ((dm = dictRe.exec(text)) !== null) {
+      const block = dm[0];
+      if (!/\/Type\s*\/Pages\b/.test(block)) continue;
+      const cm = /\/Count\s+(\d+)/.exec(block);
+      if (cm) {
+        const n = Number(cm[1]);
+        if (Number.isFinite(n) && n > 0 && n <= 9999) counts.push(n);
+      }
     }
     if (counts.length > 0) return Math.max(...counts);
 

@@ -4,6 +4,7 @@
  * 审计逻辑本身在 `src/core/scriptAudit.ts`，此处仅做 re-export 保持既有导入路径可用。
  * 凡来自外部文件或远端房间的脚本与外部 HTTP 按钮默认锁死，需人工审阅后显式批准才允许执行。
  */
+import { useState } from 'react';
 import { ShieldAlert, ShieldCheck, X } from 'lucide-react';
 import type { ScriptAuditEntry } from '../core/scriptAudit';
 
@@ -25,11 +26,12 @@ export function ScriptTrustModal({
   onKeepLocked,
   onTrustAll,
 }: ScriptTrustModalProps) {
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => new Set());
   if (!open) return null;
 
   return (
     <div className="pointer-events-auto fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4 backdrop-blur-[2px]">
-      <div className="w-full max-w-xl overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+      <div className="flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
         <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5">
           <div className="flex items-center gap-2 text-amber-800">
             <ShieldAlert className="h-5 w-5" />
@@ -53,9 +55,25 @@ export function ScriptTrustModal({
                   {item.kind}
                 </span>
               </div>
-              <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap rounded bg-slate-900 p-2 font-mono text-[10.5px] text-emerald-300">
-                {item.preview}
+              <pre className="mt-1.5 max-h-60 overflow-auto whitespace-pre-wrap rounded bg-slate-900 p-2 font-mono text-[10.5px] text-emerald-300">
+                {expandedKeys.has(item.key) && item.fullCode ? item.fullCode : item.preview}
               </pre>
+              {item.truncated && item.fullCode && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setExpandedKeys((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(item.key)) next.delete(item.key);
+                      else next.add(item.key);
+                      return next;
+                    })
+                  }
+                  className="mt-1 text-[11px] font-medium text-blue-700 hover:underline"
+                >
+                  {expandedKeys.has(item.key) ? '收起源码' : `展开完整源码（共 ${item.fullCode.length} 字符）`}
+                </button>
+              )}
               {item.warning && (
                 <div className="mt-1.5 rounded bg-rose-50 px-2 py-1 text-[11px] font-medium text-rose-700">
                   静态拦截警告：{item.warning}（即使信任也无法执行）

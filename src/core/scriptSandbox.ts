@@ -1,7 +1,8 @@
 import type { LocalAnnotationOverride } from './types';
 
 const BLOCKED_TOKENS = [
-  'window', 'document', 'globalThis', 'localStorage', 'sessionStorage',
+  'window', 'document', 'globalThis', 'self', 'caches', 'EventSource', 'BroadcastChannel',
+  'setTimeout', 'setInterval', 'localStorage', 'sessionStorage',
   'indexedDB', 'cookie', 'eval', 'Function', 'AsyncFunction', 'Proxy',
   'Reflect', 'fetch', 'XMLHttpRequest', 'WebSocket', 'Worker',
   'importScripts', 'navigator', 'location', 'history', 'postMessage',
@@ -43,8 +44,8 @@ export function validateScriptSyntax(code: string): { ok: boolean; error?: strin
     ) => unknown;
     new AsyncFunction(
       'vars', 'ctx', 'lib', 'log', 'canvas', 'widgets', 'emit', 'broadcast', 'emitDownstream', 'on', 'onSubmit', 'onChange', 'onValidateConnect',
-      'window', 'document', 'fetch', 'localStorage',
-      trimmed
+      'window', 'document', 'self', 'fetch', 'localStorage',
+      `'use strict';\n${trimmed}`
     );
     return { ok: true };
   } catch (err) {
@@ -256,12 +257,19 @@ export async function runInIsolatedWorker(
 
   const workerBootstrap = `
     const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    const _post = self.postMessage.bind(self);
+    const _proto = Object.getPrototypeOf(self);
+    for (const api of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'BroadcastChannel', 'importScripts', 'indexedDB', 'caches', 'setTimeout', 'setInterval', 'postMessage']) {
+      try { Object.defineProperty(self, api, { value: undefined, writable: false, configurable: false }); } catch {}
+      if (_proto) { try { Object.defineProperty(_proto, api, { value: undefined, writable: false, configurable: false }); } catch {} }
+    }
     self.onmessage = async (ev) => {
       const { code, initialVars, selfEntity, peers, edges, trigger } = ev.data;
       const logs = [];
       const annotationOps = [];
       const widgetOps = [];
       const emitOps = [];
+      let suppressSideEffects = false;
       const peerMap = Object.assign(Object.create(null), peers || {});
       const edgeList = Array.isArray(edges) ? edges.slice() : [];
       const vars = Object.assign(Object.create(null), initialVars || {});
@@ -269,7 +277,7 @@ export async function runInIsolatedWorker(
         entity: selfEntity || { id: 'self', title: '控件', label: '控件', body: '', x: 0, y: 0, width: 280, height: 180, color: '#2563EB', vars: {} },
       };
 
-      const log = (...args) => logs.push(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '));
+      const log = (...args) => { if (!suppressSideEffects) logs.push(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')); };
       const lib = {
         now: () => new Date().toLocaleTimeString(),
         inc: (key, delta = 1) => {
@@ -284,11 +292,11 @@ export async function runInIsolatedWorker(
           if (bgOpacity !== undefined && Number.isFinite(Number(bgOpacity))) {
             patch.bgOpacity = Math.max(0, Math.min(1, Number(bgOpacity)));
           }
-          annotationOps.push({ id: String(id), patch });
+          if (!suppressSideEffects) annotationOps.push({ id: String(id), patch });
         },
-        setAnnotationColor: (id, color) => annotationOps.push({ id: String(id), patch: { color: String(color) } }),
-        setAnnotationText: (id, text) => annotationOps.push({ id: String(id), patch: { text: String(text) } }),
-        setAnnotationImage: (id, imageUrl) => annotationOps.push({ id: String(id), patch: { imageUrl: String(imageUrl) } }),
+        setAnnotationColor: (id, color) => { if (!suppressSideEffects) annotationOps.push({ id: String(id), patch: { color: String(color) } }); },
+        setAnnotationText: (id, text) => { if (!suppressSideEffects) annotationOps.push({ id: String(id), patch: { text: String(text) } }); },
+        setAnnotationImage: (id, imageUrl) => { if (!suppressSideEffects) annotationOps.push({ id: String(id), patch: { imageUrl: String(imageUrl) } }); },
       };
 
       let spawnSeq = 0;
@@ -330,16 +338,20 @@ export async function runInIsolatedWorker(
             .filter(Boolean);
         },
         create: async (spec) => {
+          if (suppressSideEffects) return { ok: false, skipped: true };
           if (!spec || typeof spec !== 'object') return { ok: false, error: '无效参数' };
           spawnSeq += 1;
           const id = spec.id ? String(spec.id) : ('child-' + Date.now() + '-' + spawnSeq);
           const title = String(spec.title || spec.label || ('子控件 #' + spawnSeq)).slice(0, 80);
-          const x = Number.isFinite(Number(spec.x))
+          const hasNum = (v) => v !== undefined && v !== null && v !== '' && Number.isFinite(Number(v));
+          const dx = hasNum(spec.dx) ? Number(spec.dx) : 380;
+          const dy = hasNum(spec.dy) ? Number(spec.dy) : 0;
+          const x = hasNum(spec.x)
             ? Number(spec.x)
-            : Math.round((ctx.entity.x || 0) + (Number(spec.dx) || 380));
-          const y = Number.isFinite(Number(spec.y))
+            : Math.round((ctx.entity.x || 0) + dx);
+          const y = hasNum(spec.y)
             ? Number(spec.y)
-            : Math.round((ctx.entity.y || 0) + (Number(spec.dy) || 0));
+            : Math.round((ctx.entity.y || 0) + dy);
           const width = Math.max(200, Math.min(800, Number(spec.w || spec.width) || 320));
           const height = Math.max(120, Math.min(600, Number(spec.h || spec.height) || 190));
           const color = typeof spec.color === 'string' ? spec.color : '#059669';
@@ -451,6 +463,7 @@ export async function runInIsolatedWorker(
           return { ok: cyclicNodeIds.length === 0, order, cyclicNodeIds };
         },
         connect: (fromId, toId, label) => {
+          if (suppressSideEffects) return { ok: false, skipped: true };
           const f = String(fromId || '');
           const t = String(toId || '');
           if (!f || !t) return { ok: false, error: '起点或终点无效' };
@@ -460,23 +473,31 @@ export async function runInIsolatedWorker(
           return { ok: true };
         },
         remove: (id) => {
-          widgetOps.push({ op: 'remove', id: String(id) });
-          delete peerMap[String(id)];
+          if (suppressSideEffects) return { ok: false, skipped: true };
+          const rid = String(id);
+          widgetOps.push({ op: 'remove', id: rid });
+          delete peerMap[rid];
+          for (let i = edgeList.length - 1; i >= 0; i--) {
+            if (edgeList[i].source === rid || edgeList[i].target === rid) edgeList.splice(i, 1);
+          }
           return { ok: true };
         },
       };
 
       const emit = async (targetId, event, payload) => {
+        if (suppressSideEffects) return { ok: false, skipped: true };
         const tid = String(targetId || '');
         if (!tid || !peerMap[tid]) return { ok: false, error: '目标控件不存在' };
         emitOps.push({ targetId: tid, event: String(event), payload });
         return { ok: true };
       };
       const broadcast = async (event, payload) => {
+        if (suppressSideEffects) return { ok: false, skipped: true };
         emitOps.push({ targetId: '*', event: String(event), payload });
         return { ok: true };
       };
       const emitDownstream = async (event, payload, portId) => {
+        if (suppressSideEffects) return { ok: false, count: 0, skipped: true };
         const outs = widgets.outputs(portId);
         // 同一出口可能有 2 条边连到同一个下游控件（如 out-1 双出线），按控件去重，
         // 否则 count 会虚高、接收方也会被同一条消息触发两次。
@@ -576,18 +597,21 @@ export async function runInIsolatedWorker(
         changeHandlers = Object.create(null);
         const fn = new AsyncFunction(
           'vars', 'ctx', 'lib', 'log', 'canvas', 'widgets', 'emit', 'broadcast', 'emitDownstream', 'on', 'onSubmit', 'onChange', 'onValidateConnect',
-          'window', 'document', 'fetch', 'localStorage',
-          code
+          'window', 'document', 'self', 'fetch', 'localStorage',
+          "'use strict'; " + code
         );
         await fn(
           vars, ctx, lib, log, canvas, widgets, emit, broadcast, emitDownstream, on, onSubmit, onChange, onValidateConnect,
-          undefined, undefined, undefined, undefined
+          undefined, undefined, undefined, undefined, undefined
         );
       };
 
       try {
-        // 第 1 遍：执行顶层代码，产出初始 vars.contents 并注册 on / onSubmit / onValidateConnect 回调
+        // 第 1 遍：执行顶层代码，非 render 触发时静默注册回调，避免顶层 log/canvas 副作用重复下发
+        const isEventTrigger = Boolean(trigger && trigger.kind !== 'render');
+        suppressSideEffects = isEventTrigger;
         await runUserCode();
+        suppressSideEffects = false;
 
         // 连线前校验钩子：仅运行控件自带的 onValidateConnect，不修改 vars
         if (trigger && trigger.kind === 'validateConnect') {
@@ -600,7 +624,7 @@ export async function runInIsolatedWorker(
               connectValidation = { ok: false, reason: String(raw.reason || (ctx.entity.title + ' 拒绝了此连线')) };
             }
           }
-          self.postMessage({ ok: true, updatedVars: initialVars, annotationOps: [], widgetOps: [], emitOps: [], logs, connectValidation });
+          _post({ ok: true, updatedVars: initialVars, annotationOps: [], widgetOps: [], emitOps: [], logs, connectValidation });
           return;
         }
 
@@ -629,9 +653,9 @@ export async function runInIsolatedWorker(
 
         const plainVars = {};
         for (const k of Object.keys(vars)) plainVars[k] = vars[k];
-        self.postMessage({ ok: true, updatedVars: plainVars, annotationOps, widgetOps, emitOps, logs });
+        _post({ ok: true, updatedVars: plainVars, annotationOps, widgetOps, emitOps, logs });
       } catch (err) {
-        self.postMessage({
+        _post({
           ok: false,
           updatedVars: initialVars,
           annotationOps: [],
@@ -687,7 +711,7 @@ export async function runInIsolatedWorker(
           widgetOps: Array.isArray(ev.data.widgetOps) ? ev.data.widgetOps : [],
           emitOps: Array.isArray(ev.data.emitOps) ? ev.data.emitOps : [],
         },
-        true
+        Boolean(ev.data && ev.data.ok)
       );
     };
 
@@ -719,7 +743,8 @@ export async function runInIsolatedWorker(
 
 // 常驻可复用 Worker 池（最多保留 MAX_POOLED_WORKERS 个空闲 Worker，避免链式事件高频冷启动/GC 抖动）
 // 扇出并发时会同时占用多个 Worker，池容量需不低于常见扇出宽度，否则并发退化为冷启动。
-const MAX_POOLED_WORKERS = 6;
+// 每次脚本执行完毕立即销毁 Worker（0 池复用），彻底杜绝跨控件内置对象篡改与残留任务串扰
+const MAX_POOLED_WORKERS = 0;
 let cachedWorkerBlobUrl: string | null = null;
 const idleWorkerPool: Worker[] = [];
 

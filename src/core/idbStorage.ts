@@ -25,9 +25,18 @@ function openDB(): Promise<IDBDatabase | null> {
           db.createObjectStore(STORE_NAME);
         }
       };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onclose = () => { dbPromise = null; };
+        db.onversionchange = () => { db.close(); dbPromise = null; };
+        resolve(db);
+      };
+      req.onerror = () => {
+        dbPromise = null;
+        resolve(null);
+      };
     } catch {
+      dbPromise = null;
       resolve(null);
     }
   });
@@ -46,6 +55,7 @@ export async function idbGet<T>(key: string): Promise<T | null> {
       const req = store.get(key);
       req.onsuccess = () => resolve((req.result as T | undefined) ?? null);
       req.onerror = () => resolve(null);
+      tx.onabort = () => resolve(null);
     } catch {
       resolve(null);
     }
@@ -65,6 +75,7 @@ export async function idbSet<T>(key: string, value: T): Promise<boolean> {
       store.put(value, key);
       tx.oncomplete = () => resolve(true);
       tx.onerror = () => resolve(false);
+      tx.onabort = () => resolve(false);
     } catch {
       resolve(false);
     }
@@ -83,6 +94,7 @@ export async function idbDelete(key: string): Promise<void> {
       tx.objectStore(STORE_NAME).delete(key);
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
     } catch {
       resolve();
     }

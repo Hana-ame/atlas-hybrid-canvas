@@ -65,7 +65,7 @@ import {
 } from './core/roomClient';
 import { TEMPLATE_DRAG_MIME, TemplateDrawer } from './components/TemplateDrawer';
 import { ChunkManager } from './core/chunkManager';
-import { beats } from './core/crdt';
+import { beats, computeRecordDiff } from './core/crdt';
 import { findNonOverlappingPosition, type RectBox } from './core/placement';
 import { ChunkTileCache } from './core/chunkTileCache';
 import { computeThreeRingBounds, filterVisibleEdges, isBoxIntersecting } from './core/viewportCulling';
@@ -113,6 +113,15 @@ const nodeTypes = {
 };
 const SELF_CID = `client-${Math.random().toString(36).slice(2, 7)}`;
 
+function toFiniteNum(v: unknown): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
 const LOD_LABELS: Record<LODLevel, string> = {
   micro: '近景精编',
   meso: '中景浏览',
@@ -156,6 +165,8 @@ function HybridCanvasWorkspace() {
   // 3) 外部 JSON 导入与脚本信任锁
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const [untrustedScriptKeys, setUntrustedScriptKeys] = useState<Set<string>>(() => new Set());
+  const untrustedScriptKeysRef = useRef<Set<string>>(untrustedScriptKeys);
+  untrustedScriptKeysRef.current = untrustedScriptKeys;
   const [trustModalState, setTrustModalState] = useState<{
     open: boolean;
     sourceLabel: string;
@@ -166,6 +177,10 @@ function HybridCanvasWorkspace() {
   const [roomModalOpen, setRoomModalOpen] = useState(false);
   const [roomWsUrl, setRoomWsUrl] = useState(() => defaultRoomWsUrl());
   const [roomName, setRoomName] = useState('atlas-main');
+  const roomNameRef = useRef(roomName);
+  roomNameRef.current = roomName;
+  const maxSyncedMetaRef = useRef<Map<string, { id: string; rev: number; cid: string }>>(new Map());
+  const prevSyncedBaseRef = useRef<BaseBlueprint | null>(null);
   const [roomStatus, setRoomStatus] = useState<RoomStatus>('disconnected');
   const roomClientRef = useRef<CollaborativeRoomClient | null>(null);
   const [statusLog, setStatusLog] = useState<string>('');
@@ -211,6 +226,8 @@ function HybridCanvasWorkspace() {
   // 关键修复：使用 React Flow 原生受控 nodes 状态 + applyNodeChanges，
   // 彻底保留 React Flow v12 内部的 measured / dragging / selected 状态，消除拖动控件时高频消失再出现！
   const [rfNodes, setRfNodes] = useState<Node[]>([]);
+  const rfNodesRef = useRef<Node[]>(rfNodes);
+  rfNodesRef.current = rfNodes;
 
   const [lod, setLod] = useState<LODLevel>('micro');
   const rf = useReactFlow();
@@ -306,10 +323,11 @@ function HybridCanvasWorkspace() {
     const cx = Number(m[1]);
     const cy = Number(m[2]);
     const zoom = m[3] ? Math.max(0.15, Math.min(2.2, Number(m[3]))) : 0.85;
-    window.setTimeout(() => {
+    const timer = window.setTimeout(() => {
       rf.setCenter(cx * 512 + 256, cy * 512 + 256, { zoom, duration: 350 });
       setStatusLog(`已按 URL 坐标定位到 Chunk (${cx}, ${cy})`);
     }, 120);
+    return () => window.clearTimeout(timer);
   }, [rf]);
 
   const handleCopyChunkLink = useCallback(async () => {
@@ -342,7 +360,7 @@ function HybridCanvasWorkspace() {
     a.href = url;
     a.download = `atlas-blueprint-v${merged.version}.json`;
     a.click();
-    URL.revokeObjectURL(url);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     setStatusLog('已导出完整蓝图 JSON 文件');
   }, []);
 
@@ -361,10 +379,10 @@ function HybridCanvasWorkspace() {
           safeNodes[nid] = {
             ...rawNode,
             id: typeof rawNode.id === 'string' && rawNode.id ? rawNode.id : nid,
-            x: Number.isFinite(Number(rawNode.x)) ? Number(rawNode.x) : 0,
-            y: Number.isFinite(Number(rawNode.y)) ? Number(rawNode.y) : 0,
-            width: Math.max(180, Number.isFinite(Number(rawNode.width)) ? Number(rawNode.width) : 280),
-            height: Math.max(100, Number.isFinite(Number(rawNode.height)) ? Number(rawNode.height) : 180),
+            x: toFiniteNum(rawNode.x) ?? 0,
+            y: toFiniteNum(rawNode.y) ?? 0,
+            width: Math.max(180, toFiniteNum(rawNode.width) ?? 280),
+            height: Math.max(100, toFiniteNum(rawNode.height) ?? 180),
             title: typeof rawNode.title === 'string' ? rawNode.title : '未命名控件',
             body: typeof rawNode.body === 'string' ? rawNode.body : '',
             color: typeof rawNode.color === 'string' ? rawNode.color : '#2563EB',
@@ -417,24 +435,53 @@ function HybridCanvasWorkspace() {
           if (info) setStatusLog(info);
         },
         (msg) => {
+          const mergeTrustEntries = (label: string, newEntries: ScriptAuditEntry[]) => {
+            if (newEntries.length === 0) return;
+            setUntrustedScriptKeys((prev) => {
+              const next = new Set(prev);
+              for (const e of newEntries) next.add(e.key);
+              return next;
+            });
+            setTrustModalState((prev) => {
+              const byKey = new Map(prev.entries.map((e) => [e.key, e]));
+              for (const e of newEntries) byKey.set(e.key, e);
+              return { open: true, sourceLabel: label, entries: Array.from(byKey.values()) };
+            });
+          };
+          const recordSyncedMeta = (kind: string, rec: { id: string; rev: number; cid: string }) => {
+            const k = `${kind}:${rec.id}`;
+            const cur = maxSyncedMetaRef.current.get(k);
+            if (!cur || beats(rec, cur)) {
+              maxSyncedMetaRef.current.set(k, { id: rec.id, rev: Number(rec.rev) || 0, cid: String(rec.cid || '') });
+            }
+          };
+          const beatsLocalAndSynced = (kind: string, incoming: { id: string; rev: number; cid: string }, cur: { id: string; rev: number; cid: string } | undefined) => {
+            if (cur && !beats(incoming, cur)) return false;
+            const synced = maxSyncedMetaRef.current.get(`${kind}:${incoming.id}`);
+            if (synced && !beats(incoming, synced)) return false;
+            return true;
+          };
           if (msg.t === 'state' && msg.blueprint) {
             const entries = auditBlueprintScripts(msg.blueprint);
-            if (entries.length > 0) {
-              setUntrustedScriptKeys((prev) => {
-                const next = new Set(prev);
-                for (const e of entries) next.add(e.key);
-                return next;
-              });
-              setTrustModalState({ open: true, sourceLabel: `协同房间 ${roomName}`, entries });
-            }
-            setBase((prev) => mergeRemoteBlueprintCRDT(prev, msg.blueprint));
+            mergeTrustEntries(`协同房间 ${roomNameRef.current}`, entries);
+            for (const n of Object.values(msg.blueprint.nodes ?? {})) recordSyncedMeta('node', n);
+            for (const a of Object.values(msg.blueprint.annotations ?? {})) recordSyncedMeta('ann', a);
+            for (const e of Object.values(msg.blueprint.edges ?? {})) recordSyncedMeta('edge', e);
+            setBase((prev) => {
+              const merged = mergeRemoteBlueprintCRDT(prev, msg.blueprint);
+              if (prevSyncedBaseRef.current) {
+                prevSyncedBaseRef.current = mergeRemoteBlueprintCRDT(prevSyncedBaseRef.current, msg.blueprint);
+              }
+              return merged;
+            });
             setChunkSyncTick((t) => t + 1);
             return;
           }
           if (msg.t === 'upsert_node' && msg.node) {
             const remoteNode = msg.node;
             const curLocal = baseRef.current.nodes[remoteNode.id];
-            if (!curLocal || beats(remoteNode, curLocal)) {
+            if (beatsLocalAndSynced('node', remoteNode, curLocal)) {
+              recordSyncedMeta('node', remoteNode);
               const singleBp: BaseBlueprint = {
                 version: baseRef.current.version,
                 chunkSize: baseRef.current.chunkSize,
@@ -448,18 +495,23 @@ function HybridCanvasWorkspace() {
                 curLocal.script !== remoteNode.script ||
                 JSON.stringify(curLocal.buttons ?? []) !== JSON.stringify(remoteNode.buttons ?? []);
               if (entries.length > 0 && scriptChanged) {
-                setUntrustedScriptKeys((prev) => {
-                  const next = new Set(prev);
-                  for (const e of entries) next.add(e.key);
-                  return next;
-                });
-                setTrustModalState({ open: true, sourceLabel: `协同远端更新 (${remoteNode.title})`, entries });
+                mergeTrustEntries(`协同远端更新 (${remoteNode.title})`, entries);
               }
-              setBase((prev) => ({
-                ...prev,
-                version: prev.version + 1,
-                nodes: { ...prev.nodes, [remoteNode.id]: remoteNode },
-              }));
+              setBase((prev) => {
+                const cur = prev.nodes[remoteNode.id];
+                if (cur && !beats(remoteNode, cur)) return prev;
+                if (prevSyncedBaseRef.current) {
+                  prevSyncedBaseRef.current = {
+                    ...prevSyncedBaseRef.current,
+                    nodes: { ...prevSyncedBaseRef.current.nodes, [remoteNode.id]: remoteNode },
+                  };
+                }
+                return {
+                  ...prev,
+                  version: prev.version + 1,
+                  nodes: { ...prev.nodes, [remoteNode.id]: remoteNode },
+                };
+              });
               setChunkSyncTick((t) => t + 1);
             }
             return;
@@ -470,16 +522,53 @@ function HybridCanvasWorkspace() {
               if (!prev.nodes[delId]) return prev;
               const nextNodes = { ...prev.nodes };
               delete nextNodes[delId];
-              return { ...prev, version: prev.version + 1, nodes: nextNodes };
+              const nextEdges: typeof prev.edges = {};
+              for (const [eid, e] of Object.entries(prev.edges)) {
+                if (e.source !== delId && e.target !== delId) nextEdges[eid] = e;
+              }
+              if (prevSyncedBaseRef.current) {
+                const sn = { ...prevSyncedBaseRef.current.nodes };
+                delete sn[delId];
+                const se: typeof prev.edges = {};
+                for (const [eid, e] of Object.entries(prevSyncedBaseRef.current.edges)) {
+                  if (e.source !== delId && e.target !== delId) se[eid] = e;
+                }
+                prevSyncedBaseRef.current = { ...prevSyncedBaseRef.current, nodes: sn, edges: se };
+              }
+              return { ...prev, version: prev.version + 1, nodes: nextNodes, edges: nextEdges };
             });
+            setOverlay((prev) => {
+              if (!prev.runtimeVars[delId] && !prev.nodePatches[delId]) return prev;
+              const nextRv = { ...prev.runtimeVars };
+              const nextPatches = { ...prev.nodePatches };
+              delete nextRv[delId];
+              delete nextPatches[delId];
+              return { ...prev, runtimeVars: nextRv, nodePatches: nextPatches };
+            });
+            renderedScriptsRef.current.delete(delId);
+            setScriptLogsByNode((prev) => {
+              if (!prev[delId]) return prev;
+              const next = { ...prev };
+              delete next[delId];
+              return next;
+            });
+            setInspectingNodeId((cur) => (cur === delId ? null : cur));
             setChunkSyncTick((t) => t + 1);
             return;
           }
           if (msg.t === 'upsert_ann' && msg.annotation) {
             const remoteAnn = msg.annotation;
+            if (!beatsLocalAndSynced('ann', remoteAnn, baseRef.current.annotations[remoteAnn.id])) return;
+            recordSyncedMeta('ann', remoteAnn);
             setBase((prev) => {
               const cur = prev.annotations[remoteAnn.id];
               if (cur && !beats(remoteAnn, cur)) return prev;
+              if (prevSyncedBaseRef.current) {
+                prevSyncedBaseRef.current = {
+                  ...prevSyncedBaseRef.current,
+                  annotations: { ...prevSyncedBaseRef.current.annotations, [remoteAnn.id]: remoteAnn },
+                };
+              }
               return { ...prev, version: prev.version + 1, annotations: { ...prev.annotations, [remoteAnn.id]: remoteAnn } };
             });
             setChunkSyncTick((t) => t + 1);
@@ -491,6 +580,11 @@ function HybridCanvasWorkspace() {
               if (!prev.annotations[delId]) return prev;
               const nextAnns = { ...prev.annotations };
               delete nextAnns[delId];
+              if (prevSyncedBaseRef.current) {
+                const sa = { ...prevSyncedBaseRef.current.annotations };
+                delete sa[delId];
+                prevSyncedBaseRef.current = { ...prevSyncedBaseRef.current, annotations: sa };
+              }
               return { ...prev, version: prev.version + 1, annotations: nextAnns };
             });
             setChunkSyncTick((t) => t + 1);
@@ -498,9 +592,17 @@ function HybridCanvasWorkspace() {
           }
           if (msg.t === 'upsert_edge' && msg.edge) {
             const remoteEdge = msg.edge;
+            if (!beatsLocalAndSynced('edge', remoteEdge, baseRef.current.edges[remoteEdge.id])) return;
+            recordSyncedMeta('edge', remoteEdge);
             setBase((prev) => {
               const cur = prev.edges[remoteEdge.id];
               if (cur && !beats(remoteEdge, cur)) return prev;
+              if (prevSyncedBaseRef.current) {
+                prevSyncedBaseRef.current = {
+                  ...prevSyncedBaseRef.current,
+                  edges: { ...prevSyncedBaseRef.current.edges, [remoteEdge.id]: remoteEdge },
+                };
+              }
               return { ...prev, version: prev.version + 1, edges: { ...prev.edges, [remoteEdge.id]: remoteEdge } };
             });
             setChunkSyncTick((t) => t + 1);
@@ -512,6 +614,11 @@ function HybridCanvasWorkspace() {
               if (!prev.edges[delId]) return prev;
               const nextEdges = { ...prev.edges };
               delete nextEdges[delId];
+              if (prevSyncedBaseRef.current) {
+                const se = { ...prevSyncedBaseRef.current.edges };
+                delete se[delId];
+                prevSyncedBaseRef.current = { ...prevSyncedBaseRef.current, edges: se };
+              }
               return { ...prev, version: prev.version + 1, edges: nextEdges };
             });
             setChunkSyncTick((t) => t + 1);
@@ -519,6 +626,7 @@ function HybridCanvasWorkspace() {
         }
       );
     }
+    maxSyncedMetaRef.current.clear();
     roomClientRef.current.connect(roomWsUrl, roomName);
     setRoomModalOpen(false);
   }, [roomWsUrl, roomName]);
@@ -528,6 +636,37 @@ function HybridCanvasWorkspace() {
       roomClientRef.current?.disconnect();
     };
   }, []);
+
+  // 协同房间上行增量推送：已联机时将本地 base 变更经 computeRecordDiff 增量发送至房间（远端落盘已直接并入 prevSyncedBaseRef，同帧本地修改绝不丢失）
+  useEffect(() => {
+    if (roomStatus !== 'connected' || !roomClientRef.current) {
+      if (roomStatus === 'disconnected') maxSyncedMetaRef.current.clear();
+      prevSyncedBaseRef.current = base;
+      return;
+    }
+    const prev = prevSyncedBaseRef.current;
+    prevSyncedBaseRef.current = base;
+    if (!prev) {
+      roomClientRef.current.send({ t: 'state', blueprint: base });
+      return;
+    }
+    const bumpRev = <T extends { id: string; rev: number; cid: string }>(kind: string, rec: T): T => {
+      const k = `${kind}:${rec.id}`;
+      const highest = Math.max(maxSyncedMetaRef.current.get(k)?.rev ?? 0, Number(rec.rev) || 0);
+      const nextRev = highest + 1;
+      maxSyncedMetaRef.current.set(k, { id: rec.id, rev: nextRev, cid: SELF_CID });
+      return { ...rec, rev: nextRev, cid: SELF_CID };
+    };
+    const nodeDiff = computeRecordDiff(prev.nodes, base.nodes, SELF_CID);
+    for (const node of nodeDiff.upserts) roomClientRef.current.send({ t: 'upsert_node', node: bumpRev('node', node) });
+    for (const id of nodeDiff.deletes) roomClientRef.current.send({ t: 'delete_node', id });
+    const annDiff = computeRecordDiff(prev.annotations, base.annotations, SELF_CID);
+    for (const annotation of annDiff.upserts) roomClientRef.current.send({ t: 'upsert_ann', annotation: bumpRev('ann', annotation) });
+    for (const id of annDiff.deletes) roomClientRef.current.send({ t: 'delete_ann', id });
+    const edgeDiff = computeRecordDiff(prev.edges, base.edges, SELF_CID);
+    for (const edge of edgeDiff.upserts) roomClientRef.current.send({ t: 'upsert_edge', edge: bumpRev('edge', edge) });
+    for (const id of edgeDiff.deletes) roomClientRef.current.send({ t: 'delete_edge', id });
+  }, [base, roomStatus]);
 
   const effectiveNodes = useMemo(() => resolveEffectiveNodes(base, overlay), [base, overlay]);
   const effectiveAnnotations = useMemo(
@@ -592,23 +731,24 @@ function HybridCanvasWorkspace() {
         loadCustomTemplates(),
       ]);
       if (!active) return;
-      overlayHydratedRef.current = true;
-      setOverlayHydrated(true);
-      setOverlay(savedOverlay);
-      setCustomTemplates(savedTpls);
-      setChunkSyncTick((t) => t + 1);
-
       try {
         const resp = await fetch('/api/blueprint');
         if (resp.ok) {
           const data = (await resp.json()) as { ok?: boolean; blueprint?: BaseBlueprint | null };
           if (active && data.ok && data.blueprint && data.blueprint.nodes) {
+            renderedScriptsRef.current.clear();
             setBase(data.blueprint);
           }
         }
       } catch {
         // 离线或无后端时继续使用种子蓝图
       }
+      if (!active) return;
+      overlayHydratedRef.current = true;
+      setOverlayHydrated(true);
+      setOverlay(savedOverlay);
+      setCustomTemplates(savedTpls);
+      setChunkSyncTick((t) => t + 1);
     })();
     return () => {
       active = false;
@@ -616,7 +756,8 @@ function HybridCanvasWorkspace() {
   }, []);
 
   // 本地叠加层 300ms 防抖写盘 + beforeunload 刷盘 + BroadcastChannel 跨页签防回环同步
-  useOverlaySync(overlay, overlayHydrated, setOverlay, setStatusLog);
+  const handleRemoteOverlayApplied = useCallback(() => setChunkSyncTick((t) => t + 1), []);
+  useOverlaySync(overlay, overlayHydrated, setOverlay, setStatusLog, handleRemoteOverlayApplied);
 
   // 实例化任意模板到指定世界坐标
   const instantiateTemplateAt = useCallback((tpl: BlueprintTemplate, worldX: number, worldY: number) => {
@@ -674,7 +815,7 @@ function HybridCanvasWorkspace() {
       }));
       setStatusLog(`已放入「${tpl.name}」，可直接拖动或改字`);
     }
-  }, []);
+  }, [pushHistory]);
 
   const handleCreateTemplateCenter = useCallback(
     (tpl: BlueprintTemplate) => {
@@ -714,6 +855,17 @@ function HybridCanvasWorkspace() {
     [allTemplates, rf, instantiateTemplateAt]
   );
 
+  const executeUnifiedWidgetScriptRef = useRef<
+    (
+      nodeId: string,
+      trigger: ScriptTriggerEvent,
+      overrideVars?: Record<string, unknown>,
+      depth?: number,
+      peerOverrides?: Record<string, Partial<PeerWidgetSnapshot>>,
+      edgesOverride?: Record<string, BlueprintEdge>
+    ) => Promise<void>
+  >(async () => {});
+
   const handleRunButton = useCallback(async (nodeId: string, btn: WidgetButtonSpec) => {
     const entity = effectiveNodesRef.current[nodeId];
     if (!entity) return;
@@ -721,7 +873,7 @@ function HybridCanvasWorkspace() {
     setBusyButtonKey(key);
 
     try {
-      if (untrustedScriptKeys.has(`${nodeId}:${btn.id}`)) {
+      if (untrustedScriptKeysRef.current.has(`${nodeId}:${btn.id}`)) {
         setTrustModalState((s) => ({ ...s, open: true }));
         setStatusLog('该外部按钮脚本尚未获得信任授权，请先在审计弹窗中审阅');
         return;
@@ -766,7 +918,10 @@ function HybridCanvasWorkspace() {
             annotationOverrides: nextAnnOverrides,
           };
         });
-        if (res.annotationOps.length > 0) {
+        const touchedLayoutOrStyle = ['x', 'y', 'pos', 'width', 'height', 'title', 'color', 'type', 'category'].some(
+          (k) => k in res.updatedVars
+        );
+        if (res.annotationOps.length > 0 || touchedLayoutOrStyle) {
           setChunkSyncTick((t) => t + 1);
         }
         const freshOverrides = { [nodeId]: { vars: res.updatedVars } };
@@ -795,7 +950,7 @@ function HybridCanvasWorkspace() {
         for (const { targetId: tid, event, payloads } of mergedEmits.values()) {
           const payload = payloads.length === 1 ? payloads[0] : payloads;
           fanoutTasks.push(
-            executeUnifiedWidgetScript(
+            executeUnifiedWidgetScriptRef.current(
               tid,
               { kind: 'message', event, payload, fromId: nodeId, fromTitle: entity.title },
               undefined,
@@ -813,7 +968,7 @@ function HybridCanvasWorkspace() {
         ).filter((dstId) => Boolean(effectiveNodesRef.current[dstId]?.script));
         for (const dstId of downstreamIds) {
           fanoutTasks.push(
-            executeUnifiedWidgetScript(dstId, { kind: 'render' }, undefined, 1, freshOverrides)
+            executeUnifiedWidgetScriptRef.current(dstId, { kind: 'render' }, undefined, 1, freshOverrides)
           );
         }
         if (fanoutTasks.length > 0) {
@@ -901,7 +1056,7 @@ function HybridCanvasWorkspace() {
       }
       const entity = effectiveNodesRef.current[nodeId];
       if (!entity || !entity.script) return;
-      if (untrustedScriptKeys.has(`${nodeId}:__script__`)) {
+      if (untrustedScriptKeysRef.current.has(`${nodeId}:__script__`)) {
         if (trigger.kind !== 'render') {
           setTrustModalState((s) => ({ ...s, open: true }));
           setStatusLog('该外部控件脚本处于安全只读锁定态，请先审阅信任');
@@ -1002,97 +1157,102 @@ function HybridCanvasWorkspace() {
           width: n.width,
           height: n.height,
         }));
-        const placedCreatePos = new Map<number, { x: number; y: number }>();
+        const batchNodesToAdd: BlueprintNode[] = [];
+        const batchEdgesToAdd: BlueprintEdge[] = [];
+        const batchNodeIdsToRemove = new Set<string>();
+        const nowTs = Date.now();
+
         for (let opIdx = 0; opIdx < res.widgetOps.length; opIdx++) {
           const op = res.widgetOps[opIdx];
           if (op.op === 'create') {
-            const pos = findNonOverlappingPosition(
+            const placed = findNonOverlappingPosition(
               { x: op.x, y: op.y, width: op.width, height: op.height },
               occupiedBoxes,
               { gap: 20 }
             );
-            placedCreatePos.set(opIdx, pos);
-            occupiedBoxes.push({ x: pos.x, y: pos.y, width: op.width, height: op.height });
-          }
-        }
-        setBase((prev) => {
-          const nextNodes = { ...prev.nodes };
-          const nextEdges = { ...prev.edges };
-          for (let opIdx = 0; opIdx < res.widgetOps.length; opIdx++) {
-            const op = res.widgetOps[opIdx];
-            if (op.op === 'create') {
-              const placed = placedCreatePos.get(opIdx) ?? { x: op.x, y: op.y };
-              nextNodes[op.id] = {
+            occupiedBoxes.push({ x: placed.x, y: placed.y, width: op.width, height: op.height });
+            const newNode: BlueprintNode = {
+              id: op.id,
+              x: placed.x,
+              y: placed.y,
+              width: op.width,
+              height: op.height,
+              title: op.title,
+              body: op.body || '',
+              category: op.category || '子控件',
+              color: op.color,
+              script: op.script,
+              defaultVars: op.vars || {},
+              rev: 1,
+              cid: SELF_CID,
+            };
+            batchNodesToAdd.push(newNode);
+            if (op.script) {
+              newlyCreatedScripts.push({
                 id: op.id,
+                title: op.title,
+                body: op.body || '',
                 x: placed.x,
                 y: placed.y,
                 width: op.width,
                 height: op.height,
-                title: op.title,
-                body: op.body || '',
-                category: op.category || '子控件',
                 color: op.color,
+                vars: op.vars || {},
                 script: op.script,
-                defaultVars: op.vars || {},
-                rev: 1,
-                cid: SELF_CID,
-              };
-              if (op.script) {
-                newlyCreatedScripts.push({
-                  id: op.id,
-                  title: op.title,
-                  body: op.body || '',
-                  x: placed.x,
-                  y: placed.y,
-                  width: op.width,
-                  height: op.height,
-                  color: op.color,
-                  vars: op.vars || {},
-                  script: op.script,
-                });
-              }
-              if (op.connect) {
-                const eid = `edge-${nodeId}-${op.id}-${Date.now()}`;
-                const createdEdge: BlueprintEdge = {
-                  id: eid,
-                  source: nodeId,
-                  target: op.id,
-                  sourceHandle: 'out-1',
-                  targetHandle: 'in-1',
-                  label: typeof op.connect === 'string' ? op.connect : undefined,
-                  color: op.color,
-                  rev: 1,
-                  cid: SELF_CID,
-                };
-                nextEdges[eid] = createdEdge;
-                createdEdges[eid] = createdEdge;
-              }
-            } else if (op.op === 'connect') {
-              if (!approvedConnectOps.has(opIdx)) continue;
-              const eid = `edge-${op.fromId}-${op.toId}-${Date.now()}`;
+              });
+            }
+            if (op.connect) {
+              const eid = `edge-${nodeId}-${op.id}-${nowTs}-${opIdx}`;
               const createdEdge: BlueprintEdge = {
                 id: eid,
-                source: op.fromId,
-                target: op.toId,
+                source: nodeId,
+                target: op.id,
                 sourceHandle: 'out-1',
                 targetHandle: 'in-1',
-                label: op.label,
-                color: '#2563EB',
+                label: typeof op.connect === 'string' ? op.connect : undefined,
+                color: op.color,
                 rev: 1,
                 cid: SELF_CID,
               };
-              nextEdges[eid] = createdEdge;
-              // 子控件脚本里 widgets.connect() 新建的边也必须进本批快照，
-              // 否则同批子控件 render 时 checkDag()/topoSort() 看不到这条边，DAG 判断与执行顺序都失真。
+              batchEdgesToAdd.push(createdEdge);
               createdEdges[eid] = createdEdge;
-            } else if (op.op === 'remove') {
-              delete nextNodes[op.id];
-              for (const [eid, e] of Object.entries(nextEdges)) {
-                if (e.source === op.id || e.target === op.id) {
-                  delete nextEdges[eid];
-                  delete createdEdges[eid];
-                }
-              }
+            }
+          } else if (op.op === 'connect') {
+            if (!approvedConnectOps.has(opIdx)) continue;
+            const eid = `edge-${op.fromId}-${op.toId}-${nowTs}-${opIdx}`;
+            const createdEdge: BlueprintEdge = {
+              id: eid,
+              source: op.fromId,
+              target: op.toId,
+              sourceHandle: 'out-1',
+              targetHandle: 'in-1',
+              label: op.label,
+              color: '#2563EB',
+              rev: 1,
+              cid: SELF_CID,
+            };
+            batchEdgesToAdd.push(createdEdge);
+            createdEdges[eid] = createdEdge;
+          } else if (op.op === 'remove') {
+            batchNodeIdsToRemove.add(op.id);
+            for (const [eid, e] of Object.entries(createdEdges)) {
+              if (e.source === op.id || e.target === op.id) delete createdEdges[eid];
+            }
+          }
+        }
+
+        for (const child of newlyCreatedScripts) {
+          renderedScriptsRef.current.add(child.id);
+        }
+        setBase((prev) => {
+          const nextNodes = { ...prev.nodes };
+          const nextEdges = { ...prev.edges };
+          for (const n of batchNodesToAdd) nextNodes[n.id] = n;
+          for (const e of batchEdgesToAdd) nextEdges[e.id] = e;
+          for (const rid of batchNodeIdsToRemove) {
+            delete nextNodes[rid];
+            for (const [eid, e] of Object.entries(nextEdges)) {
+              if (e.source === rid || e.target === rid) delete nextEdges[eid];
             }
           }
           return { ...prev, version: prev.version + 1, nodes: nextNodes, edges: nextEdges };
@@ -1183,7 +1343,7 @@ function HybridCanvasWorkspace() {
             undefined,
             depth + 1,
             nextPeerOverrides,
-            activeEdges
+            createdEdges
           )
         );
       }
@@ -1195,7 +1355,7 @@ function HybridCanvasWorkspace() {
       if (trigger.kind !== 'render') {
         const downstreamIds = Array.from(
           new Set(
-            Object.values(activeEdges)
+            Object.values(createdEdges)
               .filter((e) => e.source === nodeId && e.target !== nodeId && !notifiedIds.has(e.target))
               .map((e) => e.target)
           )
@@ -1209,15 +1369,16 @@ function HybridCanvasWorkspace() {
                 undefined,
                 depth + 1,
                 nextPeerOverrides,
-                activeEdges
+                createdEdges
               )
             )
           );
         }
       }
     },
-    [buildEdgeSnapshots, buildPeerSnapshots, untrustedScriptKeys]
+    [buildEdgeSnapshots, buildPeerSnapshots, appendNodeLogs]
   );
+  executeUnifiedWidgetScriptRef.current = executeUnifiedWidgetScript;
 
   // 初始化所有带 script 的控件：严格等待 IndexedDB 恢复完成后再首次渲染，避免恢复覆盖冲掉首帧 vars.contents
   const renderedScriptsRef = useRef<Set<string>>(new Set());
@@ -1238,7 +1399,7 @@ function HybridCanvasWorkspace() {
       renderedScriptsRef.current.add(node.id);
       void executeUnifiedWidgetScript(node.id, { kind: 'render' });
     }
-  }, [overlayHydrated, effectiveNodes, threeRingBounds, executeUnifiedWidgetScript]);
+  }, [overlayHydrated, effectiveNodes, threeRingBounds, executeUnifiedWidgetScript, untrustedScriptKeys]);
 
   const handleRunScriptClick = useCallback(
     async (nodeId: string, buttonId: string) => {
@@ -1308,13 +1469,22 @@ function HybridCanvasWorkspace() {
     const cur = effectiveNodesRef.current[nodeId];
     if (!cur) return;
     const nextLocked = !cur.locked;
-    setOverlay((prev) => ({
-      ...prev,
-      nodePatches: {
-        ...prev.nodePatches,
-        [nodeId]: { ...(prev.nodePatches[nodeId] ?? {}), locked: nextLocked },
-      },
-    }));
+    setOverlay((prev) => {
+      const cleanedRt = clearConflictingRuntimeVars(prev.runtimeVars[nodeId], { locked: nextLocked });
+      const nextRuntimeVars =
+        cleanedRt !== prev.runtimeVars[nodeId]
+          ? { ...prev.runtimeVars, [nodeId]: cleanedRt! }
+          : prev.runtimeVars;
+      return {
+        ...prev,
+        runtimeVars: nextRuntimeVars,
+        nodePatches: {
+          ...prev.nodePatches,
+          [nodeId]: { ...(prev.nodePatches[nodeId] ?? {}), locked: nextLocked },
+        },
+      };
+    });
+    setChunkSyncTick((t) => t + 1);
     setStatusLog(nextLocked ? `已锁定「${cur.title}」（防误拖，按钮与输入框仍可操作）` : `已解锁「${cur.title}」`);
   }, []);
 
@@ -1392,6 +1562,18 @@ function HybridCanvasWorkspace() {
         },
       };
     });
+    if (
+      patch.x !== undefined ||
+      patch.y !== undefined ||
+      patch.width !== undefined ||
+      patch.height !== undefined ||
+      patch.title !== undefined ||
+      patch.color !== undefined ||
+      patch.category !== undefined ||
+      patch.locked !== undefined
+    ) {
+      setChunkSyncTick((t) => t + 1);
+    }
   }, []);
 
   const handleEditTitle = useCallback(
@@ -1570,11 +1752,46 @@ function HybridCanvasWorkspace() {
       script: src.script,
       inputPorts: src.inputPorts ? src.inputPorts.map((p) => ({ ...p })) : undefined,
       outputPorts: src.outputPorts ? src.outputPorts.map((p) => ({ ...p })) : undefined,
-      defaultVars: { ...src.effectiveVars },
+      defaultVars: (() => {
+        const cloned = { ...src.effectiveVars };
+        for (const k of ['x', 'y', 'pos', 'width', 'height', 'title', 'locked']) delete cloned[k];
+        return cloned;
+      })(),
       buttons: src.buttons ? src.buttons.map((b) => ({ ...b })) : [],
       rev: 1,
       cid: SELF_CID,
     };
+    // 若原节点存在未信任脚本或按钮，副本同步继承锁定态，防止通过复制绕过审计门禁
+    const inheritedUntrusted: string[] = [];
+    if (untrustedScriptKeysRef.current.has(`${nodeId}:__script__`)) {
+      inheritedUntrusted.push(`${newId}:__script__`);
+    }
+    for (const b of copy.buttons ?? []) {
+      if (untrustedScriptKeysRef.current.has(`${nodeId}:${b.id}`)) {
+        inheritedUntrusted.push(`${newId}:${b.id}`);
+      }
+    }
+    if (inheritedUntrusted.length > 0) {
+      const dupEntries = auditBlueprintScripts({
+        version: baseRef.current.version,
+        chunkSize: baseRef.current.chunkSize,
+        nodes: { [newId]: copy },
+        annotations: {},
+        edges: {},
+      }).filter((e) => inheritedUntrusted.includes(e.key));
+      setUntrustedScriptKeys((prev) => {
+        const next = new Set(prev);
+        for (const k of inheritedUntrusted) next.add(k);
+        return next;
+      });
+      if (dupEntries.length > 0) {
+        setTrustModalState((prev) => {
+          const byKey = new Map(prev.entries.map((e) => [e.key, e]));
+          for (const e of dupEntries) byKey.set(e.key, e);
+          return { ...prev, sourceLabel: prev.sourceLabel || `复制节点 (${copy.title})`, entries: Array.from(byKey.values()) };
+        });
+      }
+    }
     setBase((prev) => ({
       ...prev,
       version: prev.version + 1,
@@ -1635,6 +1852,14 @@ function HybridCanvasWorkspace() {
   }, [pushHistory, executeUnifiedWidgetScript]);
 
   const handleSaveAsTemplate = useCallback((node: EffectiveBlueprintNode) => {
+    const hasUntrusted =
+      untrustedScriptKeysRef.current.has(`${node.id}:__script__`) ||
+      (node.buttons ?? []).some((b) => untrustedScriptKeysRef.current.has(`${node.id}:${b.id}`));
+    if (hasUntrusted) {
+      setTrustModalState((s) => ({ ...s, open: true }));
+      setStatusLog('该节点包含尚未信任的外部脚本，请先在审计弹窗中审阅后再存为模板');
+      return;
+    }
     const name = window.prompt('为这个自定义模板起个名字：', node.title);
     if (!name) return;
     const tpl = nodeToCustomTemplate(node, name);
@@ -1671,13 +1896,14 @@ function HybridCanvasWorkspace() {
   }, []);
 
   const handleDeleteAnnotation = useCallback((id: string) => {
+    pushHistory();
     setBase((prev) => {
       const nextAnns = { ...prev.annotations };
       delete nextAnns[id];
       return { ...prev, version: prev.version + 1, annotations: nextAnns };
     });
     setStatusLog('已删除背景注释');
-  }, []);
+  }, [pushHistory]);
 
   // 关键防闪烁同步：将可见 Chunk 的节点增量合入 rfNodes，严格保留每个已有节点的 measured / dragging / selected！
   useEffect(() => {
@@ -1756,7 +1982,12 @@ function HybridCanvasWorkspace() {
             onEditTitle: handleEditTitle,
             onEditBody: handleEditBody,
             onResizeNode: handleResizeNode,
-            onOpenInspector: setInspectingNodeId,
+            onOpenInspector: (nid: string) => {
+              if (typeof window !== 'undefined' && window.innerWidth < 768) {
+                setTemplateDrawerOpen(false);
+              }
+              setInspectingNodeId(nid);
+            },
             onDuplicateNode: handleDuplicateNode,
             onDeleteNode: handleDeleteNode,
             busyButtonKey,
@@ -1828,70 +2059,87 @@ function HybridCanvasWorkspace() {
   // 关键修复：onNodesChange 直接交给 applyNodeChanges 处理拖动/测量/选中，
   // 拖动过程中不触碰 overlay/base，只在松手（dragging === false）时一次性落盘，0 闪烁！
   const onNodesChange = useCallback((changes: NodeChange[]) => {
-    setRfNodes((prev) => {
-      const updated = applyNodeChanges(changes, prev);
+    const widgetFinals: Array<{ id: string; x: number; y: number }> = [];
+    const annFinals: Array<{ id: string; x: number; y: number }> = [];
+    const widgetRemovals: string[] = [];
+    const annRemovals: string[] = [];
+    const safeChanges: NodeChange[] = [];
+    const curNodes = rfNodesRef.current;
 
-      const widgetFinals: Array<{ id: string; x: number; y: number }> = [];
-      const annFinals: Array<{ id: string; x: number; y: number }> = [];
-
-      for (const ch of changes) {
-        if (ch.type === 'position') {
-          if (ch.dragging === true) {
-            draggingNodeIdsRef.current.add(ch.id);
-          } else if (ch.dragging === false) {
-            draggingNodeIdsRef.current.delete(ch.id);
-            const node = updated.find((n) => n.id === ch.id);
-            const pos = ch.position ?? node?.position;
-            if (pos) {
-              const x = Math.round(pos.x);
-              const y = Math.round(pos.y);
-              if (ch.id.startsWith('ann-node:')) {
-                annFinals.push({ id: ch.id.slice('ann-node:'.length), x, y });
-              } else {
-                widgetFinals.push({ id: ch.id, x, y });
-              }
+    for (const ch of changes) {
+      if (ch.type === 'remove') {
+        if (ch.id.startsWith('ann-node:')) {
+          annRemovals.push(ch.id.slice('ann-node:'.length));
+          safeChanges.push(ch);
+        } else if (!effectiveNodesRef.current[ch.id]?.locked) {
+          widgetRemovals.push(ch.id);
+          safeChanges.push(ch);
+        }
+        continue;
+      }
+      safeChanges.push(ch);
+      if (ch.type === 'position') {
+        if (ch.dragging === true) {
+          draggingNodeIdsRef.current.add(ch.id);
+        } else if (ch.dragging === false) {
+          draggingNodeIdsRef.current.delete(ch.id);
+          const node = curNodes.find((n) => n.id === ch.id);
+          const pos = ch.position ?? node?.position;
+          if (pos) {
+            const x = Math.round(pos.x);
+            const y = Math.round(pos.y);
+            if (ch.id.startsWith('ann-node:')) {
+              annFinals.push({ id: ch.id.slice('ann-node:'.length), x, y });
+            } else {
+              widgetFinals.push({ id: ch.id, x, y });
             }
           }
         }
       }
+    }
 
-      if (widgetFinals.length > 0) {
-        queueMicrotask(() => {
-          pushHistory();
-          setOverlay((o) => {
-            const nextPatches = { ...o.nodePatches };
-            let nextRuntimeVars = o.runtimeVars;
-            for (const u of widgetFinals) {
-              nextPatches[u.id] = { ...(nextPatches[u.id] ?? {}), x: u.x, y: u.y };
-              const cleanedRt = clearConflictingRuntimeVars(nextRuntimeVars[u.id], { x: u.x, y: u.y });
-              if (cleanedRt !== nextRuntimeVars[u.id]) {
-                if (nextRuntimeVars === o.runtimeVars) nextRuntimeVars = { ...o.runtimeVars };
-                nextRuntimeVars[u.id] = cleanedRt!;
-              }
-            }
-            return { ...o, runtimeVars: nextRuntimeVars, nodePatches: nextPatches };
-          });
-          setChunkSyncTick((t) => t + 1);
-        });
-      }
+    setRfNodes((prev) => applyNodeChanges(safeChanges, prev));
 
-      if (annFinals.length > 0) {
-        queueMicrotask(() => {
-          setBase((b) => {
-            const nextAnns = { ...b.annotations };
-            for (const u of annFinals) {
-              const cur = nextAnns[u.id];
-              if (cur) nextAnns[u.id] = { ...cur, x: u.x, y: u.y };
-            }
-            return { ...b, annotations: nextAnns };
-          });
-          setChunkSyncTick((t) => t + 1);
-        });
-      }
+    for (const wid of widgetRemovals) {
+      handleDeleteNode(wid);
+    }
+    for (const aid of annRemovals) {
+      handleDeleteAnnotation(aid);
+    }
 
-      return updated;
-    });
-  }, []);
+    if (widgetFinals.length > 0 || annFinals.length > 0) {
+      pushHistory();
+    }
+
+    if (widgetFinals.length > 0) {
+      setOverlay((o) => {
+        const nextPatches = { ...o.nodePatches };
+        let nextRuntimeVars = o.runtimeVars;
+        for (const u of widgetFinals) {
+          nextPatches[u.id] = { ...(nextPatches[u.id] ?? {}), x: u.x, y: u.y };
+          const cleanedRt = clearConflictingRuntimeVars(nextRuntimeVars[u.id], { x: u.x, y: u.y });
+          if (cleanedRt !== nextRuntimeVars[u.id]) {
+            if (nextRuntimeVars === o.runtimeVars) nextRuntimeVars = { ...o.runtimeVars };
+            nextRuntimeVars[u.id] = cleanedRt!;
+          }
+        }
+        return { ...o, runtimeVars: nextRuntimeVars, nodePatches: nextPatches };
+      });
+      setChunkSyncTick((t) => t + 1);
+    }
+
+    if (annFinals.length > 0) {
+      setBase((b) => {
+        const nextAnns = { ...b.annotations };
+        for (const u of annFinals) {
+          const cur = nextAnns[u.id];
+          if (cur) nextAnns[u.id] = { ...cur, x: u.x, y: u.y, rev: cur.rev + 1, cid: SELF_CID };
+        }
+        return { ...b, version: b.version + 1, annotations: nextAnns };
+      });
+      setChunkSyncTick((t) => t + 1);
+    }
+  }, [pushHistory, handleDeleteNode, handleDeleteAnnotation]);
 
   // 由起点/终点控件自带脚本（onValidateConnect）决定是否放行连线；未注册钩子时默认允许自由拓扑（含环路）
   const validateConnectionByWidgets = useCallback(
@@ -1917,7 +2165,7 @@ function HybridCanvasWorkspace() {
       };
       const candidates = Array.from(new Set([source, target])).filter((id) => {
         const node = effectiveNodesRef.current[id];
-        return Boolean(node?.script) && !untrustedScriptKeys.has(`${id}:__script__`);
+        return Boolean(node?.script) && !untrustedScriptKeysRef.current.has(`${id}:__script__`);
       });
       if (candidates.length === 0) return { ok: true };
       const results = await Promise.all(
@@ -2037,8 +2285,26 @@ function HybridCanvasWorkspace() {
         setStatusLog(`保存失败：${json.error || res.status}`);
         return;
       }
-      setBase(merged);
-      setOverlay((prev) => ({ ...prev, nodePatches: {}, annotationOverrides: {} }));
+      const publishedNodeIds = new Set(Object.keys(overlay.nodePatches));
+      const publishedAnnIds = new Set(Object.keys(overlay.annotationOverrides ?? {}));
+      const publishedOverlaySnapshot: LocalOverlayState = {
+        runtimeVars: {},
+        nodePatches: { ...overlay.nodePatches },
+        annotationOverrides: { ...(overlay.annotationOverrides ?? {}) },
+        trustedRemoteScripts: {},
+      };
+      setBase((prev) => applyOverlayToBase(prev, publishedOverlaySnapshot, SELF_CID));
+      setOverlay((prev) => {
+        const nextNodePatches = { ...prev.nodePatches };
+        for (const nid of publishedNodeIds) {
+          if (nextNodePatches[nid] === overlay.nodePatches[nid]) delete nextNodePatches[nid];
+        }
+        const nextAnnOverrides = { ...(prev.annotationOverrides ?? {}) };
+        for (const aid of publishedAnnIds) {
+          if (nextAnnOverrides[aid] === overlay.annotationOverrides?.[aid]) delete nextAnnOverrides[aid];
+        }
+        return { ...prev, nodePatches: nextNodePatches, annotationOverrides: nextAnnOverrides };
+      });
       setChunkSyncTick((t) => t + 1);
       setSaveModalOpen(false);
       setStatusLog(`已通过密钥校验并保存到后端 (rev #${json.serverRevision})`);
@@ -2068,7 +2334,15 @@ function HybridCanvasWorkspace() {
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => setTemplateDrawerOpen((v) => !v)}
+            onClick={() =>
+              setTemplateDrawerOpen((v) => {
+                const next = !v;
+                if (next && typeof window !== 'undefined' && window.innerWidth < 768) {
+                  setInspectingNodeId(null);
+                }
+                return next;
+              })
+            }
             className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-semibold text-white ${
               templateDrawerOpen ? 'bg-blue-700 hover:bg-blue-800' : 'bg-slate-900 hover:bg-slate-700'
             }`}
@@ -2079,7 +2353,11 @@ function HybridCanvasWorkspace() {
 
           <button
             type="button"
-            onClick={() => handleCreateTemplateCenter(BUILTIN_TEMPLATES[9])}
+            onClick={() =>
+              handleCreateTemplateCenter(
+                BUILTIN_TEMPLATES.find((t) => t.id === 'tpl-blank-widget') ?? BUILTIN_TEMPLATES[0]
+              )
+            }
             className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 hover:bg-slate-50"
           >
             <Plus className="h-3.5 w-3.5" />
@@ -2217,7 +2495,9 @@ function HybridCanvasWorkspace() {
           <button
             type="button"
             onClick={() => {
+              pushHistory();
               renderedScriptsRef.current.clear();
+              setScriptLogsByNode({});
               setOverlay(createEmptyOverlay());
               setChunkSyncTick((t) => t + 1);
               setStatusLog('已清空所有个人本地叠加层，恢复后端权威默认值');
@@ -2289,18 +2569,23 @@ function HybridCanvasWorkspace() {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onEdgeDoubleClick={(_ev, edge) => {
-          const cur = base.edges[edge.id];
-          if (!cur) return;
-          const nextLabel = window.prompt('修改连线标签文字（留空清除）：', cur.label ?? '');
+          const initial = baseRef.current.edges[edge.id];
+          if (!initial) return;
+          const nextLabel = window.prompt('修改连线标签文字（留空清除）：', initial.label ?? '');
           if (nextLabel === null) return;
-          setBase((prev) => ({
-            ...prev,
-            version: prev.version + 1,
-            edges: {
-              ...prev.edges,
-              [edge.id]: { ...cur, label: nextLabel.trim() || undefined, rev: cur.rev + 1, cid: SELF_CID },
-            },
-          }));
+          pushHistory();
+          setBase((prev) => {
+            const cur = prev.edges[edge.id];
+            if (!cur) return prev;
+            return {
+              ...prev,
+              version: prev.version + 1,
+              edges: {
+                ...prev.edges,
+                [edge.id]: { ...cur, label: nextLabel.trim() || undefined, rev: cur.rev + 1, cid: SELF_CID },
+              },
+            };
+          });
         }}
         onPaneClick={() => setInspectingNodeId(null)}
         selectionKeyCode="Shift"
@@ -2346,11 +2631,16 @@ function HybridCanvasWorkspace() {
           setStatusLog('外部脚本保持禁用锁定态（安全只读）');
         }}
         onTrustAll={() => {
-          setUntrustedScriptKeys(new Set());
-          setTrustModalState((s) => ({ ...s, open: false }));
+          const approvedKeys = new Set(trustModalState.entries.map((e) => e.key));
+          setUntrustedScriptKeys((prev) => {
+            const next = new Set(prev);
+            for (const k of approvedKeys) next.delete(k);
+            return next;
+          });
+          setTrustModalState({ open: false, sourceLabel: '', entries: [] });
           renderedScriptsRef.current.clear();
           setChunkSyncTick((t) => t + 1);
-          setStatusLog('已信任并启用导入脚本');
+          setStatusLog('已信任并启用已审阅的外部脚本');
         }}
       />
 

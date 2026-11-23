@@ -54,6 +54,7 @@ export interface BlueprintStore {
 /** 代理服务运行参数。两个环境各自从自己的配置源读，但结构一致。 */
 export interface ProxyConfig {
   allowedHosts: string[];
+  upstreamBaseUrl?: string;
   hasUpstreamSecret: boolean;
   saveKey: string;
   rateLimitPerMin: number;
@@ -126,6 +127,7 @@ function header(req: ApiRequest, name: string): string {
 }
 
 const ALLOWED_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD']);
+let publishQueue: Promise<unknown> = Promise.resolve();
 const MAX_RESPONSE_CHARS = 256 * 1024;
 const PROXY_TIMEOUT_MS = 10_000;
 
@@ -169,13 +171,18 @@ async function handleBlueprintPublish(deps: ApiDeps, req: ApiRequest): Promise<A
   if (!body || typeof body.blueprint !== 'object' || body.blueprint === null) {
     return jsonResult({ ok: false, error: '无效的蓝图数据' }, 400);
   }
-  const written = await deps.store.writeBlueprint(body.blueprint);
-  if (!written) {
-    return jsonResult({ ok: false, error: '存储已满，无法写入底座' }, 507);
-  }
-  const nextRev = (await deps.store.readRevision()) + 1;
-  await deps.store.writeRevision(nextRev);
-  return jsonResult({ ok: true, mock: deps.mode === 'browser', serverRevision: nextRev });
+  const runAtomic = async (): Promise<ApiResult> => {
+    const written = await deps.store.writeBlueprint(body.blueprint);
+    if (!written) {
+      return jsonResult({ ok: false, error: '存储已满，无法写入底座' }, 507);
+    }
+    const nextRev = (await deps.store.readRevision()) + 1;
+    await deps.store.writeRevision(nextRev);
+    return jsonResult({ ok: true, mock: deps.mode === 'browser', serverRevision: nextRev });
+  };
+  const nextPromise = publishQueue.then(runAtomic, runAtomic);
+  publishQueue = nextPromise.catch(() => {});
+  return nextPromise;
 }
 
 async function handleProxyStatus(deps: ApiDeps): Promise<ApiResult> {
@@ -221,10 +228,27 @@ async function handleProxy(deps: ApiDeps, req: ApiRequest): Promise<ApiResult> {
     return jsonResult({ ok: false, error: `不支持的 HTTP 方法：${method}` }, 400);
   }
 
-  // 3) 目标 URL 形状
+  // 3) 目标 URL 形状（兼容 PROXY_UPSTREAM_BASE_URL 相对路径）
+  const rawUrlStr = String(body.url ?? '').trim();
+  const upstreamBase = (deps.proxy.upstreamBaseUrl ?? '').trim().replace(/\/+$/, '');
+  let upstreamHost = '';
+  if (upstreamBase) {
+    try {
+      upstreamHost = new URL(upstreamBase).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    } catch {
+      upstreamHost = '';
+    }
+  }
+  let resolvedUrlStr = rawUrlStr;
+  if (rawUrlStr.startsWith('/') && !rawUrlStr.startsWith('//')) {
+    if (!upstreamBase) {
+      return jsonResult({ ok: false, error: '目标 URL 格式无效（未配置上游基础地址，相对路径不可用）' }, 400);
+    }
+    resolvedUrlStr = `${upstreamBase}${rawUrlStr}`;
+  }
   let target: URL;
   try {
-    target = new URL(String(body.url ?? ''));
+    target = new URL(resolvedUrlStr);
   } catch {
     return jsonResult({ ok: false, error: '目标 URL 格式无效' }, 400);
   }
@@ -232,12 +256,19 @@ async function handleProxy(deps: ApiDeps, req: ApiRequest): Promise<ApiResult> {
     return jsonResult({ ok: false, error: '只允许 http/https 协议' }, 400);
   }
 
-  // 4) 域名白名单
-  if (!deps.proxy.allowedHosts.includes(target.hostname.toLowerCase())) {
+  // 4) 域名白名单（自动并入 upstreamHost，支持精确域名与子域名匹配，与 proxySecurity.ts 保持一致）
+  const hostLower = target.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const effectiveAllowlist = upstreamHost
+    ? Array.from(new Set([...deps.proxy.allowedHosts, upstreamHost]))
+    : deps.proxy.allowedHosts;
+  const hostAllowed = effectiveAllowlist.some(
+    (allowed) => hostLower === allowed || hostLower.endsWith(`.${allowed}`)
+  );
+  if (!hostAllowed) {
     return jsonResult(
       {
         ok: false,
-        error: `目标域名不在白名单内：${target.hostname}（可选：${deps.proxy.allowedHosts.join(', ')}）`,
+        error: `目标域名不在白名单内：${target.hostname}（可选：${effectiveAllowlist.join(', ')}）`,
       },
       403
     );

@@ -3,7 +3,6 @@ import { createRoot } from 'react-dom/client';
 import App from './App';
 import './index.css';
 import { installMockApi } from './core/mockApi';
-import { hasBackend } from './core/runtimeConfig';
 
 // GitHub Pages 是纯静态托管，没有 server/server.ts。
 //
@@ -15,7 +14,7 @@ import { hasBackend } from './core/runtimeConfig';
 // 注意：这里必须是静态 import + 同步调用。用 `await import(...)` 的顶层 await
 // 会要求构建 target 提到 es2022，而 Vite 默认 es2020 会直接报
 // "Top-level await is not available in the configured target environment"。
-if (import.meta.env.PROD && !hasBackend()) {
+if (import.meta.env.PROD) {
   installMockApi();
 }
 

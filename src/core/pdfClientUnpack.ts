@@ -20,6 +20,7 @@ interface PdfJsPage {
 interface PdfJsDoc {
   numPages: number;
   getPage: (pageNumber: number) => Promise<PdfJsPage>;
+  destroy?: () => Promise<void> | void;
 }
 
 interface PdfJsModule {
@@ -37,9 +38,26 @@ interface ClientUnpackedDoc {
 const PDFJS_CDN_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.min.mjs';
 const PDFJS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs';
 const MAX_CANVAS_EDGE = 4096;
+const MAX_CLIENT_DOCS = 6;
 
 let pdfJsPromise: Promise<PdfJsModule> | null = null;
 const clientDocStore = new Map<string, ClientUnpackedDoc>();
+
+export function disposeClientPdfDoc(clientDocId: string): void {
+  const rec = clientDocStore.get(clientDocId);
+  if (!rec) return;
+  clientDocStore.delete(clientDocId);
+  rec.pageCache.clear();
+  try {
+    void rec.doc.destroy?.();
+  } catch {
+    // ignore
+  }
+}
+
+export function hasClientPdfDoc(clientDocId: string): boolean {
+  return clientDocStore.has(clientDocId);
+}
 
 function quantizeClientWidth(targetPixelWidth: number): number {
   if (!Number.isFinite(targetPixelWidth) || targetPixelWidth <= 1100) return 1100;
@@ -72,6 +90,11 @@ export async function unpackPdfBytesInBrowser(
   const loadingTask = pdfjs.getDocument({ data: bytes.slice() });
   const doc = await loadingTask.promise;
   const clientDocId = `client-pdf-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  while (clientDocStore.size >= MAX_CLIENT_DOCS) {
+    const oldestKey = clientDocStore.keys().next().value;
+    if (!oldestKey) break;
+    disposeClientPdfDoc(oldestKey);
+  }
   clientDocStore.set(clientDocId, {
     id: clientDocId,
     totalPages: doc.numPages,
@@ -88,7 +111,8 @@ export async function renderClientPdfPageImage(
 ): Promise<string | null> {
   const rec = clientDocStore.get(clientDocId);
   if (!rec) return null;
-  const safePage = Math.max(1, Math.min(rec.totalPages, Math.floor(pageNumber)));
+  const rawPage = Number.isFinite(pageNumber) ? Math.floor(pageNumber) : 1;
+  const safePage = Math.max(1, Math.min(Math.max(1, rec.totalPages), rawPage));
   const bucketW = quantizeClientWidth(targetPixelWidth);
   const cacheKey = `${safePage}@${bucketW}`;
   const cached = rec.pageCache.get(cacheKey);
@@ -98,7 +122,7 @@ export async function renderClientPdfPageImage(
   const baseViewport = page.getViewport({ scale: 1 });
   const desiredScale = bucketW / Math.max(1, baseViewport.width);
   const maxSafeScale = MAX_CANVAS_EDGE / Math.max(1, Math.max(baseViewport.width, baseViewport.height));
-  const targetScale = Math.max(1.2, Math.min(5, desiredScale, maxSafeScale));
+  const targetScale = Math.max(0.1, Math.min(maxSafeScale, Math.max(1.2, Math.min(5, desiredScale))));
   const viewport = page.getViewport({ scale: targetScale });
 
   const canvas = document.createElement('canvas');

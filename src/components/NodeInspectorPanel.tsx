@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { BookmarkPlus, Copy, Plus, RotateCcw, Terminal, Trash2, X } from 'lucide-react';
 import { validateScriptSafety, validateScriptSyntax } from '../core/scriptSandbox';
 import type { EffectiveBlueprintNode, WidgetButtonSpec } from '../core/types';
@@ -54,6 +54,12 @@ export function NodeInspectorPanel({
   const [newVarKey, setNewVarKey] = useState('');
   const [newVarVal, setNewVarVal] = useState('');
   const [logFilter, setLogFilter] = useState<'all' | 'error'>('all');
+
+  useEffect(() => {
+    setLogFilter('all');
+    setNewVarKey('');
+    setNewVarVal('');
+  }, [node?.id]);
 
   if (!node) return null;
 
@@ -213,7 +219,7 @@ vars.updatedAt = lib.now();`,
                 脚本日志 ({scriptLogs.length})
               </span>
               <div className="flex items-center gap-1">
-                {scriptLogs.some((l) => l.level === 'error') && (
+                {(logFilter === 'error' || scriptLogs.some((l) => l.level === 'error')) && (
                   <button
                     type="button"
                     onClick={() => setLogFilter((f) => (f === 'all' ? 'error' : 'all'))}

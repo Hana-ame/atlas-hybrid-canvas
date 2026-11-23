@@ -52,6 +52,8 @@ export function useBlueprintHistory(
       base: safeClone(baseRef.current),
       overlay: safeClone(overlayRef.current),
     });
+    baseRef.current = prev.base;
+    overlayRef.current = prev.overlay;
     setBase(prev.base);
     setOverlay(prev.overlay);
     onSyncTick();
@@ -69,6 +71,8 @@ export function useBlueprintHistory(
       base: safeClone(baseRef.current),
       overlay: safeClone(overlayRef.current),
     });
+    baseRef.current = next.base;
+    overlayRef.current = next.overlay;
     setBase(next.base);
     setOverlay(next.overlay);
     onSyncTick();

@@ -19,6 +19,15 @@ export interface ChunkRecord {
   signature: string;
 }
 
+function fnv1a32(str: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
+}
+
 export function chunkKey(cx: number, cy: number): ChunkKey {
   return `${cx},${cy}`;
 }
@@ -146,8 +155,9 @@ export class ChunkManager {
           // 只取 text 前 32 字符会在「第 33 字符之后被改」时漏判脏；
           // 补上总长度与末段字符，用小代价覆盖尾部修改。
           const text = a.text ?? '';
+          const imgUrl = a.imageUrl ?? '';
           parts.push(
-            `A:${a.id}:${a.x},${a.y},${a.width},${a.height},${a.color},${a.bgColor ?? ''},${a.bgOpacity ?? ''},${a.fontSize},${text.length}:${text.slice(0, 32)}:${text.slice(-16)}:${a.imageUrl ? a.imageUrl.length : 0}`
+            `A:${a.id}:${a.kind ?? 'text'}:${a.weight ?? 'normal'}:${a.x},${a.y},${a.width},${a.height},${a.color},${a.bgColor ?? ''},${a.bgOpacity ?? ''},${a.fontSize},${text.length}:${fnv1a32(text)}:${imgUrl.length}:${imgUrl ? fnv1a32(imgUrl) : '0'}`
           );
         }
       }
