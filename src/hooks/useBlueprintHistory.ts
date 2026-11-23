@@ -1,9 +1,9 @@
 /**
  * @file useBlueprintHistory.ts
- * @description 画布撤销/重做历史栈 Hook（默认保留 50 步深拷贝快照，支持 Ctrl+Z / Ctrl+Y / Cmd+Shift+Z）。
+ * @description 画布撤销/重做历史栈 Hook（最多保留 50 步 structuredClone 深拷贝快照，回调引用稳定）。
  */
 
-import { useCallback, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { useCallback, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import type { BaseBlueprint, LocalOverlayState } from '../core/types';
 
 export interface HistorySnapshot {
@@ -14,8 +14,8 @@ export interface HistorySnapshot {
 const MAX_HISTORY_STEPS = 50;
 
 export function useBlueprintHistory(
-  base: BaseBlueprint,
-  overlay: LocalOverlayState,
+  baseRef: MutableRefObject<BaseBlueprint>,
+  overlayRef: MutableRefObject<LocalOverlayState>,
   setBase: Dispatch<SetStateAction<BaseBlueprint>>,
   setOverlay: Dispatch<SetStateAction<LocalOverlayState>>,
   onStatus: (msg: string) => void,
@@ -23,61 +23,58 @@ export function useBlueprintHistory(
 ) {
   const pastRef = useRef<HistorySnapshot[]>([]);
   const futureRef = useRef<HistorySnapshot[]>([]);
-  const [, setHistoryTick] = useState(0);
+  const [historyMeta, setHistoryMeta] = useState({ canUndo: false, canRedo: false });
 
-  const pushHistory = useCallback(
-    (snapBase?: BaseBlueprint, snapOverlay?: LocalOverlayState) => {
-      const b = snapBase ?? base;
-      const o = snapOverlay ?? overlay;
-      pastRef.current = [...pastRef.current.slice(-(MAX_HISTORY_STEPS - 1)), {
-        base: structuredClone(b),
-        overlay: structuredClone(o),
-      }];
-      futureRef.current = [];
-      setHistoryTick((t) => t + 1);
-    },
-    [base, overlay]
-  );
+  const pushHistory = useCallback(() => {
+    pastRef.current.push({
+      base: structuredClone(baseRef.current),
+      overlay: structuredClone(overlayRef.current),
+    });
+    if (pastRef.current.length > MAX_HISTORY_STEPS) {
+      pastRef.current.shift();
+    }
+    futureRef.current = [];
+    setHistoryMeta({ canUndo: true, canRedo: false });
+  }, [baseRef, overlayRef]);
 
   const handleUndo = useCallback(() => {
     const prev = pastRef.current.pop();
-    if (!prev) {
-      onStatus('已到达最早一步，无可撤销操作');
-      return;
-    }
+    if (!prev) return;
     futureRef.current.push({
-      base: structuredClone(base),
-      overlay: structuredClone(overlay),
+      base: structuredClone(baseRef.current),
+      overlay: structuredClone(overlayRef.current),
     });
     setBase(prev.base);
     setOverlay(prev.overlay);
     onSyncTick();
-    setHistoryTick((t) => t + 1);
-    onStatus('已撤销上一步操作 (Ctrl+Z)');
-  }, [base, overlay, setBase, setOverlay, onStatus, onSyncTick]);
+    setHistoryMeta({
+      canUndo: pastRef.current.length > 0,
+      canRedo: futureRef.current.length > 0,
+    });
+    onStatus('已撤销上一步操作');
+  }, [baseRef, overlayRef, setBase, setOverlay, onStatus, onSyncTick]);
 
   const handleRedo = useCallback(() => {
     const next = futureRef.current.pop();
-    if (!next) {
-      onStatus('无可重做操作');
-      return;
-    }
+    if (!next) return;
     pastRef.current.push({
-      base: structuredClone(base),
-      overlay: structuredClone(overlay),
+      base: structuredClone(baseRef.current),
+      overlay: structuredClone(overlayRef.current),
     });
     setBase(next.base);
     setOverlay(next.overlay);
     onSyncTick();
-    setHistoryTick((t) => t + 1);
-    onStatus('已重做操作 (Ctrl+Y)');
-  }, [base, overlay, setBase, setOverlay, onStatus, onSyncTick]);
+    setHistoryMeta({
+      canUndo: pastRef.current.length > 0,
+      canRedo: futureRef.current.length > 0,
+    });
+    onStatus('已重做操作');
+  }, [baseRef, overlayRef, setBase, setOverlay, onStatus, onSyncTick]);
 
   return {
     pushHistory,
     handleUndo,
     handleRedo,
-    canUndo: pastRef.current.length > 0,
-    canRedo: futureRef.current.length > 0,
+    historyMeta,
   };
 }

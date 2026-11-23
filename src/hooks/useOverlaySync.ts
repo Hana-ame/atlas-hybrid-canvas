@@ -1,6 +1,7 @@
 /**
  * @file useOverlaySync.ts
- * @description 本地叠加层防抖写盘（IndexedDB）与多标签页 BroadcastChannel 实时同步 Hook。
+ * @description 本地叠加层防抖写盘（IndexedDB，300ms）与多标签页 BroadcastChannel 实时同步 Hook。
+ * 采用内容指纹比对防回环，避免多条远端消息合并进同一渲染批次时产生 A→B→A 广播抖动。
  */
 
 import { useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
@@ -11,21 +12,31 @@ import {
 } from '../core/layeredStore';
 import type { LocalOverlayState } from '../core/types';
 
+function fingerprintOverlay(overlay: LocalOverlayState): string {
+  try {
+    return JSON.stringify(overlay);
+  } catch {
+    return '';
+  }
+}
+
 export function useOverlaySync(
   overlay: LocalOverlayState,
   isReady: boolean,
   setOverlay: Dispatch<SetStateAction<LocalOverlayState>>,
   onRemoteNotice?: (msg: string) => void
 ) {
-  const skipNextSaveRef = useRef(false);
+  const lastRemoteFingerprintRef = useRef<string>('');
+  const lastSavedFingerprintRef = useRef<string>('');
 
-  // 防抖落盘（300ms 合并高频打字/勾选）
+  // 防抖落盘（300ms 合并高频输入/勾选），命中远端指纹时直接跳过不回广播
   useEffect(() => {
     if (!isReady) return;
-    if (skipNextSaveRef.current) {
-      skipNextSaveRef.current = false;
+    const fp = fingerprintOverlay(overlay);
+    if (fp && (fp === lastRemoteFingerprintRef.current || fp === lastSavedFingerprintRef.current)) {
       return;
     }
+    lastSavedFingerprintRef.current = fp;
     scheduleSaveLocalOverlay(overlay, 300);
   }, [overlay, isReady]);
 
@@ -40,11 +51,14 @@ export function useOverlaySync(
     };
   }, []);
 
-  // 订阅同浏览器其他标签页的本地更新，避免静默互相覆盖
+  // 订阅同浏览器其他标签页的本地更新，按内容指纹去重后合并
   useEffect(() => {
     if (!isReady) return;
     return subscribeCrossTabOverlay((remoteOverlay) => {
-      skipNextSaveRef.current = true;
+      const fp = fingerprintOverlay(remoteOverlay);
+      if (fp && fp === lastSavedFingerprintRef.current) return;
+      lastRemoteFingerprintRef.current = fp;
+      lastSavedFingerprintRef.current = fp;
       setOverlay(remoteOverlay);
       onRemoteNotice?.('已自动同步同一浏览器其他标签页的本地修改');
     });

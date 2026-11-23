@@ -172,6 +172,35 @@ function extractVarDrivenProps(vars: Record<string, unknown>): Partial<LocalNode
   return out;
 }
 
+
+/**
+ * 当用户手动拖拽、缩放或编辑控件属性时，清理 runtimeVars 中冲突的形态/布局键，
+ * 避免脚本旧值把手动修改弹回。
+ */
+export function clearConflictingRuntimeVars(
+  rtVars: Record<string, unknown> | undefined,
+  patch: Partial<LocalNodePatch>
+): Record<string, unknown> | undefined {
+  if (!rtVars) return rtVars;
+  let changed = false;
+  const next = { ...rtVars };
+  if ('x' in patch || 'y' in patch) {
+    if ('x' in next) { delete next.x; changed = true; }
+    if ('y' in next) { delete next.y; changed = true; }
+    if ('pos' in next) { delete next.pos; changed = true; }
+  }
+  if ('width' in patch && 'width' in next) { delete next.width; changed = true; }
+  if ('height' in patch && 'height' in next) { delete next.height; changed = true; }
+  if ('title' in patch && 'title' in next) { delete next.title; changed = true; }
+  if ('category' in patch) {
+    if ('type' in next) { delete next.type; changed = true; }
+    if ('category' in next) { delete next.category; changed = true; }
+  }
+  if ('color' in patch && 'color' in next) { delete next.color; changed = true; }
+  if ('locked' in patch && 'locked' in next) { delete next.locked; changed = true; }
+  return changed ? next : rtVars;
+}
+
 export function resolveEffectiveNodes(
   base: BaseBlueprint,
   overlay: LocalOverlayState

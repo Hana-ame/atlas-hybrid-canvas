@@ -45,9 +45,19 @@ async function startServer() {
     return crypto.timingSafeEqual(a, b);
   };
 
+  let lastRateSweepAt = Date.now();
   const checkProxyRateLimit = (ip: string): { ok: boolean; retryAfterSec?: number } => {
     const now = Date.now();
     const windowMs = 60_000;
+    // 定期清理过期 IP 桶（满 5 分钟或条目超 200），防止长跑内存缓慢增长
+    if (now - lastRateSweepAt > 300_000 || proxyRateHits.size > 200) {
+      lastRateSweepAt = now;
+      for (const [key, timestamps] of proxyRateHits) {
+        const fresh = timestamps.filter((ts) => now - ts < windowMs);
+        if (fresh.length === 0) proxyRateHits.delete(key);
+        else proxyRateHits.set(key, fresh);
+      }
+    }
     const list = (proxyRateHits.get(ip) ?? []).filter((ts) => now - ts < windowMs);
     if (list.length >= proxyRateLimitPerMin) {
       const oldest = list[0];

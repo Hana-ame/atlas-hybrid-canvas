@@ -68,11 +68,11 @@ import { ChunkManager } from './core/chunkManager';
 import { ChunkTileCache } from './core/chunkTileCache';
 import {
   applyOverlayToBase,
+  clearConflictingRuntimeVars,
   createEmptyOverlay,
   loadLocalOverlay,
   resolveEffectiveAnnotations,
   resolveEffectiveNodes,
-  saveLocalOverlay,
 } from './core/layeredStore';
 import {
   runInIsolatedWorker,
@@ -142,10 +142,8 @@ function HybridCanvasWorkspace() {
   const [saveKeyError, setSaveKeyError] = useState<string | null>(null);
   const [isSavingBase, setIsSavingBase] = useState(false);
 
-  // 1) 撤销/重做历史栈（最多 50 步）
-  const historyPastRef = useRef<Array<{ base: BaseBlueprint; overlay: LocalOverlayState }>>([]);
-  const historyFutureRef = useRef<Array<{ base: BaseBlueprint; overlay: LocalOverlayState }>>([]);
-  const [historyMeta, setHistoryMeta] = useState({ canUndo: false, canRedo: false });
+  // 1) IndexedDB 恢复就绪标记（驱动 useOverlaySync 防抖与跨页签同步）
+  const [overlayHydrated, setOverlayHydrated] = useState(false);
 
   // 2) Ctrl+K 全局搜索与坐标跳转弹窗
   const [searchOpen, setSearchOpen] = useState(false);
@@ -204,50 +202,15 @@ function HybridCanvasWorkspace() {
   const overlayRef = useRef(overlay);
   overlayRef.current = overlay;
 
-  const pushHistory = useCallback(() => {
-    const snap = {
-      base: structuredClone(baseRef.current),
-      overlay: structuredClone(overlayRef.current),
-    };
-    historyPastRef.current.push(snap);
-    if (historyPastRef.current.length > 50) historyPastRef.current.shift();
-    historyFutureRef.current = [];
-    setHistoryMeta({ canUndo: true, canRedo: false });
-  }, []);
-
-  const handleUndo = useCallback(() => {
-    const prev = historyPastRef.current.pop();
-    if (!prev) return;
-    historyFutureRef.current.push({
-      base: structuredClone(baseRef.current),
-      overlay: structuredClone(overlayRef.current),
-    });
-    setBase(prev.base);
-    setOverlay(prev.overlay);
-    setChunkSyncTick((t) => t + 1);
-    setHistoryMeta({
-      canUndo: historyPastRef.current.length > 0,
-      canRedo: historyFutureRef.current.length > 0,
-    });
-    setStatusLog('已撤销上一步操作');
-  }, []);
-
-  const handleRedo = useCallback(() => {
-    const next = historyFutureRef.current.pop();
-    if (!next) return;
-    historyPastRef.current.push({
-      base: structuredClone(baseRef.current),
-      overlay: structuredClone(overlayRef.current),
-    });
-    setBase(next.base);
-    setOverlay(next.overlay);
-    setChunkSyncTick((t) => t + 1);
-    setHistoryMeta({
-      canUndo: historyPastRef.current.length > 0,
-      canRedo: historyFutureRef.current.length > 0,
-    });
-    setStatusLog('已重做操作');
-  }, []);
+  const bumpChunkSyncTick = useCallback(() => setChunkSyncTick((t) => t + 1), []);
+  const { pushHistory, handleUndo, handleRedo, historyMeta } = useBlueprintHistory(
+    baseRef,
+    overlayRef,
+    setBase,
+    setOverlay,
+    setStatusLog,
+    bumpChunkSyncTick
+  );
 
   // 全局快捷键：Ctrl+K 搜索跳转，Ctrl+Z / Ctrl+Y 撤销重做（输入框聚焦时放行原生撤销）
   useEffect(() => {
@@ -446,6 +409,7 @@ function HybridCanvasWorkspace() {
       ]);
       if (!active) return;
       overlayHydratedRef.current = true;
+      setOverlayHydrated(true);
       setOverlay(savedOverlay);
       setCustomTemplates(savedTpls);
       setChunkSyncTick((t) => t + 1);
@@ -467,13 +431,8 @@ function HybridCanvasWorkspace() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!overlayHydratedRef.current) return;
-    const timer = window.setTimeout(() => {
-      void saveLocalOverlay(overlay);
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [overlay]);
+  // 本地叠加层 300ms 防抖写盘 + beforeunload 刷盘 + BroadcastChannel 跨页签防回环同步
+  useOverlaySync(overlay, overlayHydrated, setOverlay, setStatusLog);
 
   // 实例化任意模板到指定世界坐标
   const instantiateTemplateAt = useCallback((tpl: BlueprintTemplate, worldX: number, worldY: number) => {
@@ -968,26 +927,34 @@ function HybridCanvasWorkspace() {
   }, []);
 
   const handlePatchNode = useCallback((nodeId: string, patch: Partial<EffectiveBlueprintNode>) => {
-    setOverlay((prev) => ({
-      ...prev,
-      nodePatches: {
-        ...prev.nodePatches,
-        [nodeId]: {
-          ...(prev.nodePatches[nodeId] ?? {}),
-          ...(patch.title !== undefined ? { title: patch.title } : {}),
-          ...(patch.body !== undefined ? { body: patch.body } : {}),
-          ...(patch.category !== undefined ? { category: patch.category } : {}),
-          ...(patch.color !== undefined ? { color: patch.color } : {}),
-          ...(patch.width !== undefined ? { width: patch.width } : {}),
-          ...(patch.height !== undefined ? { height: patch.height } : {}),
-          ...(patch.buttons !== undefined ? { buttons: patch.buttons } : {}),
-          ...(patch.script !== undefined ? { script: patch.script } : {}),
-          ...(patch.locked !== undefined ? { locked: patch.locked } : {}),
-          ...(patch.inputPorts !== undefined ? { inputPorts: patch.inputPorts } : {}),
-          ...(patch.outputPorts !== undefined ? { outputPorts: patch.outputPorts } : {}),
+    setOverlay((prev) => {
+      const cleanedRt = clearConflictingRuntimeVars(prev.runtimeVars[nodeId], patch);
+      const nextRuntimeVars =
+        cleanedRt !== prev.runtimeVars[nodeId]
+          ? { ...prev.runtimeVars, [nodeId]: cleanedRt! }
+          : prev.runtimeVars;
+      return {
+        ...prev,
+        runtimeVars: nextRuntimeVars,
+        nodePatches: {
+          ...prev.nodePatches,
+          [nodeId]: {
+            ...(prev.nodePatches[nodeId] ?? {}),
+            ...(patch.title !== undefined ? { title: patch.title } : {}),
+            ...(patch.body !== undefined ? { body: patch.body } : {}),
+            ...(patch.category !== undefined ? { category: patch.category } : {}),
+            ...(patch.color !== undefined ? { color: patch.color } : {}),
+            ...(patch.width !== undefined ? { width: patch.width } : {}),
+            ...(patch.height !== undefined ? { height: patch.height } : {}),
+            ...(patch.buttons !== undefined ? { buttons: patch.buttons } : {}),
+            ...(patch.script !== undefined ? { script: patch.script } : {}),
+            ...(patch.locked !== undefined ? { locked: patch.locked } : {}),
+            ...(patch.inputPorts !== undefined ? { inputPorts: patch.inputPorts } : {}),
+            ...(patch.outputPorts !== undefined ? { outputPorts: patch.outputPorts } : {}),
+          },
         },
-      },
-    }));
+      };
+    });
   }, []);
 
   const handleEditTitle = useCallback(
@@ -1338,10 +1305,16 @@ function HybridCanvasWorkspace() {
           pushHistory();
           setOverlay((o) => {
             const nextPatches = { ...o.nodePatches };
+            let nextRuntimeVars = o.runtimeVars;
             for (const u of widgetFinals) {
               nextPatches[u.id] = { ...(nextPatches[u.id] ?? {}), x: u.x, y: u.y };
+              const cleanedRt = clearConflictingRuntimeVars(nextRuntimeVars[u.id], { x: u.x, y: u.y });
+              if (cleanedRt !== nextRuntimeVars[u.id]) {
+                if (nextRuntimeVars === o.runtimeVars) nextRuntimeVars = { ...o.runtimeVars };
+                nextRuntimeVars[u.id] = cleanedRt!;
+              }
             }
-            return { ...o, nodePatches: nextPatches };
+            return { ...o, runtimeVars: nextRuntimeVars, nodePatches: nextPatches };
           });
           setChunkSyncTick((t) => t + 1);
         });
