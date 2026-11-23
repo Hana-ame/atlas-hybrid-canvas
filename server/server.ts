@@ -1,15 +1,14 @@
 import 'dotenv/config';
 import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
+import http from 'node:http';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   isPrivateOrReservedIP,
   parseAllowedHosts,
-  PROXY_ALLOWED_METHODS,
   PROXY_DEFAULT_TIMEOUT_MS,
-  PROXY_MAX_RESPONSE_CHARS,
   sanitizeProxyHeaders,
   readResponseBufferWithLimit,
   sanitizeBinaryProxyContentType,
@@ -20,7 +19,15 @@ import {
   getUnpackedPdfPage,
   unpackPdfBufferToPages,
 } from './pdfUnpack';
-import { attachRoomServer, type RoomServerHandle } from './roomServer';
+import { attachRoomServer, type RoomServerHandle, type RpcHandler } from './roomServer';
+import {
+  createMemoryStore,
+  handleApiRequest,
+  type ApiDeps,
+  type ApiRequest,
+  type ApiResult,
+  type HttpFetcher,
+} from '../src/core/apiCore';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,13 +41,120 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 const PDF_UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
 const PDF_UPLOAD_MAX_LABEL = '50MB';
 
-// 权威底座内存存储（生产环境可替换为 SQLite / PostgreSQL + PostGIS）
-let serverBaseBlueprint: Record<string, unknown> | null = null;
-let serverRevision = 1;
+// 权威底座存储。业务逻辑在 apiCore 里，这里只提供存储实现。
+const sharedStore = createMemoryStore();
 
 // 房间服务实例。必须在 httpServer 建好之后才能 attach，而 stats 路由又要注册在
 // SPA fallback 之前，所以用模块级变量在注册时先捕获引用、attach 后再赋值。
 let roomServer: RoomServerHandle | null = null;
+
+/** 这些响应头没必要回传给浏览器，传了反而可能干扰。 */
+const RPC_DROP_RES_HEADERS = new Set([
+  'connection',
+  'keep-alive',
+  'transfer-encoding',
+  'content-encoding',
+  'content-length',
+  'date',
+  'etag',
+]);
+
+/**
+ * 构造 RPC 处理器：把 WS 上的 rpc_req 变成一次对**本机自己**的真实 HTTP 调用。
+ *
+ * 为什么走自回环而不是构造合成 req/res 对象：
+ * Express 的一整条中间件链（json/raw parser、限流、鉴权、SSRF 防护、静态资源、
+ * req.ip 解析）都依赖真实的 IncomingMessage/ServerResponse。伪造对象要么漏掉某层
+ * 防护、要么在某些中间件里炸掉。回环一次虽然多一跳本机 TCP，但拿到的是**和浏览器
+ * 直连完全一致**的行为——这正是"复用组件"要的效果：不重写任何业务逻辑。
+ */
+function makeRpcHandler(port: number): RpcHandler {
+  return (frame) =>
+    new Promise((resolve) => {
+      const path = String(frame.path || '/');
+      // 只允许内部 API 路径，避免 WS 被当成任意站点的代理跳板。
+      if (!path.startsWith('/api/')) {
+        resolve({
+          t: 'rpc_res',
+          id: frame.id,
+          status: 403,
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+          body: JSON.stringify({ ok: false, error: 'RPC 只允许访问 /api/* 路径' }),
+          bodyEncoding: 'text',
+        });
+        return;
+      }
+
+      const isBase64 = frame.bodyEncoding === 'base64';
+      const bodyBuf = frame.body
+        ? Buffer.from(frame.body, isBase64 ? 'base64' : 'utf8')
+        : Buffer.alloc(0);
+
+      const headers: Record<string, string | number> = {};
+      for (const [k, v] of Object.entries(frame.headers || {})) {
+        if (typeof v === 'string') headers[k] = v;
+      }
+      // 标记来源，方便服务端日志区分"浏览器直连"与"经 WS 转发"。
+      headers['x-atlas-rpc'] = '1';
+      if (bodyBuf.length > 0) headers['content-length'] = bodyBuf.length;
+
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          method: String(frame.method || 'GET').toUpperCase(),
+          path,
+          headers,
+          timeout: 60_000,
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('end', () => {
+            const buf = Buffer.concat(chunks);
+            const resHeaders: Record<string, string> = {};
+            for (const [k, v] of Object.entries(res.headers)) {
+              if (RPC_DROP_RES_HEADERS.has(k.toLowerCase())) continue;
+              if (typeof v === 'string') resHeaders[k] = v;
+              else if (Array.isArray(v)) resHeaders[k] = v.join(', ');
+            }
+            recordRpcStatus(res.statusCode ?? 0);
+            resolve({
+              t: 'rpc_res',
+              id: frame.id,
+              status: res.statusCode ?? 502,
+              headers: resHeaders,
+              body: buf.toString('base64'),
+              bodyEncoding: 'base64',
+            });
+          });
+        }
+      );
+
+      req.on('timeout', () => {
+        req.destroy(new Error('上游处理超时'));
+      });
+      req.on('error', (err) => {
+        resolve({
+          t: 'rpc_res',
+          id: frame.id,
+          status: 502,
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+          body: JSON.stringify({ ok: false, error: `RPC 回环失败：${err.message}` }),
+          bodyEncoding: 'text',
+        });
+      });
+
+      if (bodyBuf.length > 0) req.write(bodyBuf);
+      req.end();
+    });
+}
+
+// 转发计数：给 /api/room/stats 用，便于确认"线上确实在走服务端"而不是本地 mock。
+let rpcForwarded = 0;
+function recordRpcStatus(_status: number): void {
+  rpcForwarded += 1;
+}
 
 async function startServer() {
   const app = express();
@@ -62,7 +176,7 @@ async function startServer() {
       res.status(503).json({ ok: false, error: '房间服务尚未就绪' });
       return;
     }
-    res.json({ ok: true, ...roomServer.stats() });
+    res.json({ ok: true, ...roomServer.stats(), rpcForwarded });
   });
 
   const blueprintSaveKey = (process.env.BLUEPRINT_SAVE_KEY || '').trim();
@@ -114,192 +228,154 @@ async function startServer() {
         : '';
 
   // 1) 获取/发布后端权威底座（Base Blueprint + defaultVars）
-  app.get('/api/blueprint', (_req, res) => {
-    res.json({
-      ok: true,
-      serverRevision,
-      blueprint: serverBaseBlueprint,
-    });
-  });
+  //    以及 2) 防 SSRF 服务端密钥代理 —— 这两个的业务逻辑**不在本文件里**，
+  //    唯一实现在 src/core/apiCore.ts。这里只做传输适配：把 Express 的 req/res
+  //    翻译成 ApiRequest / ApiResult。浏览器端跑的是同一份 apiCore。
 
-  const verifySaveKey = (provided: string): boolean => {
-    if (!blueprintSaveKey || !provided) return false;
-    const a = Buffer.from(provided, 'utf8');
-    const b = Buffer.from(blueprintSaveKey, 'utf8');
-    if (a.length !== b.length) return false;
-    return crypto.timingSafeEqual(a, b);
+  /**
+   * 服务端出站请求：承载 apiCore 无法在浏览器里做到的那部分防护。
+   * 浏览器拿不到对端 IP、也没有 DNS 解析权限，所以这些检查只能在这里做——
+   * 这正是"同一份业务逻辑、各环境用各自真实能力"的落点。
+   */
+  const serverFetcher: HttpFetcher = {
+    async fetch(url, init) {
+      // a) 目标 URL 形状与白名单（复用 proxySecurity，别在这里重写一份）
+      const target = validateProxyTargetUrl(url, { upstreamBaseUrl, allowedHosts });
+      if (!target.ok) throw new Error(target.error);
+
+      // b) DNS 解析后逐个检查是否内网/元数据地址。
+      //    必须在真正发请求前查，因为 parse URL 阶段拿到的只是域名字符串，
+      //    域名可以解析到 127.0.0.1 或 169.254.169.254。
+      const records = await dns.lookup(target.url.hostname, { all: true });
+      if (records.length === 0) throw new Error('目标域名解析失败');
+      for (const rec of records) {
+        if (isPrivateOrReservedIP(rec.address)) {
+          throw new Error('安全限制：目标域名解析到受保护的内网或元数据地址，已拒绝代理');
+        }
+      }
+
+      // c) 头净化（去掉 Host / Cookie 这类不该透传的）
+      const headerCheck = sanitizeProxyHeaders(init.headers);
+      if (!headerCheck.ok) throw new Error(headerCheck.error);
+
+      // d) 按配置注入上游密钥。调用方自己带了同名头就不覆盖。
+      const outboundHeaders: Record<string, string> = { ...headerCheck.headers };
+      if (proxyApiKey && target.injectSecret) {
+        const hasClientOverride = Object.keys(outboundHeaders).some(
+          (k) => k.toLowerCase() === proxyApiKeyHeader.toLowerCase()
+        );
+        if (!hasClientOverride) {
+          outboundHeaders[proxyApiKeyHeader] = `${proxyApiKeyPrefix}${proxyApiKey}`;
+        }
+      }
+
+      // e) 发请求。redirect: manual —— 3xx 由 apiCore 统一拦截，
+      //    因为跟随后续跳转可能落到白名单之外。
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), PROXY_DEFAULT_TIMEOUT_MS);
+      try {
+        const res = await fetch(target.url.toString(), {
+          method: init.method,
+          headers: outboundHeaders,
+          // 包一层 Buffer：Node 的 fetch 接受 Buffer，而 Uint8Array 在 TS 的类型
+          // 定义里不被认作合法 BodyInit（实际运行时没问题，这里只是取悦类型）。
+          body: init.body ? Buffer.from(init.body) : undefined,
+          redirect: 'manual',
+          signal: controller.signal,
+        });
+        const buf = new Uint8Array(await res.arrayBuffer());
+        const resHeaders: Record<string, string> = {};
+        res.headers.forEach((v, k) => {
+          resHeaders[k] = v;
+        });
+        return { status: res.status, headers: resHeaders, body: buf };
+      } finally {
+        clearTimeout(timer);
+      }
+    },
   };
 
-  app.post('/api/blueprint/publish', (req, res) => {
-    if (!blueprintSaveKey) {
-      res.status(403).json({
-        ok: false,
-        error: '服务端未配置 BLUEPRINT_SAVE_KEY，已禁止保存；普通用户仅可通过控件内置 API 访问后端',
-      });
-      return;
-    }
-    const providedKey = String(req.header('x-blueprint-save-key') || '').trim();
-    if (!verifySaveKey(providedKey)) {
-      res.status(401).json({
-        ok: false,
-        error: '保存密钥（Save Key）错误或缺失；无密钥仅可使用控件内预设 API，本地修改已保留在浏览器',
-      });
-      return;
-    }
-    const body = req.body as { blueprint?: Record<string, unknown> } | null;
-    if (!body || !body.blueprint || typeof body.blueprint !== 'object') {
-      res.status(400).json({ ok: false, error: '无效的蓝图数据' });
-      return;
-    }
-    serverBaseBlueprint = body.blueprint;
-    serverRevision += 1;
-    res.json({ ok: true, serverRevision });
-  });
-
-  // 2) 防 SSRF 服务端密钥代理（复用自 AtlasCanvas）
-  app.get('/api/proxy/status', (_req, res) => {
-    res.json({
-      enabled: true,
-      hasUpstreamSecret: Boolean(proxyApiKey),
+  const apiDeps: ApiDeps = {
+    store: sharedStore,
+    proxy: {
       allowedHosts,
-    });
-  });
+      hasUpstreamSecret: Boolean(proxyApiKey),
+      saveKey: blueprintSaveKey,
+      rateLimitPerMin: proxyRateLimitPerMin,
+    },
+    // 复用已有的 checkProxyRateLimit（带定期清理），只做接口适配，不另起一份实现。
+    rateLimiter: { check: (clientId: string) => checkProxyRateLimit(clientId) },
+    fetcher: serverFetcher,
+    mode: 'server',
+  };
 
-  app.post('/api/proxy', async (req, res) => {
-    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
-    const rl = checkProxyRateLimit(clientIp);
-    if (!rl.ok) {
-      res.setHeader('Retry-After', String(rl.retryAfterSec ?? 10));
-      res.status(429).json({
-        ok: false,
-        error: `代理请求过于频繁（上限 ${proxyRateLimitPerMin} 次/分钟），请 ${rl.retryAfterSec} 秒后重试`,
-      });
-      return;
+  /** 把 Express 的 req 转成传输无关的 ApiRequest。 */
+  const toApiRequest = (req: express.Request): ApiRequest => {
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (typeof v === 'string') headers[k] = v;
+      else if (Array.isArray(v)) headers[k] = v.join(', ');
     }
+    let body = new Uint8Array(0);
+    // express.json / express.raw 已经把体解析好了；这里统一还原成字节，
+    // 让 apiCore 只面对一种输入形态。
+    if (Buffer.isBuffer(req.body)) {
+      body = new Uint8Array(req.body);
+    } else if (req.body && typeof req.body === 'object') {
+      body = new TextEncoder().encode(JSON.stringify(req.body));
+    }
+    return {
+      method: req.method,
+      path: req.originalUrl || req.url,
+      headers,
+      body,
+      clientId: req.ip || req.socket.remoteAddress || 'unknown',
+    };
+  };
 
-    const providedProxyToken = String(req.header('x-proxy-token') || '').trim();
-    if (!verifyProxyClientToken(providedProxyToken)) {
+  /** 把 ApiResult 写回 Express 的 res。 */
+  const writeApiResult = (res: express.Response, result: ApiResult): void => {
+    res.status(result.status);
+    for (const [k, v] of Object.entries(result.headers)) res.setHeader(k, v);
+    res.end(Buffer.from(result.body));
+  };
+
+  /**
+   * 部署层鉴权：配置了 PROXY_CLIENT_TOKEN 就必须带对 X-Proxy-Token。
+   * 这一步刻意不进 apiCore —— 浏览器端没有"部署层"这个概念，也没有可信的令牌
+   * 存放位置（前端 bundle 里的常量谁都能读）。所以它只在这一侧成立。
+   */
+  app.use('/api/proxy', (req, res, next) => {
+    const provided = String(req.header('x-proxy-token') || '').trim();
+    if (!verifyProxyClientToken(provided)) {
       res.status(401).json({
         ok: false,
         error: '代理调用未授权：缺少或错误的 X-Proxy-Token',
       });
       return;
     }
-
-    const body = req.body as {
-      url?: unknown;
-      method?: unknown;
-      headers?: unknown;
-      body?: unknown;
-    } | null;
-
-    if (!body || typeof body !== 'object') {
-      res.status(400).json({ ok: false, error: '请求体格式无效' });
-      return;
-    }
-
-    const method = typeof body.method === 'string' ? body.method.toUpperCase().trim() : 'POST';
-    if (!PROXY_ALLOWED_METHODS.has(method)) {
-      res.status(400).json({ ok: false, error: `不支持的 HTTP 方法：${method}` });
-      return;
-    }
-
-    const target = validateProxyTargetUrl(String(body.url ?? ''), {
-      upstreamBaseUrl,
-      allowedHosts,
-    });
-    if (!target.ok) {
-      res.status(target.status).json({ ok: false, error: target.error });
-      return;
-    }
-
-    try {
-      const records = await dns.lookup(target.url.hostname, { all: true });
-      if (records.length === 0) {
-        res.status(502).json({ ok: false, error: '目标域名解析失败' });
-        return;
-      }
-      for (const rec of records) {
-        if (isPrivateOrReservedIP(rec.address)) {
-          res.status(403).json({
-            ok: false,
-            error: '安全限制：目标域名解析到受保护的内网或元数据地址，已拒绝代理',
-          });
-          return;
-        }
-      }
-    } catch {
-      res.status(502).json({ ok: false, error: '无法解析目标服务器域名' });
-      return;
-    }
-
-    const headerCheck = sanitizeProxyHeaders(body.headers);
-    if (!headerCheck.ok) {
-      res.status(400).json({ ok: false, error: headerCheck.error });
-      return;
-    }
-
-    const outboundHeaders: Record<string, string> = { ...headerCheck.headers };
-    if (proxyApiKey && target.injectSecret) {
-      const hasClientOverride = Object.keys(outboundHeaders).some(
-        (k) => k.toLowerCase() === proxyApiKeyHeader.toLowerCase()
-      );
-      if (!hasClientOverride) {
-        outboundHeaders[proxyApiKeyHeader] = `${proxyApiKeyPrefix}${proxyApiKey}`;
-      }
-    }
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), PROXY_DEFAULT_TIMEOUT_MS);
-
-    try {
-      const init: RequestInit = {
-        method,
-        headers: outboundHeaders,
-        redirect: 'manual',
-        signal: controller.signal,
-      };
-      if (method !== 'GET' && typeof body.body === 'string') {
-        init.body = body.body;
-      }
-
-      const upstreamRes = await fetch(target.url.toString(), init);
-      if (upstreamRes.status >= 300 && upstreamRes.status < 400) {
-        res.status(502).json({ ok: false, error: '安全限制：已拦截上游 3xx 重定向' });
-        return;
-      }
-
-      const contentType = upstreamRes.headers.get('content-type') || '';
-      const fullText = await upstreamRes.text();
-      const rawText =
-        fullText.length > PROXY_MAX_RESPONSE_CHARS
-          ? `${fullText.slice(0, PROXY_MAX_RESPONSE_CHARS)}\n…(响应已截断至 256KB)`
-          : fullText;
-
-      let responseBody: unknown = rawText;
-      if (contentType.toLowerCase().includes('application/json')) {
-        try {
-          responseBody = JSON.parse(rawText);
-        } catch {
-          responseBody = rawText;
-        }
-      }
-
-      res.status(200).json({
-        ok: upstreamRes.ok,
-        status: upstreamRes.status,
-        responseBody,
-      });
-    } catch (err) {
-      const isAbort = err instanceof Error && err.name === 'AbortError';
-      res.status(isAbort ? 504 : 502).json({
-        ok: false,
-        error: isAbort ? '服务端代理请求超时（10s）' : '服务端代理请求失败',
-      });
-    } finally {
-      clearTimeout(timer);
-    }
+    next();
   });
+
+  /**
+   * 统一挂载：路径列表与 apiCore 的 switch 一一对应。
+   * 加新接口只需在 apiCore 里加一个 case，这里加一行路径。
+   */
+  for (const path of [
+    '/api/blueprint',
+    '/api/blueprint/publish',
+    '/api/proxy/status',
+    '/api/proxy',
+  ]) {
+    app.all(path, async (req, res) => {
+      const result = await handleApiRequest(apiDeps, toApiRequest(req));
+      if (!result) {
+        res.status(404).json({ ok: false, error: `未实现的接口：${path}` });
+        return;
+      }
+      writeApiResult(res, result);
+    });
+  }
 
   // 2.5) 二进制 PDF 代理转发与上传托管（复用同套 SSRF、限流与可选令牌鉴权）
   const uploadedPdfStore = new Map<string, { filename: string; buf: Buffer; createdAt: number }>();
@@ -615,7 +691,7 @@ async function startServer() {
   });
 
   // 房间服务与 Express 共用同一个 HTTP server 与端口，靠 upgrade 事件按 /ws 分流。
-  roomServer = attachRoomServer(httpServer);
+  roomServer = attachRoomServer(httpServer, '/ws', makeRpcHandler(PORT));
 
   const shutdown = () => {
     void roomServer!.close().finally(() => {

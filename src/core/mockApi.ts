@@ -1,16 +1,35 @@
 /**
- * GitHub Pages 用的纯前端 mock 后端。
+ * @file mockApi.ts
+ * @description 浏览器端的 /api/* 入口与 fetch 拦截器。
  *
- * Pages 只能托管静态文件，`server/server.ts` 里的 Express 路由不存在，
- * 所以这里用 fetch 拦截器在浏览器内实现同样的三个接口契约：
- *   GET  /api/blueprint
- *   POST /api/blueprint/publish
- *   GET  /api/proxy/status
- *   POST /api/proxy
+ * 这里**不含任何业务逻辑**。业务逻辑全在 `src/core/apiCore.ts`，服务端与浏览器
+ * 跑的是同一份。本文件只做三件事，都是浏览器特有的：
  *
- * 状态存在 IndexedDB，行为对 App.tsx 完全透明 —— 不需要改任何业务代码。
- * 只在生产构建里启用；`npm run dev` 仍然打真后端。
+ *   1. 装上 fetch 拦截器，把 /api/* 请求导向 apiCore（或转发给服务端）
+ *   2. 提供 IndexedDB 版 BlueprintStore（服务端用的是内存版）
+ *   3. 提供基于浏览器 fetch 的 HttpFetcher（服务端那版额外带 SSRF 防护）
+ *
+ * 两种模式：
+ *   - 配置了 VITE_BACKEND_WS_URL：请求经 WebSocket 送到服务端，由服务端跑 apiCore。
+ *     此时安全边界（白名单、限流、SSRF 防护、鉴权）生效。
+ *   - 没配置：在浏览器里直接跑 apiCore，数据存 IndexedDB。
+ *     能离线演示，但没有可信边界——CORS 之外的一切限制都只是"提示"，用户改前端就能绕。
+ *
+ * 两种模式下接口契约与返回结构完全一致，所以 App.tsx 一行都不用改。
  */
+
+import { idbGet, idbSet } from './idbStorage';
+import { RpcClient, frameToResponse } from './rpcClient';
+import { normalizeWsUrl } from './runtimeConfig';
+import {
+  createWindowRateLimiter,
+  handleApiRequest,
+  type ApiDeps,
+  type ApiRequest,
+  type ApiResult,
+  type BlueprintStore,
+  type HttpFetcher,
+} from './apiCore';
 
 export interface MockProxyStatus {
   enabled: boolean;
@@ -19,28 +38,59 @@ export interface MockProxyStatus {
   allowedHosts: string[];
 }
 
-import { idbGet, idbSet } from './idbStorage';
+// ─────────────────────────── 浏览器侧依赖实现 ───────────────────────────
 
 const BLUEPRINT_KEY = 'atlas-hybrid-mock-server-blueprint-v1';
 const REVISION_KEY = 'atlas-hybrid-mock-server-revision-v1';
 
-async function readRevision(): Promise<number> {
-  const raw = await idbGet<number>(REVISION_KEY);
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 1;
-}
+/** IndexedDB 版存储，接口与服务端的 createMemoryStore() 完全一致。 */
+const browserStore: BlueprintStore = {
+  async readRevision() {
+    const raw = await idbGet<number>(REVISION_KEY);
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 1;
+  },
+  async writeRevision(rev) {
+    await idbSet(REVISION_KEY, rev);
+  },
+  async readBlueprint() {
+    return idbGet<unknown>(BLUEPRINT_KEY);
+  },
+  async writeBlueprint(bp) {
+    return idbSet(BLUEPRINT_KEY, bp);
+  },
+};
 
-async function writeRevision(rev: number): Promise<void> {
-  await idbSet(REVISION_KEY, rev);
-}
-
-async function readBlueprint(): Promise<unknown> {
-  return idbGet<unknown>(BLUEPRINT_KEY);
-}
-
-async function writeBlueprint(bp: unknown): Promise<boolean> {
-  return idbSet(BLUEPRINT_KEY, bp);
-}
+/**
+ * 浏览器版出站请求。
+ *
+ * 刻意**不做**内网 IP 拦截：浏览器拿不到 DNS 解析结果，也读不到对端 IP，
+ * 写个判断只会是自我安慰。真正的 SSRF 防护只能在服务端做——这也是为什么
+ * 配了 VITE_BACKEND_WS_URL 时要把请求交给服务端。
+ */
+const browserFetcher: HttpFetcher = {
+  async fetch(url, init) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const res = await fetch(url, {
+        method: init.method,
+        headers: init.headers,
+        body: init.body ? new Uint8Array(init.body) : undefined,
+        redirect: 'manual',
+        signal: controller.signal,
+      });
+      const buf = new Uint8Array(await res.arrayBuffer());
+      const headers: Record<string, string> = {};
+      res.headers.forEach((v, k) => {
+        headers[k] = v;
+      });
+      return { status: res.status, headers, body: buf };
+    } finally {
+      clearTimeout(timer);
+    }
+  },
+};
 
 /** 与服务端同名的白名单解析，默认值和 .env.example 保持一致。 */
 function parseAllowedHosts(raw: string | undefined): string[] {
@@ -52,178 +102,109 @@ function parseAllowedHosts(raw: string | undefined): string[] {
 
 const ALLOWED_HOSTS = parseAllowedHosts(import.meta.env.VITE_PROXY_ALLOWED_HOSTS);
 const MOCK_SAVE_KEY = (import.meta.env.VITE_MOCK_SAVE_KEY || 'atlas-demo-key').trim();
-const ALLOWED_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD']);
-const MAX_RESPONSE_CHARS = 256 * 1024;
-const PROXY_TIMEOUT_MS = 10_000;
+const PROXY_RATE_LIMIT_PER_MIN = Math.max(
+  1,
+  Number(import.meta.env.VITE_PROXY_RATE_LIMIT_PER_MIN || 30)
+);
 
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
-  });
-}
+const browserDeps: ApiDeps = {
+  store: browserStore,
+  proxy: {
+    allowedHosts: ALLOWED_HOSTS,
+    hasUpstreamSecret: false,
+    saveKey: MOCK_SAVE_KEY,
+    rateLimitPerMin: PROXY_RATE_LIMIT_PER_MIN,
+  },
+  rateLimiter: createWindowRateLimiter(PROXY_RATE_LIMIT_PER_MIN),
+  fetcher: browserFetcher,
+  mode: 'browser',
+};
 
-interface ProxyRequestBody {
-  url?: unknown;
-  method?: unknown;
-  headers?: unknown;
-  body?: unknown;
+// ─────────────────────────── 服务端转发 ───────────────────────────
+
+const RPC_WS_URL = normalizeWsUrl(String(import.meta.env.VITE_BACKEND_WS_URL ?? ''));
+let rpcClient: RpcClient | null = null;
+
+function getRpcClient(): RpcClient | null {
+  if (!RPC_WS_URL) return null;
+  if (!rpcClient) rpcClient = new RpcClient(RPC_WS_URL);
+  return rpcClient;
 }
 
 /**
- * 静态站上的代理没有服务端可信边界可言：白名单和密钥注入在这里只是
- * "演示语义"，真正能做的防护只有交给浏览器 CORS。所以这里如实说明：
- * 只允许白名单域、拦截重定向、限制响应体积，但**不做**内网 IP 拦截
- * （浏览器也拿不到对端 IP，写了也是假安全）。
+ * 把一个已经构造好的 Request 整包转发到服务端。
+ *
+ * 请求体按原始字节读出（不做 utf8 二次编码），响应体按原始字节还原成 Response，
+ * 这样 PDF 这类二进制上传/下载经 WS 往返后仍然字节级一致。
  */
-async function handleProxy(req: Request): Promise<Response> {
-  let body: ProxyRequestBody | null = null;
-  try {
-    body = (await req.json()) as ProxyRequestBody;
-  } catch {
-    return json({ ok: false, error: '请求体格式无效' }, 400);
-  }
-  if (!body || typeof body !== 'object') {
-    return json({ ok: false, error: '请求体格式无效' }, 400);
-  }
+async function forwardViaRpc(req: Request, url: URL): Promise<Response> {
+  const client = getRpcClient();
+  if (!client) throw new Error('未配置 VITE_BACKEND_WS_URL');
 
-  const method = typeof body.method === 'string' ? body.method.toUpperCase().trim() : 'POST';
-  if (!ALLOWED_METHODS.has(method)) {
-    return json({ ok: false, error: `不支持的 HTTP 方法：${method}` }, 400);
-  }
+  const headers: Record<string, string> = {};
+  req.headers.forEach((v, k) => {
+    // Host / Content-Length 由服务端自己决定，转发过去反而可能冲突。
+    if (k === 'host' || k === 'content-length') return;
+    headers[k] = v;
+  });
 
-  let target: URL;
-  try {
-    target = new URL(String(body.url ?? ''));
-  } catch {
-    return json({ ok: false, error: '目标 URL 格式无效' }, 400);
-  }
-  if (target.protocol !== 'https:' && target.protocol !== 'http:') {
-    return json({ ok: false, error: '只允许 http/https 协议' }, 400);
-  }
-  if (!ALLOWED_HOSTS.includes(target.hostname.toLowerCase())) {
-    return json(
-      { ok: false, error: `目标域名不在白名单内：${target.hostname}（可选：${ALLOWED_HOSTS.join(', ')}）` },
-      403,
-    );
+  let raw: Uint8Array | undefined;
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    raw = new Uint8Array(await req.clone().arrayBuffer());
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
-
-  try {
-    const init: RequestInit = { method, redirect: 'manual', signal: controller.signal };
-    if (typeof body.headers === 'object' && body.headers) {
-      // 只透传字符串值，避免把宿主对象塞进 fetch 头。
-      const hdrs: Record<string, string> = {};
-      for (const [k, v] of Object.entries(body.headers as Record<string, unknown>)) {
-        if (typeof v === 'string') hdrs[k] = v;
-      }
-      init.headers = hdrs;
-    }
-    if (method !== 'GET' && method !== 'HEAD' && typeof body.body === 'string') {
-      init.body = body.body;
-    }
-
-    const upstreamRes = await fetch(target.toString(), init);
-    if (upstreamRes.status >= 300 && upstreamRes.status < 400) {
-      return json({ ok: false, error: '安全限制：已拦截上游 3xx 重定向' }, 502);
-    }
-
-    const contentType = upstreamRes.headers.get('content-type') ?? '';
-    const fullText = await upstreamRes.text();
-    const rawText =
-      fullText.length > MAX_RESPONSE_CHARS
-        ? `${fullText.slice(0, MAX_RESPONSE_CHARS)}\n…(响应已截断至 256KB)`
-        : fullText;
-
-    let responseBody: unknown = rawText;
-    if (contentType.toLowerCase().includes('application/json')) {
-      try {
-        responseBody = JSON.parse(rawText);
-      } catch {
-        responseBody = rawText;
-      }
-    }
-    return json({ ok: upstreamRes.ok, status: upstreamRes.status, responseBody, mock: true });
-  } catch (err) {
-    const isAbort = err instanceof Error && err.name === 'AbortError';
-    return json(
-      {
-        ok: false,
-        error: isAbort
-          ? '代理请求超时（10s）'
-          : '代理请求失败：静态站受浏览器 CORS 限制，目标域名需允许跨域访问',
-      },
-      isAbort ? 504 : 502,
-    );
-  } finally {
-    clearTimeout(timer);
-  }
+  const frame = await client.request({
+    method: req.method,
+    path: url.pathname + url.search,
+    headers,
+    body: raw && raw.length > 0 ? raw : undefined,
+  });
+  return frameToResponse(frame);
 }
 
-async function route(url: URL, req: Request): Promise<Response | null> {
-  const pathname = url.pathname.replace(/\/+$/, '') || '/';
+// ─────────────────────────── 拦截器 ───────────────────────────
 
-  if (pathname === '/api/blueprint') {
-    if (req.method !== 'GET') return json({ ok: false, error: 'Method Not Allowed' }, 405);
-    return json({ ok: true, mock: true, serverRevision: await readRevision(), blueprint: await readBlueprint() });
-  }
-
-  if (pathname === '/api/blueprint/publish') {
-    if (req.method !== 'POST') return json({ ok: false, error: 'Method Not Allowed' }, 405);
-    const providedKey = (req.headers.get('x-blueprint-save-key') || '').trim();
-    if (!MOCK_SAVE_KEY || providedKey !== MOCK_SAVE_KEY) {
-      return json(
-        {
-          ok: false,
-          error: '保存密钥错误（演示密钥：atlas-demo-key）；无密钥仅可使用控件内置 API 访问后端',
-        },
-        401,
-      );
-    }
-    let payload: { blueprint?: unknown } | null = null;
-    try {
-      payload = (await req.json()) as { blueprint?: unknown };
-    } catch {
-      return json({ ok: false, error: '无效的蓝图数据' }, 400);
-    }
-    if (!payload || typeof payload.blueprint !== 'object' || payload.blueprint === null) {
-      return json({ ok: false, error: '无效的蓝图数据' }, 400);
-    }
-    if (!(await writeBlueprint(payload.blueprint))) {
-      return json({ ok: false, error: '浏览器存储已满，无法写入底座' }, 507);
-    }
-    const nextRev = (await readRevision()) + 1;
-    await writeRevision(nextRev);
-    return json({ ok: true, mock: true, serverRevision: nextRev });
-  }
-
-  if (pathname === '/api/proxy/status') {
-    if (req.method !== 'GET') return json({ ok: false, error: 'Method Not Allowed' }, 405);
-    const status: MockProxyStatus = {
-      enabled: true,
-      mock: true,
-      hasUpstreamSecret: false,
-      allowedHosts: ALLOWED_HOSTS,
-    };
-    return json(status);
-  }
-
-  if (pathname === '/api/proxy') {
-    if (req.method !== 'POST') return json({ ok: false, error: 'Method Not Allowed' }, 405);
-    return handleProxy(req);
-  }
-
-  return null;
+/** 把 ApiResult 还原成标准 Response，让调用方继续用 res.json() / res.blob()。 */
+function resultToResponse(result: ApiResult): Response {
+  const nullBody = result.status === 204 || result.status === 304;
+  return new Response(nullBody ? null : new Uint8Array(result.body), {
+    status: result.status,
+    headers: result.headers,
+  });
 }
 
-/** 装上拦截器：只接管 /api/ 前缀，其余请求原样放行。 */
+/** 从 Request 取出 apiCore 需要的传输无关结构。 */
+async function toApiRequest(req: Request, url: URL): Promise<ApiRequest> {
+  const headers: Record<string, string> = {};
+  req.headers.forEach((v, k) => {
+    headers[k] = v;
+  });
+  let body = new Uint8Array(0);
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    body = new Uint8Array(await req.clone().arrayBuffer());
+  }
+  return {
+    method: req.method,
+    path: url.pathname + url.search,
+    headers,
+    body,
+    clientId: 'browser',
+  };
+}
+
+/**
+ * 装上拦截器：只接管 /api/ 前缀，其余请求原样放行。
+ *
+ * 有配置后端时先经 WS 转发；转发失败（服务端没起、断网、握手超时）就退回到本地
+ * 跑 apiCore，并在控制台留一条警告。这样"服务端挂了页面还能用"，但数据只落在
+ * 本机，绝不会出现"看着在协同、其实各存各的"这种静默错配。
+ */
 export function installMockApi(): void {
   const originalFetch = window.fetch.bind(window);
+  const hasRemote = RPC_WS_URL !== null;
 
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    let url: URL | null = null;
+    let url: URL;
     let req: Request | null = null;
 
     if (input instanceof Request) {
@@ -238,7 +219,6 @@ export function installMockApi(): void {
     }
 
     const method = (init?.method ?? req?.method ?? 'GET').toUpperCase();
-    // 用 init 优先，其次复用原 Request 的 body/headers，保证两处调用都能命中。
     const merged: RequestInit = {
       method,
       headers: init?.headers ?? req?.headers,
@@ -246,14 +226,36 @@ export function installMockApi(): void {
     };
     const syntheticReq = new Request(url.toString(), merged);
 
-    const handled = await route(url, syntheticReq);
-    return handled ?? originalFetch(input as RequestInfo, init);
+    // 1) 有后端就先交给它：那边有完整的安全边界。
+    if (hasRemote) {
+      try {
+        return await forwardViaRpc(syntheticReq, url);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `%c[Atlas] 服务端转发失败，已退回本地处理：${method} ${url.pathname}`,
+          'color:#b45309;font-weight:bold',
+          err
+        );
+      }
+    }
+
+    // 2) 本地跑同一份 apiCore。
+    const result = await handleApiRequest(browserDeps, await toApiRequest(syntheticReq, url));
+    if (result) return resultToResponse(result);
+    return originalFetch(input as RequestInfo, init);
   };
 
-  // 方便在控制台确认当前跑的是 mock。
   // eslint-disable-next-line no-console
-  console.info(
-    '%c[Atlas] GitHub Pages 静态模式：/api/* 由浏览器内 mock 提供（base blueprint 存 IndexedDB）',
-    'color:#0f766e;font-weight:bold',
-  );
+  if (hasRemote) {
+    console.info(
+      `%c[Atlas] 已连接后端：/api/* 经 WebSocket 转发到 ${RPC_WS_URL}`,
+      'color:#0f766e;font-weight:bold'
+    );
+  } else {
+    console.info(
+      '%c[Atlas] 纯静态演示模式：/api/* 在浏览器内执行（与后端同一份 apiCore，数据存 IndexedDB）',
+      'color:#0f766e;font-weight:bold'
+    );
+  }
 }

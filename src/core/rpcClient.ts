@@ -1,0 +1,216 @@
+/**
+ * @file rpcClient.ts
+ * @description 把浏览器的 /api/* 请求经 WebSocket 转发到服务端处理。
+ *
+ * 这是"复用组件"的关键一环：服务端仍用同一套 Express 路由（不重写任何业务逻辑），
+ * 前端仍用同一套 fetch 调用点（App.tsx / PdfViewerBlock 一行不改），中间只把传输层
+ * 从 HTTP 换成一条可长连的 WS。
+ *
+ * 为什么要 WS 而不是直接 fetch：
+ * - 纯静态托管（GitHub Pages）下前端与服务端不同源，直连会被 CORS 或证书拦住；
+ *   而 WS 一旦握手成功就是双向长连，不再受同源策略逐个请求的限制。
+ * - 一条连接承载所有请求，省掉每次的 TLS 握手开销，保活也由这里统一处理。
+ *
+ * 协议：
+ *   请求 { t:'rpc_req', id, method, path, headers, body, bodyEncoding }
+ *   响应 { t:'rpc_res', id, status, headers, body, bodyEncoding }
+ * `id` 用于并发配对；每次 request() 返回一个独立的 Promise。
+ */
+
+import type { RpcRequestFrame, RpcResponseFrame } from '../../server/roomServer';
+
+type Pending = {
+  resolve: (res: RpcResponseFrame) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+const CONNECT_TIMEOUT_MS = 10_000;
+const REQUEST_TIMEOUT_MS = 60_000;
+/** 断线后的重连退避上限，避免服务端宕机时把浏览器拖垮。 */
+const RECONNECT_MAX_DELAY_MS = 15_000;
+
+export class RpcClient {
+  private ws: WebSocket | null = null;
+  private connecting: Promise<WebSocket> | null = null;
+  private pending = new Map<string, Pending>();
+  private seq = 0;
+  private closedByUser = false;
+  private reconnectDelay = 500;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(private readonly url: string) {}
+
+  /** 复用已建立的连接；没有则建一条。并发调用共享同一次握手。 */
+  private ensureOpen(): Promise<WebSocket> {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      return Promise.resolve(this.ws);
+    }
+    if (this.connecting) return this.connecting;
+
+    this.connecting = new Promise<WebSocket>((resolve, reject) => {
+      let settled = false;
+      const ws = new WebSocket(this.url);
+
+      const fail = (msg: string) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.connecting = null;
+        reject(new Error(msg));
+      };
+
+      const timer = setTimeout(() => {
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        fail(`连接 RPC 服务端超时（${CONNECT_TIMEOUT_MS}ms）：${this.url}`);
+      }, CONNECT_TIMEOUT_MS);
+
+      ws.onopen = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.ws = ws;
+        this.connecting = null;
+        this.reconnectDelay = 500;
+        resolve(ws);
+      };
+
+      ws.onmessage = (ev) => this.onFrame(ev.data);
+
+      ws.onerror = () => {
+        // 只负责在建连阶段报错；已连上后由 onclose 统一处理重连。
+        fail(`无法连接 RPC 服务端：${this.url}`);
+      };
+
+      ws.onclose = () => {
+        if (this.ws === ws) this.ws = null;
+        // 所有在途请求立刻失败，而不是让调用方干等到超时。
+        for (const [id, p] of this.pending) {
+          clearTimeout(p.timer);
+          p.reject(new Error('RPC 连接已断开'));
+          this.pending.delete(id);
+        }
+        fail(`RPC 连接被关闭：${this.url}`);
+        if (!this.closedByUser) this.scheduleReconnect();
+      };
+    });
+
+    return this.connecting;
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer || this.closedByUser) return;
+    const delay = this.reconnectDelay;
+    this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_DELAY_MS);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      // 失败就再退避一次；成功了下次 request() 会自然复用。
+      void this.ensureOpen().catch(() => this.scheduleReconnect());
+    }, delay);
+  }
+
+  private onFrame(raw: unknown): void {
+    let msg: RpcResponseFrame | { t?: unknown };
+    try {
+      msg = JSON.parse(String(raw));
+    } catch {
+      return;
+    }
+    if (!msg || typeof msg !== 'object') return;
+    const res = msg as RpcResponseFrame;
+    if (res.t !== 'rpc_res' || typeof res.id !== 'string') return;
+    const p = this.pending.get(res.id);
+    if (!p) return; // 超时后迟到的响应，直接丢
+    clearTimeout(p.timer);
+    this.pending.delete(res.id);
+    p.resolve(res);
+  }
+
+  /** 发一次请求，拿回一帧响应。响应体由调用方自己解码。 */
+  async request(init: {
+    method: string;
+    path: string;
+    headers?: Record<string, string>;
+    body?: Uint8Array | string;
+  }): Promise<RpcResponseFrame> {
+    const ws = await this.ensureOpen();
+    const id = `r${++this.seq}-${Date.now().toString(36)}`;
+
+    let bodyStr: string | undefined;
+    let bodyEncoding: 'text' | 'base64' = 'text';
+    if (typeof init.body === 'string') {
+      bodyStr = init.body;
+    } else if (init.body && init.body.length > 0) {
+      // 二进制统一按 base64 走 JSON 通道；PDF 上传就是这个路径。
+      bodyStr = bytesToBase64(init.body);
+      bodyEncoding = 'base64';
+    }
+
+    const frame: RpcRequestFrame = {
+      t: 'rpc_req',
+      id,
+      method: init.method,
+      path: init.path,
+      headers: init.headers,
+      body: bodyStr,
+      bodyEncoding,
+    };
+
+    return new Promise<RpcResponseFrame>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`RPC 请求超时（${REQUEST_TIMEOUT_MS}ms）：${init.method} ${init.path}`));
+      }, REQUEST_TIMEOUT_MS);
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        ws.send(JSON.stringify(frame));
+      } catch (err) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  }
+
+  close(): void {
+    this.closedByUser = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.ws?.close();
+    this.ws = null;
+  }
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunk = 0x8000; // 分块，避免超长 apply 触发调用栈上限
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+/** 把 RpcResponseFrame 还原成标准 Response，让调用方继续用 res.json() / res.blob()。 */
+export function frameToResponse(frame: RpcResponseFrame): Response {
+  let body: BodyInit | null;
+  if (frame.bodyEncoding === 'base64' && frame.body) {
+    const binary = atob(frame.body);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    body = bytes;
+  } else {
+    body = frame.body ?? '';
+  }
+  // 204/304 不允许带 body，构造 Response 会抛。
+  const nullBody = frame.status === 204 || frame.status === 304;
+  return new Response(nullBody ? null : body, {
+    status: frame.status,
+    headers: frame.headers,
+  });
+}

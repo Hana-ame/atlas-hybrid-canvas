@@ -38,7 +38,9 @@
   5. 清洗 `Cookie`、`Host`、`Origin`、`Referer`、`Sec-*` 等敏感请求头；
   6. 强制 `10s` 超时与 `256 KB` 响应体截断，且仅对显式受信目标注入 `PROXY_API_KEY`。
 
-> **静态部署安全边界**：在 GitHub Pages / 纯静态 HTML 预览模式下，`src/core/mockApi.ts` 会拦截 `/api/*` 并将蓝图底座存进浏览器 IndexedDB，方便演示交互；但纯静态环境不存在服务端可信边界，**切勿在前端环境变量或静态构建中放入真实私有 API Key**。
+> **静态部署安全边界**：在 GitHub Pages / 纯静态 HTML 预览模式下，`src/core/mockApi.ts` 会拦截 `/api/*` 并在浏览器内执行 `src/core/apiCore.ts`，蓝图底座存进浏览器 IndexedDB，方便演示交互；但纯静态环境不存在服务端可信边界（浏览器拿不到对端 IP，也无从部署限流与鉴权），**切勿在前端环境变量或静态构建中放入真实私有 API Key**。
+>
+> **接口逻辑只有一份**：`/api/*` 的业务实现在 `src/core/apiCore.ts`，服务端 Express 路由与浏览器拦截器都调用它，各自只提供传输与存储适配。配置 `VITE_BACKEND_WS_URL` 后，前端的 `/api/*` 会经 WebSocket 转发到服务端执行同一份逻辑；未配置则在浏览器内执行。两种模式的返回结构一致，除如实标注的 `mode` 标记外无差异。
 
 ## 三、WebSocket 协同房间说明（`server/roomServer.ts`）
 
@@ -74,7 +76,7 @@ npm run dev          # 同时启动 API 与协同房间，默认端口 8787
 
 ### CRDT 裁决
 
-与 `src/core/crdt.ts` 的 `beats()` 逐行等价：`rev` 大的赢，`rev` 相同则 `cid` 字典序大的赢。三处实现（前端 `crdt.ts`、服务端 `roomServer.ts`、历史 `room-go/store.go`）规则一致，可互操作。
+与 `src/core/crdt.ts` 的 `beats()` 逐行等价：`rev` 大的赢，`rev` 相同则 `cid` 字典序大的赢。前端 `crdt.ts` 与服务端 `roomServer.ts` 两处实现规则一致，可互操作。
 
 ### 容量上限
 

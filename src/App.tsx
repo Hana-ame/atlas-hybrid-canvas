@@ -85,6 +85,7 @@ import {
 import { useBlueprintHistory } from './hooks/useBlueprintHistory';
 import { useOverlaySync } from './hooks/useOverlaySync';
 import { proxyHeaders } from './core/apiClient';
+import { defaultRoomWsUrl, hasBackend } from './core/runtimeConfig';
 import { createSeedBlueprint, spawnStressChunks } from './core/seedBlueprint';
 import {
   BUILTIN_TEMPLATES,
@@ -161,7 +162,7 @@ function HybridCanvasWorkspace() {
 
   // 4) 多人实时协同房间（WebSocket + CRDT）
   const [roomModalOpen, setRoomModalOpen] = useState(false);
-  const [roomWsUrl, setRoomWsUrl] = useState('ws://localhost:8787/ws');
+  const [roomWsUrl, setRoomWsUrl] = useState(() => defaultRoomWsUrl());
   const [roomName, setRoomName] = useState('atlas-main');
   const [roomStatus, setRoomStatus] = useState<RoomStatus>('disconnected');
   const roomClientRef = useRef<CollaborativeRoomClient | null>(null);
@@ -376,6 +377,12 @@ function HybridCanvasWorkspace() {
   }, [pushHistory]);
 
   const handleConnectRoom = useCallback(() => {
+    // 纯静态模式下 defaultRoomWsUrl() 返回空串，此时不该让协同步骤继续——
+    // 直接给一句人话，而不是把空地址丢给 roomClient 换回一个含糊的格式错误。
+    if (!roomWsUrl.trim()) {
+      setStatusLog('协同不可用：当前是纯静态演示模式，未配置 VITE_BACKEND_WS_URL');
+      return;
+    }
     if (!roomClientRef.current) {
       roomClientRef.current = new CollaborativeRoomClient(
         SELF_CID,
@@ -2151,8 +2158,13 @@ function HybridCanvasWorkspace() {
               <h3 className="text-sm font-bold">连接多人协同房间（CRDT）</h3>
             </div>
             <p className="mt-2 text-xs leading-relaxed text-slate-600">
-              接入兼容 <code className="rounded bg-slate-100 px-1 font-mono">(rev, cid)</code> CRDT 协议的 WebSocket 房间服务（如扩展后的 <code className="rounded bg-slate-100 px-1 font-mono">room-go</code>）。远端同步的新脚本会自动触发安全审计锁，绝不静默执行。
+              接入兼容 <code className="rounded bg-slate-100 px-1 font-mono">(rev, cid)</code> CRDT 协议的 WebSocket 房间服务（随 <code className="rounded bg-slate-100 px-1 font-mono">npm run dev</code> 一起启动，见 <code className="rounded bg-slate-100 px-1 font-mono">server/roomServer.ts</code>）。远端同步的新脚本会自动触发安全审计锁，绝不静默执行。
             </p>
+            {!hasBackend() && (
+              <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] leading-relaxed text-amber-900">
+                当前是<strong>纯静态演示模式</strong>：未配置 <code className="font-mono">VITE_BACKEND_WS_URL</code>，页面数据存在本机 IndexedDB，与他人不同步。要真正协同，请部署 <code className="font-mono">server/server.ts</code> 并重新构建时填入该地址。
+              </p>
+            )}
             <div className="mt-3 space-y-2.5 text-xs">
               <div>
                 <label className="mb-1 block font-semibold text-slate-700">WebSocket 地址</label>

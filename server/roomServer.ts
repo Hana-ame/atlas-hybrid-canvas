@@ -15,6 +15,33 @@ import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 
+/**
+ * RPC 帧：让前端把一次 HTTP 调用（也就是原来被 mockApi 在浏览器里就地处理的那些
+ * /api/* 请求）整包发到服务端，由服务端复用同一套 Express 路由处理，再把结果原样
+ * 送回。`id` 用于配对，客户端可以并发多个在途请求。
+ *
+ * 这里只做传输，不解释业务语义——请求进 Express，响应出 Express，中间不加工，
+ * 因此服务端已有的鉴权、限流、白名单、SSRF 防护全部照旧生效。
+ */
+export type RpcRequestFrame = {
+  t: 'rpc_req';
+  id: string;
+  method: string;
+  path: string;
+  headers?: Record<string, string>;
+  body?: string; // 已序列化的请求体；二进制走 base64 并由 contentType 标记
+  bodyEncoding?: 'text' | 'base64';
+};
+
+export type RpcResponseFrame = {
+  t: 'rpc_res';
+  id: string;
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+  bodyEncoding: 'text' | 'base64';
+};
+
 /** 与 roomClient.ts 保持一致的消息形状。服务端只做校验与中继，不解释业务字段。 */
 type WireMessage =
   | { t: 'hello'; room: string; cid: string }
@@ -24,7 +51,8 @@ type WireMessage =
   | { t: 'upsert_ann'; annotation: VersionedRecord }
   | { t: 'delete_ann'; id: string }
   | { t: 'upsert_edge'; edge: VersionedRecord }
-  | { t: 'delete_edge'; id: string };
+  | { t: 'delete_edge'; id: string }
+  | RpcRequestFrame;
 
 interface VersionedRecord {
   id?: unknown;
@@ -130,10 +158,24 @@ export interface RoomServerHandle {
 }
 
 /**
+ * RPC 处理器：把一帧 rpc_req 交给真正的后端处理，返回结果帧。
+ *
+ * 由调用方注入（server.ts 里接到 Express 上），这样 roomServer.ts 不依赖 Express，
+ * 也便于单测里塞一个假处理器。
+ */
+export type RpcHandler = (frame: RpcRequestFrame) => Promise<RpcResponseFrame>;
+
+/**
  * 把 WebSocket 房间服务挂到已有的 http.Server 上（与 Express 共用端口）。
  * 默认路径 /ws，正好是前端 App.tsx 里 ws://localhost:8787/ws 的默认值。
+ *
+ * rpcHandler 可选：不传则 rpc_req 一律回 501，房间功能不受影响。
  */
-export function attachRoomServer(httpServer: HttpServer, wsPath = '/ws'): RoomServerHandle {
+export function attachRoomServer(
+  httpServer: HttpServer,
+  wsPath = '/ws',
+  rpcHandler?: RpcHandler
+): RoomServerHandle {
   const rooms = new Map<string, Room>();
   const states = new Map<string, RoomState>();
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
@@ -283,6 +325,43 @@ export function attachRoomServer(httpServer: HttpServer, wsPath = '/ws'): RoomSe
       case 'hello':
         // 客户端在 onopen 时会补发 hello（连接 URL 里已带 room/cid），忽略即可。
         return;
+      case 'rpc_req': {
+        // 前端的 /api/* 请求在这里下船：整包交给注入的后端处理器，结果按 id 送回去。
+        // 注意：这是异步的，但不需要 await——多个请求可以并发在途，各自带 id 配对。
+        const frame = msg as RpcRequestFrame;
+        if (typeof frame.id !== 'string' || !frame.id) {
+          send(socket, { t: 'error', error: 'rpc_req 缺少 id' });
+          return;
+        }
+        if (!rpcHandler) {
+          send(socket, {
+            t: 'rpc_res',
+            id: frame.id,
+            status: 501,
+            headers: { 'content-type': 'application/json; charset=utf-8' },
+            body: JSON.stringify({ ok: false, error: '服务端未启用 RPC 转发' }),
+            bodyEncoding: 'text',
+          } satisfies RpcResponseFrame);
+          return;
+        }
+        void rpcHandler(frame)
+          .then((res) => send(socket, res))
+          .catch((err: unknown) => {
+            // 处理器自己炸了也要回一帧，否则客户端会一直等到超时。
+            send(socket, {
+              t: 'rpc_res',
+              id: frame.id,
+              status: 500,
+              headers: { 'content-type': 'application/json; charset=utf-8' },
+              body: JSON.stringify({
+                ok: false,
+                error: `RPC 处理失败：${err instanceof Error ? err.message : String(err)}`,
+              }),
+              bodyEncoding: 'text',
+            } satisfies RpcResponseFrame);
+          });
+        return;
+      }
       default:
         send(socket, { t: 'error', error: `未知消息类型：${(msg as { t: string }).t}` });
     }
