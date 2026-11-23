@@ -675,6 +675,266 @@ vars.contents = [
       rev: 1,
       cid: 'server-base',
     },
+    'fsm-idle': {
+      id: 'fsm-idle',
+      x: 560,
+      y: 2040,
+      width: 280,
+      height: 195,
+      title: '状态 A：IDLE 待机',
+      body: '',
+      category: '● ACTIVE',
+      color: '#2563EB',
+      inputPorts: [
+        { id: 'in-1', label: '取消/回退' },
+        { id: 'in-2', label: '重置/重启' },
+      ],
+      outputPorts: [{ id: 'out-1', label: 'start' }],
+      defaultVars: { active: true, visits: 1, lastFrom: '初始态' },
+      script: String.raw`const isActive = Boolean(vars.active);
+const visits = Number(vars.visits ?? 1);
+vars.color = isActive ? '#2563EB' : '#94A3B8';
+vars.type = isActive ? '● ACTIVE' : 'IDLE';
+
+vars.contents = [
+  {
+    type: 'text',
+    text: isActive ? '当前激活 · 可触发 start 进入运行态' : '未激活（等待 cancel / reset / restart 回到本态）',
+    align: 'center',
+    color: isActive ? '#1D4ED8' : '#64748B',
+    fontSize: 12,
+    bold: isActive
+  },
+  { type: 'text', text: '进入次数：' + visits + ' · 来源：' + (vars.lastFrom || '-'), align: 'center', color: '#475569', fontSize: 11 },
+  { type: 'button', id: 'start', label: '▶ 启动 (start → RUNNING)', variant: 'primary', disabled: !isActive }
+];
+
+on('start', async () => {
+  if (!Boolean(vars.active)) return;
+  vars.active = false;
+  await emit('fsm-running', 'enter', { from: 'IDLE', event: 'start' });
+  await emit('fsm-monitor', 'transition', { from: 'IDLE', to: 'RUNNING', event: 'start', at: lib.now() });
+});
+
+on('enter', (msg) => {
+  vars.active = true;
+  vars.visits = Number(vars.visits ?? 0) + 1;
+  vars.lastFrom = (msg && msg.from ? msg.from : '外部') + ' (' + (msg && msg.event ? msg.event : 'enter') + ')';
+});`,
+      rev: 1,
+      cid: 'server-base',
+    },
+    'fsm-running': {
+      id: 'fsm-running',
+      x: 920,
+      y: 2040,
+      width: 310,
+      height: 205,
+      title: '状态 B：RUNNING 运行中',
+      body: '',
+      category: 'RUNNING',
+      color: '#94A3B8',
+      inputPorts: [
+        { id: 'in-1', label: 'start 入口' },
+        { id: 'in-2', label: 'resume 入口' },
+      ],
+      outputPorts: [{ id: 'out-1', label: '状态转移出口' }],
+      defaultVars: { active: false, visits: 0, lastFrom: '-' },
+      script: String.raw`const isActive = Boolean(vars.active);
+const visits = Number(vars.visits ?? 0);
+vars.color = isActive ? '#059669' : '#94A3B8';
+vars.type = isActive ? '● ACTIVE' : 'RUNNING';
+
+vars.contents = [
+  {
+    type: 'text',
+    text: isActive ? '当前激活 · 支持多分支转移（暂停 / 完成 / 取消）' : '未激活（从 IDLE 或 PAUSED 转移进入）',
+    align: 'center',
+    color: isActive ? '#047857' : '#64748B',
+    fontSize: 12,
+    bold: isActive
+  },
+  { type: 'text', text: '进入次数：' + visits + ' · 来源：' + (vars.lastFrom || '-'), align: 'center', color: '#475569', fontSize: 11 },
+  [
+    { type: 'button', id: 'pause', label: '⏸ 暂停', variant: 'secondary', disabled: !isActive },
+    { type: 'button', id: 'finish', label: '✓ 完成', variant: 'success', disabled: !isActive },
+    { type: 'button', id: 'cancel', label: '↩ 取消', variant: 'danger', disabled: !isActive }
+  ]
+];
+
+on('pause', async () => {
+  if (!Boolean(vars.active)) return;
+  vars.active = false;
+  await emit('fsm-paused', 'enter', { from: 'RUNNING', event: 'pause' });
+  await emit('fsm-monitor', 'transition', { from: 'RUNNING', to: 'PAUSED', event: 'pause', at: lib.now() });
+});
+
+on('finish', async () => {
+  if (!Boolean(vars.active)) return;
+  vars.active = false;
+  await emit('fsm-done', 'enter', { from: 'RUNNING', event: 'finish' });
+  await emit('fsm-monitor', 'transition', { from: 'RUNNING', to: 'DONE', event: 'finish', at: lib.now() });
+});
+
+on('cancel', async () => {
+  if (!Boolean(vars.active)) return;
+  vars.active = false;
+  await emit('fsm-idle', 'enter', { from: 'RUNNING', event: 'cancel' });
+  await emit('fsm-monitor', 'transition', { from: 'RUNNING', to: 'IDLE', event: 'cancel', at: lib.now() });
+});
+
+on('enter', (msg) => {
+  vars.active = true;
+  vars.visits = Number(vars.visits ?? 0) + 1;
+  vars.lastFrom = (msg && msg.from ? msg.from : '外部') + ' (' + (msg && msg.event ? msg.event : 'enter') + ')';
+});`,
+      rev: 1,
+      cid: 'server-base',
+    },
+    'fsm-paused': {
+      id: 'fsm-paused',
+      x: 920,
+      y: 2295,
+      width: 310,
+      height: 195,
+      title: '状态 C：PAUSED 已暂停',
+      body: '',
+      category: 'PAUSED',
+      color: '#94A3B8',
+      inputPorts: [{ id: 'in-1', label: 'pause 入口' }],
+      outputPorts: [{ id: 'out-1', label: 'resume / reset' }],
+      defaultVars: { active: false, visits: 0, lastFrom: '-' },
+      script: String.raw`const isActive = Boolean(vars.active);
+const visits = Number(vars.visits ?? 0);
+vars.color = isActive ? '#D97706' : '#94A3B8';
+vars.type = isActive ? '● ACTIVE' : 'PAUSED';
+
+vars.contents = [
+  {
+    type: 'text',
+    text: isActive ? '当前激活 · 可双向恢复 RUNNING 或重置回 IDLE' : '未激活（从 RUNNING 暂停进入）',
+    align: 'center',
+    color: isActive ? '#B45309' : '#64748B',
+    fontSize: 12,
+    bold: isActive
+  },
+  { type: 'text', text: '进入次数：' + visits + ' · 来源：' + (vars.lastFrom || '-'), align: 'center', color: '#475569', fontSize: 11 },
+  [
+    { type: 'button', id: 'resume', label: '▶ 恢复 (→ RUNNING)', variant: 'primary', disabled: !isActive },
+    { type: 'button', id: 'reset', label: '⏹ 重置 (→ IDLE)', variant: 'secondary', disabled: !isActive }
+  ]
+];
+
+on('resume', async () => {
+  if (!Boolean(vars.active)) return;
+  vars.active = false;
+  await emit('fsm-running', 'enter', { from: 'PAUSED', event: 'resume' });
+  await emit('fsm-monitor', 'transition', { from: 'PAUSED', to: 'RUNNING', event: 'resume', at: lib.now() });
+});
+
+on('reset', async () => {
+  if (!Boolean(vars.active)) return;
+  vars.active = false;
+  await emit('fsm-idle', 'enter', { from: 'PAUSED', event: 'reset' });
+  await emit('fsm-monitor', 'transition', { from: 'PAUSED', to: 'IDLE', event: 'reset', at: lib.now() });
+});
+
+on('enter', (msg) => {
+  vars.active = true;
+  vars.visits = Number(vars.visits ?? 0) + 1;
+  vars.lastFrom = (msg && msg.from ? msg.from : '外部') + ' (' + (msg && msg.event ? msg.event : 'enter') + ')';
+});`,
+      rev: 1,
+      cid: 'server-base',
+    },
+    'fsm-done': {
+      id: 'fsm-done',
+      x: 1310,
+      y: 2040,
+      width: 290,
+      height: 195,
+      title: '状态 D：DONE 已完成',
+      body: '',
+      category: 'DONE',
+      color: '#94A3B8',
+      inputPorts: [{ id: 'in-1', label: 'finish 入口' }],
+      outputPorts: [{ id: 'out-1', label: 'restart' }],
+      defaultVars: { active: false, visits: 0, lastFrom: '-' },
+      script: String.raw`const isActive = Boolean(vars.active);
+const visits = Number(vars.visits ?? 0);
+vars.color = isActive ? '#7C3AED' : '#94A3B8';
+vars.type = isActive ? '● ACTIVE' : 'DONE';
+
+vars.contents = [
+  {
+    type: 'text',
+    text: isActive ? '当前激活 · 流程已完成，可闭环重启回 IDLE' : '未激活（从 RUNNING 完成进入）',
+    align: 'center',
+    color: isActive ? '#6D28D9' : '#64748B',
+    fontSize: 12,
+    bold: isActive
+  },
+  { type: 'text', text: '完成次数：' + visits + ' · 来源：' + (vars.lastFrom || '-'), align: 'center', color: '#475569', fontSize: 11 },
+  { type: 'button', id: 'restart', label: '↻ 重新开始 (restart → IDLE)', variant: 'primary', disabled: !isActive }
+];
+
+on('restart', async () => {
+  if (!Boolean(vars.active)) return;
+  vars.active = false;
+  await emit('fsm-idle', 'enter', { from: 'DONE', event: 'restart' });
+  await emit('fsm-monitor', 'transition', { from: 'DONE', to: 'IDLE', event: 'restart', at: lib.now() });
+});
+
+on('enter', (msg) => {
+  vars.active = true;
+  vars.visits = Number(vars.visits ?? 0) + 1;
+  vars.lastFrom = (msg && msg.from ? msg.from : '外部') + ' (' + (msg && msg.event ? msg.event : 'enter') + ')';
+});`,
+      rev: 1,
+      cid: 'server-base',
+    },
+    'fsm-monitor': {
+      id: 'fsm-monitor',
+      x: 1310,
+      y: 2295,
+      width: 320,
+      height: 195,
+      title: '状态机监视器 · 转移日志',
+      body: '',
+      category: 'FSM',
+      color: '#0F172A',
+      inputPorts: [],
+      outputPorts: [],
+      defaultVars: { currentState: 'IDLE', stepCount: 0, logText: '尚未发生状态转移（点左侧「▶ 启动」开始体验）' },
+      script: String.raw`const cur = String(vars.currentState || 'IDLE');
+const steps = Number(vars.stepCount ?? 0);
+const logText = String(vars.logText || '');
+
+vars.contents = [
+  { type: 'text', text: '当前状态：' + cur + '  ·  累计转移 ' + steps + ' 次', align: 'center', color: '#0F172A', fontSize: 12.5, bold: true },
+  { type: 'text', text: logText, color: '#334155', fontSize: 11.5 },
+  { type: 'button', id: 'clearLog', label: '清空日志', variant: 'secondary' }
+];
+
+on('transition', (msg) => {
+  const from = msg && msg.from ? msg.from : '?';
+  const to = msg && msg.to ? msg.to : '?';
+  const ev = msg && msg.event ? msg.event : 'go';
+  const nextStep = Number(vars.stepCount ?? 0) + 1;
+  vars.currentState = to;
+  vars.stepCount = nextStep;
+  const line = '#' + nextStep + ' ' + from + ' --(' + ev + ')--> ' + to;
+  const prevLines = String(vars.logText || '').startsWith('#') ? String(vars.logText).split(' | ') : [];
+  vars.logText = [line, ...prevLines].slice(0, 3).join(' | ');
+});
+
+on('clearLog', () => {
+  vars.stepCount = 0;
+  vars.logText = '日志已清空 · 当前状态：' + String(vars.currentState || 'IDLE');
+});`,
+      rev: 1,
+      cid: 'server-base',
+    },
   };
 
   const annotations: Record<string, CanvasAnnotation> = {
@@ -763,6 +1023,23 @@ vars.contents = [
       rev: 1,
       cid: 'server-base',
     },
+    'ann-zone-fsm': {
+      id: 'ann-zone-fsm',
+      kind: 'text',
+      x: 540,
+      y: 1975,
+      width: 1090,
+      height: 46,
+      text: 'ZONE F · 交互式有限状态机示例（IDLE ↔ RUNNING ↔ PAUSED → DONE → IDLE，点激活态按钮即可流转）',
+      fontSize: 15,
+      color: '#1E293B',
+      bgColor: '#FEF3C7',
+      bgOpacity: 0.88,
+      weight: 'bold',
+      nonInteractive: true,
+      rev: 1,
+      cid: 'server-base',
+    },
   };
 
   return {
@@ -846,6 +1123,87 @@ vars.contents = [
         targetHandle: 'in-2',
         label: '四态开关',
         color: '#059669',
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-fsm-idle-run': {
+        id: 'edge-fsm-idle-run',
+        source: 'fsm-idle',
+        target: 'fsm-running',
+        sourceHandle: 'out-1',
+        targetHandle: 'in-1',
+        label: 'start',
+        color: '#2563EB',
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-fsm-run-idle': {
+        id: 'edge-fsm-run-idle',
+        source: 'fsm-running',
+        target: 'fsm-idle',
+        sourceHandle: 'out-1',
+        targetHandle: 'in-1',
+        label: 'cancel',
+        color: '#DC2626',
+        dashed: true,
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-fsm-run-pause': {
+        id: 'edge-fsm-run-pause',
+        source: 'fsm-running',
+        target: 'fsm-paused',
+        sourceHandle: 'out-1',
+        targetHandle: 'in-1',
+        label: 'pause',
+        color: '#D97706',
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-fsm-pause-run': {
+        id: 'edge-fsm-pause-run',
+        source: 'fsm-paused',
+        target: 'fsm-running',
+        sourceHandle: 'out-1',
+        targetHandle: 'in-2',
+        label: 'resume',
+        color: '#059669',
+        dashed: true,
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-fsm-pause-idle': {
+        id: 'edge-fsm-pause-idle',
+        source: 'fsm-paused',
+        target: 'fsm-idle',
+        sourceHandle: 'out-1',
+        targetHandle: 'in-2',
+        label: 'reset',
+        color: '#64748B',
+        dashed: true,
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-fsm-run-done': {
+        id: 'edge-fsm-run-done',
+        source: 'fsm-running',
+        target: 'fsm-done',
+        sourceHandle: 'out-1',
+        targetHandle: 'in-1',
+        label: 'finish',
+        color: '#7C3AED',
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-fsm-done-idle': {
+        id: 'edge-fsm-done-idle',
+        source: 'fsm-done',
+        target: 'fsm-idle',
+        sourceHandle: 'out-1',
+        targetHandle: 'in-2',
+        label: 'restart',
+        color: '#4F46E5',
+        dashed: true,
         rev: 1,
         cid: 'server-base',
       },

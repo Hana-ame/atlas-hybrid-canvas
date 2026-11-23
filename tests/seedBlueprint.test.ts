@@ -42,3 +42,28 @@ test('createSeedBlueprint() has zero overlapping nodes and all edges reference e
     assert.ok(bp.nodes[edge.target], `Edge ${edge.id} references missing target ${edge.target}`);
   }
 });
+
+test('createSeedBlueprint() includes interactive 4-state FSM example (ZONE F) with valid cyclic transitions', () => {
+  const bp = createSeedBlueprint();
+  const fsmNodes = ['fsm-idle', 'fsm-running', 'fsm-paused', 'fsm-done', 'fsm-monitor'];
+  for (const id of fsmNodes) {
+    assert.ok(bp.nodes[id], `Missing FSM node: ${id}`);
+  }
+  assert.equal(bp.nodes['fsm-idle'].defaultVars.active, true);
+  assert.equal(bp.nodes['fsm-running'].defaultVars.active, false);
+  assert.equal(bp.nodes['fsm-paused'].defaultVars.active, false);
+  assert.equal(bp.nodes['fsm-done'].defaultVars.active, false);
+
+  const fsmEdges = [
+    'edge-fsm-idle-run',
+    'edge-fsm-run-idle',
+    'edge-fsm-run-pause',
+    'edge-fsm-pause-run',
+    'edge-fsm-pause-idle',
+    'edge-fsm-run-done',
+    'edge-fsm-done-idle',
+  ];
+  for (const eid of fsmEdges) {
+    assert.ok(bp.edges[eid], `Missing FSM transition edge: ${eid}`);
+  }
+});
