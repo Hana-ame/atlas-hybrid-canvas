@@ -1,10 +1,20 @@
 import { useState } from 'react';
-import { BookmarkPlus, Copy, Plus, RotateCcw, Trash2, X } from 'lucide-react';
+import { BookmarkPlus, Copy, Plus, RotateCcw, Terminal, Trash2, X } from 'lucide-react';
 import { validateScriptSafety, validateScriptSyntax } from '../core/scriptSandbox';
 import type { EffectiveBlueprintNode, WidgetButtonSpec } from '../core/types';
 
+export interface ScriptConsoleEntry {
+  id: string;
+  ts: string;
+  level: 'log' | 'error' | 'info';
+  trigger: string;
+  message: string;
+}
+
 interface NodeInspectorPanelProps {
   node: EffectiveBlueprintNode | null;
+  scriptLogs?: ScriptConsoleEntry[];
+  onClearScriptLogs?: (nodeId: string) => void;
   onClose: () => void;
   onPatchNode: (nodeId: string, patch: Partial<EffectiveBlueprintNode>) => void;
   onRunScriptRefresh: (nodeId: string) => void;
@@ -29,6 +39,8 @@ const COLOR_PALETTE = [
 
 export function NodeInspectorPanel({
   node,
+  scriptLogs = [],
+  onClearScriptLogs,
   onClose,
   onPatchNode,
   onRunScriptRefresh,
@@ -41,6 +53,7 @@ export function NodeInspectorPanel({
 }: NodeInspectorPanelProps) {
   const [newVarKey, setNewVarKey] = useState('');
   const [newVarVal, setNewVarVal] = useState('');
+  const [logFilter, setLogFilter] = useState<'all' | 'error'>('all');
 
   if (!node) return null;
 
@@ -79,7 +92,7 @@ vars.updatedAt = lib.now();`,
   };
 
   return (
-    <aside className="pointer-events-auto absolute top-16 right-3 bottom-12 z-30 flex w-96 flex-col rounded-xl border border-slate-200 bg-white/95 shadow-xl backdrop-blur">
+    <aside className="pointer-events-auto absolute top-16 right-3 bottom-12 z-30 flex w-96 flex-col rounded-xl border border-slate-200 bg-white/95 shadow-xl backdrop-blur max-md:top-auto max-md:right-2 max-md:left-2 max-md:bottom-2 max-md:h-[60vh] max-md:w-auto max-md:rounded-2xl">
       <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
         <div className="min-w-0">
           <div className="truncate text-sm font-bold text-slate-900">编辑控件属性</div>
@@ -187,10 +200,75 @@ vars.updatedAt = lib.now();`,
             }
             return (
               <div className="mt-1.5 rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] text-emerald-700">
-                ✓ 语法与安全预检通过（支持 widgets.inputs / widgets.outputs / emitDownstream）
+                ✓ 语法与安全预检通过（支持 onChange / onValidateConnect / emitDownstream）
               </div>
             );
           })()}
+
+          {/* 独立脚本控制台日志面板（按当前节点隔离，保留最近 50 条） */}
+          <div className="mt-2.5 rounded-md border border-slate-200 bg-slate-950 text-slate-200">
+            <div className="flex items-center justify-between border-b border-slate-800 px-2 py-1">
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-300">
+                <Terminal className="h-3 w-3 text-emerald-400" />
+                脚本日志 ({scriptLogs.length})
+              </span>
+              <div className="flex items-center gap-1">
+                {scriptLogs.some((l) => l.level === 'error') && (
+                  <button
+                    type="button"
+                    onClick={() => setLogFilter((f) => (f === 'all' ? 'error' : 'all'))}
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                      logFilter === 'error'
+                        ? 'bg-rose-600 text-white'
+                        : 'bg-slate-800 text-rose-300 hover:bg-slate-700'
+                    }`}
+                  >
+                    {logFilter === 'error' ? '仅错误' : '筛错误'}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={scriptLogs.length === 0}
+                  onClick={() => onClearScriptLogs?.(node.id)}
+                  className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-slate-700 disabled:opacity-40"
+                >
+                  清空
+                </button>
+              </div>
+            </div>
+            <div className="nowheel max-h-36 overflow-y-auto px-2 py-1.5 font-mono text-[10.5px] leading-relaxed">
+              {(() => {
+                const visibleLogs =
+                  logFilter === 'error' ? scriptLogs.filter((l) => l.level === 'error') : scriptLogs;
+                if (visibleLogs.length === 0) {
+                  return (
+                    <div className="py-1 text-slate-500">
+                      暂无输出 — 在脚本中调用 log(...) 或触发交互即可在此回看
+                    </div>
+                  );
+                }
+                return visibleLogs.map((entry) => (
+                  <div key={entry.id} className="flex items-start gap-1.5 border-b border-slate-900 py-0.5 last:border-b-0">
+                    <span className="shrink-0 text-slate-500">{entry.ts}</span>
+                    <span className="shrink-0 rounded bg-slate-800 px-1 text-[9.5px] text-slate-300">
+                      {entry.trigger}
+                    </span>
+                    <span
+                      className={`min-w-0 break-all ${
+                        entry.level === 'error'
+                          ? 'text-rose-400'
+                          : entry.level === 'info'
+                            ? 'text-sky-300'
+                            : 'text-emerald-300'
+                      }`}
+                    >
+                      {entry.message}
+                    </span>
+                  </div>
+                ));
+              })()}
+            </div>
+          </div>
         </div>
 
         {/* 入/出箭头端口配置 */}

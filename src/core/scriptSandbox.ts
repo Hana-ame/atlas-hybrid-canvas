@@ -42,7 +42,7 @@ export function validateScriptSyntax(code: string): { ok: boolean; error?: strin
       ...args: string[]
     ) => unknown;
     new AsyncFunction(
-      'vars', 'ctx', 'lib', 'log', 'canvas', 'widgets', 'emit', 'broadcast', 'emitDownstream', 'on', 'onSubmit', 'onValidateConnect',
+      'vars', 'ctx', 'lib', 'log', 'canvas', 'widgets', 'emit', 'broadcast', 'emitDownstream', 'on', 'onSubmit', 'onChange', 'onValidateConnect',
       'window', 'document', 'fetch', 'localStorage',
       trimmed
     );
@@ -213,6 +213,7 @@ export type ScriptTriggerEvent =
   | { kind: 'click'; buttonId: string }
   | { kind: 'submit'; inputId: string; value: string }
   | { kind: 'message'; event: string; payload: unknown; fromId: string; fromTitle: string }
+  | { kind: 'varsChanged'; prevVars: Record<string, unknown>; changedKeys: string[] }
   | { kind: 'validateConnect'; conn: ConnectValidationPayload };
 
 export interface SandboxExecutionResult {
@@ -495,6 +496,7 @@ export async function runInIsolatedWorker(
 
       const handlers = Object.create(null);
       const submitHandlers = Object.create(null);
+      let changeHandlers = Object.create(null);
       let connectValidator = null;
       const on = (key, fn) => {
         if (typeof fn === 'function') handlers[String(key)] = fn;
@@ -502,18 +504,83 @@ export async function runInIsolatedWorker(
       const onSubmit = (inputId, fn) => {
         if (typeof fn === 'function') submitHandlers[String(inputId)] = fn;
       };
+      const onChange = (keyOrKeys, fn) => {
+        if (typeof fn !== 'function') return;
+        const keys = Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys];
+        for (const rawK of keys) {
+          const k = String(rawK || '');
+          if (!k) continue;
+          if (!changeHandlers[k]) changeHandlers[k] = [];
+          changeHandlers[k].push(fn);
+        }
+      };
       const onValidateConnect = (fn) => {
         if (typeof fn === 'function') connectValidator = fn;
       };
 
+      const cloneValue = (v) => {
+        if (v === null || typeof v !== 'object') return v;
+        try { return JSON.parse(JSON.stringify(v)); } catch { return v; }
+      };
+      const snapshotVars = (obj) => {
+        const snap = Object.create(null);
+        for (const k of Object.keys(obj || {})) {
+          snap[k] = cloneValue(obj[k]);
+        }
+        return snap;
+      };
+      const valuesEqual = (a, b) => {
+        if (Object.is(a, b)) return true;
+        if (a && b && typeof a === 'object' && typeof b === 'object') {
+          try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; }
+        }
+        return false;
+      };
+      const diffChangedKeys = (prevSnap, nextObj) => {
+        const allKeys = new Set([...Object.keys(prevSnap || {}), ...Object.keys(nextObj || {})]);
+        const changed = [];
+        for (const k of allKeys) {
+          if (!valuesEqual(prevSnap ? prevSnap[k] : undefined, nextObj ? nextObj[k] : undefined)) {
+            changed.push(k);
+          }
+        }
+        return changed;
+      };
+      const runChangeWatchers = async (initialPrevSnap, explicitKeys) => {
+        if (Object.keys(changeHandlers).length === 0) return false;
+        let prevSnap = initialPrevSnap || Object.create(null);
+        let keysToNotify = Array.isArray(explicitKeys) && explicitKeys.length > 0
+          ? explicitKeys.filter((k) => !valuesEqual(prevSnap[k], vars[k]))
+          : diffChangedKeys(prevSnap, vars);
+        let anyFired = false;
+        const MAX_REACTION_PASSES = 3;
+        for (let pass = 0; pass < MAX_REACTION_PASSES && keysToNotify.length > 0; pass++) {
+          const passStartSnap = snapshotVars(vars);
+          for (const k of keysToNotify) {
+            const nextVal = vars[k];
+            const prevVal = prevSnap[k];
+            const specific = changeHandlers[k] || [];
+            const wildcard = k === 'contents' ? [] : (changeHandlers['*'] || []);
+            for (const fn of [...specific, ...wildcard]) {
+              anyFired = true;
+              await fn(nextVal, prevVal, k);
+            }
+          }
+          prevSnap = passStartSnap;
+          keysToNotify = diffChangedKeys(passStartSnap, vars);
+        }
+        return anyFired;
+      };
+
       const runUserCode = async () => {
+        changeHandlers = Object.create(null);
         const fn = new AsyncFunction(
-          'vars', 'ctx', 'lib', 'log', 'canvas', 'widgets', 'emit', 'broadcast', 'emitDownstream', 'on', 'onSubmit', 'onValidateConnect',
+          'vars', 'ctx', 'lib', 'log', 'canvas', 'widgets', 'emit', 'broadcast', 'emitDownstream', 'on', 'onSubmit', 'onChange', 'onValidateConnect',
           'window', 'document', 'fetch', 'localStorage',
           code
         );
         await fn(
-          vars, ctx, lib, log, canvas, widgets, emit, broadcast, emitDownstream, on, onSubmit, onValidateConnect,
+          vars, ctx, lib, log, canvas, widgets, emit, broadcast, emitDownstream, on, onSubmit, onChange, onValidateConnect,
           undefined, undefined, undefined, undefined
         );
       };
@@ -537,15 +604,26 @@ export async function runInIsolatedWorker(
           return;
         }
 
-        // 第 2 遍：若有事件触发（点击、回车提交或跨控件消息），执行对应回调后再重跑顶层以刷新 vars.contents
-        if (trigger && trigger.kind === 'click' && handlers[trigger.buttonId]) {
+        // 第 2 遍：若有事件触发（点击、回车提交、跨控件消息或外部变量变更），执行回调 + onChange 响应后再重跑顶层以刷新 vars.contents
+        if (trigger && trigger.kind === 'varsChanged') {
+          const fired = await runChangeWatchers(trigger.prevVars || Object.create(null), trigger.changedKeys);
+          if (fired) {
+            await runUserCode();
+          }
+        } else if (trigger && trigger.kind === 'click' && handlers[trigger.buttonId]) {
+          const beforeSnap = snapshotVars(vars);
           await handlers[trigger.buttonId](vars);
+          await runChangeWatchers(beforeSnap);
           await runUserCode();
         } else if (trigger && trigger.kind === 'submit' && submitHandlers[trigger.inputId]) {
+          const beforeSnap = snapshotVars(vars);
           await submitHandlers[trigger.inputId](trigger.value, vars);
+          await runChangeWatchers(beforeSnap);
           await runUserCode();
         } else if (trigger && trigger.kind === 'message' && handlers[trigger.event]) {
+          const beforeSnap = snapshotVars(vars);
           await handlers[trigger.event](trigger.payload, { fromId: trigger.fromId, fromTitle: trigger.fromTitle });
+          await runChangeWatchers(beforeSnap);
           await runUserCode();
         }
 

@@ -1,8 +1,9 @@
 /**
  * @file PdfViewerBlock.tsx
- * @description 沉浸式 PDF 阅读块组件：
- * - 无多余外框与内边距，PDF 视口随卡片尺寸自动铺满（支持 NodeResizer 自由拉伸）；
- * - 翻页栏置于最底部，居中展示「‹  [当前页] / 共 X 页  ›」，右侧提供折叠式「换源 / 上传 / Proxy」入口。
+ * @description 沉浸式 PDF 阅读块组件（零 blob: 依赖）：
+ * - 仅支持持久 URL（http/https 外链、/api/proxy/binary 代理转发，或经服务端 POST /api/pdf/upload 托管的 /api/pdf/:id）；
+ * - 翻页栏置于最底部，居中展示「‹ [当前页] / 共 X 页 ›」，右侧提供折叠式「换源 / 上传 / Proxy」入口；
+ * - 远端离屏（mediaActive === false）自动卸载重型 iframe 节省内存与 GPU。
  */
 
 import { memo, useEffect, useRef, useState, type ChangeEvent } from 'react';
@@ -10,9 +11,10 @@ import { ChevronLeft, ChevronRight, FileText, Globe, Link2, Upload } from 'lucid
 import {
   buildPdfIframeSrc,
   countPdfPagesFromBytes,
-  createDemoSamplePdfBlobUrl,
   normalizePdfPage,
 } from '../core/pdfHelper';
+
+const MAX_PDF_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 export interface PdfViewerBlockProps {
   url: string;
@@ -46,7 +48,6 @@ function PdfViewerBlockInner({
   const [uploading, setUploading] = useState(false);
   const [tip, setTip] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const ownedBlobUrlsRef = useRef<string[]>([]);
 
   useEffect(() => {
     setUrlDraft(url);
@@ -57,13 +58,7 @@ function PdfViewerBlockInner({
     setPageDraft(String(safePage));
   }, [safePage]);
 
-  useEffect(() => {
-    return () => {
-      for (const b of ownedBlobUrlsRef.current) URL.revokeObjectURL(b);
-    };
-  }, []);
-
-  // 自动尝试探测远程/代理/Blob PDF 总页数（跨域受限时静默跳过，不报错）
+  // 自动尝试探测同源/代理/CORS 允许的 PDF 总页数（跨域受限时静默显示「共 ? 页」）
   useEffect(() => {
     if (!url || validTotal) return;
     const target = buildPdfIframeSrc(url, 1, useProxy)?.split('#')[0];
@@ -79,7 +74,7 @@ function PdfViewerBlockInner({
           onChangeTotalPages?.(detected);
         }
       } catch {
-        // 跨域拒绝读取字节时忽略，显示「共 ? 页」
+        // 跨域拒绝读取字节时忽略
       }
     })();
     return () => {
@@ -96,22 +91,15 @@ function PdfViewerBlockInner({
 
   const commitUrl = () => {
     const trimmed = urlDraft.trim();
+    if (trimmed && !buildPdfIframeSrc(trimmed, 1, useProxy)) {
+      setTip('仅支持 http/https、服务端 /api/pdf/ 或合法 PDF 链接（拒绝 javascript:/data:）');
+      return;
+    }
     setTip('');
     onChangeTotalPages?.(0);
     onChangeUrl(trimmed);
     onChangePage(1);
     if (trimmed) setSourceOpen(false);
-  };
-
-  const handleLoadDemoPdf = () => {
-    const blobUrl = createDemoSamplePdfBlobUrl();
-    ownedBlobUrlsRef.current.push(blobUrl);
-    setTip('');
-    onChangeUseProxy(false);
-    onChangeTotalPages?.(3);
-    onChangeUrl(blobUrl);
-    onChangePage(1);
-    setSourceOpen(false);
   };
 
   const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {
@@ -122,52 +110,39 @@ function PdfViewerBlockInner({
       setTip('仅支持 .pdf 文件');
       return;
     }
+    if (file.size > MAX_PDF_UPLOAD_BYTES) {
+      setTip('PDF 文件超过 50MB 上传上限');
+      return;
+    }
 
     setUploading(true);
     setTip('');
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const detectedPages = countPdfPagesFromBytes(bytes) ?? 0;
-
     try {
-      // 直接以 application/pdf 提交原始字节，不再 base64 编码：
-      // 少一层 4/3 膨胀与 FileReader 全量读入，上限即文件真实大小。
-      if (useProxy && file.size <= 50 * 1024 * 1024) {
-        const resp = await fetch('/api/pdf/upload', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/pdf',
-            'X-Pdf-Filename': encodeURIComponent(file.name),
-          },
-          body: file,
-        });
-        if (resp.ok) {
-          const data = (await resp.json()) as { ok?: boolean; url?: string };
-          if (data.ok && data.url) {
-            onChangeTotalPages?.(detectedPages);
-            onChangeUrl(data.url);
-            onChangePage(1);
-            setSourceOpen(false);
-            setUploading(false);
-            return;
-          }
-        } else {
-          // 服务端明确拒绝（超限 / 非 PDF / 未授权）时说清原因，
-          // 否则下面会静默降级成本地 Blob，用户不知道自己传的其实是本地文件。
-          const data = (await resp.json().catch(() => null)) as { error?: string } | null;
-          setTip(data?.error || `上传失败（HTTP ${resp.status}），已改用本地文件预览`);
-        }
-      }
-    } catch {
-      // 静态环境自动降级为本地 Blob URL
-    }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const detectedPages = countPdfPagesFromBytes(bytes) ?? 0;
 
-    const localBlobUrl = URL.createObjectURL(file);
-    ownedBlobUrlsRef.current.push(localBlobUrl);
-    onChangeTotalPages?.(detectedPages);
-    onChangeUrl(localBlobUrl);
-    onChangePage(1);
-    setSourceOpen(false);
-    setUploading(false);
+      const resp = await fetch('/api/pdf/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/pdf',
+          'X-Pdf-Filename': encodeURIComponent(file.name),
+        },
+        body: file,
+      });
+      const data = (await resp.json().catch(() => null)) as { ok?: boolean; url?: string; error?: string } | null;
+      if (!resp.ok || !data?.ok || !data.url) {
+        setTip(data?.error || `上传失败（HTTP ${resp.status}）：需自托管后端 /api/pdf/upload，或直接粘贴 https:// PDF 链接`);
+        return;
+      }
+      onChangeTotalPages?.(detectedPages);
+      onChangeUrl(data.url);
+      onChangePage(1);
+      setSourceOpen(false);
+    } catch {
+      setTip('上传失败：当前为静态模式无 /api/pdf/upload 后端，请直接粘贴 https:// PDF 链接');
+    } finally {
+      setUploading(false);
+    }
   };
 
   const iframeSrc = buildPdfIframeSrc(url, safePage, useProxy);
@@ -186,7 +161,7 @@ function PdfViewerBlockInner({
           <input
             type="text"
             value={urlDraft}
-            placeholder="粘贴 PDF URL 或右侧上传…"
+            placeholder="粘贴 https:// PDF 链接或点右侧上传到服务端…"
             onChange={(e) => setUrlDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
@@ -214,15 +189,15 @@ function PdfViewerBlockInner({
             type="button"
             disabled={uploading}
             onClick={() => fileInputRef.current?.click()}
-            title="上传本地 PDF（单文件上限 50MB）"
+            title="二进制直传至服务端 /api/pdf/upload（上限 50MB）"
             className="inline-flex shrink-0 items-center gap-0.5 rounded border border-slate-300 bg-white px-1.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-50"
           >
             <Upload className="h-3 w-3" />
-            上传
+            {uploading ? '上传中' : '上传'}
           </button>
           <label
             className="inline-flex shrink-0 cursor-pointer items-center gap-1 text-[11px] text-slate-600 select-none"
-            title="开启后通过服务端 /api/proxy/binary 或 /api/pdf/upload 代理"
+            title="开启后通过服务端 /api/proxy/binary 代理转发远程 PDF 链接"
           >
             <input
               type="checkbox"
@@ -241,7 +216,7 @@ function PdfViewerBlockInner({
         </div>
       )}
 
-      {/* 沉浸式 PDF 视口：仅在视口或紧邻预热区挂载重型 iframe，远端离屏自动休眠释放进程开销 */}
+      {/* 沉浸式 PDF 视口：零外框、零 padding，离屏休眠 */}
       {iframeSrc ? (
         mediaActive ? (
           <iframe
@@ -257,16 +232,9 @@ function PdfViewerBlockInner({
           </div>
         )
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2.5 bg-white px-4 text-center text-xs text-slate-500">
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 bg-white px-5 text-center text-xs text-slate-500">
           <FileText className="h-7 w-7 text-slate-300" />
-          <div className="text-slate-600">粘贴 PDF 链接、上传本地文件，或直接体验内置文档</div>
-          <button
-            type="button"
-            onClick={handleLoadDemoPdf}
-            className="rounded-full bg-slate-900 px-3.5 py-1.5 text-[11px] font-medium text-white transition hover:bg-slate-700"
-          >
-            加载内置 3 页演示 PDF
-          </button>
+          <div className="text-slate-600">在上方粘贴 PDF 链接（可勾选 Proxy 代理），或上传至服务端托管（上限 50MB）</div>
         </div>
       )}
 

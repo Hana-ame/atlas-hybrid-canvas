@@ -53,7 +53,7 @@ export function TemplateDrawer({
   if (!open) return null;
 
   return (
-    <aside className="pointer-events-auto absolute top-16 left-3 bottom-12 z-30 flex w-80 flex-col rounded-xl border border-slate-200 bg-white/95 shadow-xl backdrop-blur">
+    <aside className="pointer-events-auto absolute top-16 left-3 bottom-12 z-30 flex w-80 flex-col rounded-xl border border-slate-200 bg-white/95 shadow-xl backdrop-blur max-md:top-auto max-md:right-2 max-md:left-2 max-md:bottom-2 max-md:h-[56vh] max-md:w-auto max-md:rounded-2xl">
       <div className="flex items-center justify-between border-b border-slate-100 px-3.5 py-2.5">
         <div className="flex items-center gap-1.5">
           <BookmarkPlus className="h-4 w-4 text-blue-700" />

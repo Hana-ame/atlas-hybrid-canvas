@@ -324,7 +324,13 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
 
         {/* 平时右上角只固定留一个 Lock 按钮；hover 时其余操作在 Lock 左侧浮现，0 位移不挤标题 */}
         <div className="nodrag nopan relative flex shrink-0 items-center">
-          <div className="pointer-events-none absolute right-6 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 bg-gradient-to-r from-transparent via-white via-20% to-white pl-3 pr-0.5 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+          <div
+            className={`absolute right-6 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 bg-gradient-to-r from-transparent via-white via-20% to-white pl-3 pr-0.5 transition-opacity ${
+              selected
+                ? 'pointer-events-auto opacity-100'
+                : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100'
+            }`}
+          >
             {(entity.hasLocalOverride || entity.hasRuntimeVars) && (
               <button
                 type="button"

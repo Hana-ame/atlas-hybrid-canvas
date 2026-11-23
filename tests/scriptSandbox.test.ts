@@ -200,3 +200,79 @@ test('Worker sandbox onValidateConnect() rejects cyclic wire with custom reason 
   assert.equal(allowed.ok, true);
   assert.deepEqual(allowed.connectValidation, { ok: true });
 });
+
+test('Worker sandbox onChange(): fires on variable mutation during click, supports array keys and chained derivation', async () => {
+  const code = `
+    vars.contents = [{ type: 'text', text: 'total=' + (vars.total || 0) }];
+    onChange(['price', 'qty'], (next, prev, key) => {
+      log('changed:' + key + ':' + prev + '->' + next);
+      vars.subtotal = (Number(vars.price) || 0) * (Number(vars.qty) || 0);
+    });
+    onChange('subtotal', (next) => {
+      vars.total = Math.round(next * 1.1 * 100) / 100;
+    });
+    on('bump', () => {
+      vars.qty = (Number(vars.qty) || 0) + 1;
+    });
+  `;
+  const res = await runWorkerBootstrapInNode({
+    code,
+    initialVars: { price: 10, qty: 2, subtotal: 20, total: 22 },
+    selfEntity: { id: 'n1', title: 'Cart', label: 'Cart', body: '', x: 0, y: 0, width: 260, height: 160, color: '#2563EB', vars: {} },
+    peers: {},
+    edges: [],
+    trigger: { kind: 'click', buttonId: 'bump' },
+  });
+  assert.equal(res.ok, true);
+  assert.equal((res.updatedVars as Record<string, unknown>).qty, 3);
+  assert.equal((res.updatedVars as Record<string, unknown>).subtotal, 30);
+  assert.equal((res.updatedVars as Record<string, unknown>).total, 33);
+  assert.ok((res.logs as string[]).includes('changed:qty:2->3'));
+  assert.deepEqual((res.updatedVars as Record<string, unknown>).contents, [{ type: 'text', text: 'total=33' }]);
+});
+
+test('Worker sandbox onChange("*"): catches any var change except contents and guards against infinite ping-pong', async () => {
+  const code = `
+    onChange('*', (next, prev, key) => {
+      log('wild:' + key + '=' + next);
+    });
+    onChange('a', () => { vars.b = (Number(vars.b) || 0) + 1; });
+    onChange('b', () => { vars.a = (Number(vars.a) || 0) + 1; });
+    on('go', () => { vars.a = 1; });
+  `;
+  const res = await runWorkerBootstrapInNode({
+    code,
+    initialVars: { a: 0, b: 0 },
+    selfEntity: { id: 'n2', title: 'LoopGuard', label: 'LoopGuard', body: '', x: 0, y: 0, width: 260, height: 160, color: '#2563EB', vars: {} },
+    peers: {},
+    edges: [],
+    trigger: { kind: 'click', buttonId: 'go' },
+  });
+  assert.equal(res.ok, true);
+  assert.ok((res.logs as string[]).some((l: string) => l.startsWith('wild:a=')));
+  assert.ok(!(res.logs as string[]).some((l: string) => l.startsWith('wild:contents=')));
+  // Bounded by MAX_REACTION_PASSES = 3 so it terminates cleanly without hanging
+  assert.ok(Number((res.updatedVars as Record<string, unknown>).a) <= 4 && Number((res.updatedVars as Record<string, unknown>).b) <= 4);
+});
+
+test('Worker sandbox varsChanged trigger: fires onChange when Inspector edits a variable externally', async () => {
+  const code = `
+    vars.contents = [{ type: 'text', text: 'badge:' + (vars.badge || 'none') }];
+    onChange('score', (next, prev) => {
+      log('score ' + prev + ' -> ' + next);
+      vars.badge = next >= 90 ? 'S' : 'A';
+    });
+  `;
+  const res = await runWorkerBootstrapInNode({
+    code,
+    initialVars: { score: 95, badge: 'A' },
+    selfEntity: { id: 'n3', title: 'Grader', label: 'Grader', body: '', x: 0, y: 0, width: 260, height: 160, color: '#2563EB', vars: {} },
+    peers: {},
+    edges: [],
+    trigger: { kind: 'varsChanged', prevVars: { score: 80, badge: 'A' }, changedKeys: ['score'] },
+  });
+  assert.equal(res.ok, true);
+  assert.equal((res.updatedVars as Record<string, unknown>).badge, 'S');
+  assert.ok((res.logs as string[]).includes('score 80 -> 95'));
+  assert.deepEqual((res.updatedVars as Record<string, unknown>).contents, [{ type: 'text', text: 'badge:S' }]);
+});

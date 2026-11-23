@@ -10,7 +10,7 @@ test('normalizePdfPage() clamps invalid, negative, and oversized page numbers', 
   assert.equal(normalizePdfPage(999999), 9999);
 });
 
-test('isSafePdfUrl() allows http/https/blob/local proxy and blocks javascript:/data: schemes', () => {
+test('isSafePdfUrl() allows http/https/blob/local server proxy and rejects javascript:/data: schemes', () => {
   assert.equal(isSafePdfUrl('https://example.com/doc.pdf'), true);
   assert.equal(isSafePdfUrl('blob:https://example.com/123'), true);
   assert.equal(isSafePdfUrl('/api/pdf/abc123'), true);

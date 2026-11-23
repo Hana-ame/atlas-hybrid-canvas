@@ -1,9 +1,9 @@
 /**
  * @file pdfHelper.ts
  * @description PDF 阅读控件辅助工具：
- * - 安全校验 PDF URL（仅放行 http/https/blob/相对 /api/pdf/，拦截 javascript:/data:text/html 等危险协议）；
+ * - 安全校验 PDF URL（放行 http/https 外链、服务端 /api/pdf/ 与 /api/proxy/binary 及合法 blob:，拒绝 javascript:/data:）；
  * - 构造支持 #page=N 页码跳转与 /api/proxy/binary 代理的 iframe 地址；
- * - 内置纯文本构造的最小合法 3 页 PDF（~1.1 KB），方便离线无网环境一键体验左右翻页与页码跳转。
+ * - 提供零依赖 PDF 页数解析（仅支持未压缩页树，压缩流 /ObjStm PDF 返回 null 由 UI 显示共 ? 页）。
  */
 
 export function normalizePdfPage(raw: unknown): number {
@@ -45,51 +45,8 @@ export function buildPdfIframeSrc(rawUrl: string, page: number, useProxy: boolea
 }
 
 /**
- * 构造一份最小合法 3 页 PDF 字节流，用于在无外网/静态预览环境下直接测试翻页与页码跳转。
- */
-export function createDemoSamplePdfBlobUrl(): string {
-  const pageContents = [
-    'BT /F1 24 Tf 60 720 Td (Atlas Hybrid Canvas - Page 1 / 3) Tj 0 -36 Td /F1 13 Tf (Use Prev / Next buttons or type a page number above.) Tj ET',
-    'BT /F1 24 Tf 60 720 Td (Atlas Hybrid Canvas - Page 2 / 3) Tj 0 -36 Td /F1 13 Tf (Supports direct PDF URL, /api/proxy/binary, and local upload.) Tj ET',
-    'BT /F1 24 Tf 60 720 Td (Atlas Hybrid Canvas - Page 3 / 3) Tj 0 -36 Td /F1 13 Tf (Page number is stored in vars.pdfPage and readable via widgets.inputs.) Tj ET',
-  ];
-
-  const objects: string[] = [];
-  objects.push('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
-  objects.push('2 0 obj\n<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>\nendobj\n');
-  objects.push('3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 9 0 R >> >> /Contents 6 0 R >>\nendobj\n');
-  objects.push('4 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 9 0 R >> >> /Contents 7 0 R >>\nendobj\n');
-  objects.push('5 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 9 0 R >> >> /Contents 8 0 R >>\nendobj\n');
-  for (let i = 0; i < 3; i++) {
-    const stream = pageContents[i];
-    objects.push(`${6 + i} 0 obj\n<< /Length ${stream.length} >>\nstream\n${stream}\nendstream\nendobj\n`);
-  }
-  objects.push('9 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n');
-
-  let pdf = '%PDF-1.4\n';
-  const offsets: number[] = [0];
-  for (const obj of objects) {
-    offsets.push(pdf.length);
-    pdf += obj;
-  }
-  const xrefPos = pdf.length;
-  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  for (let i = 1; i <= objects.length; i++) {
-    pdf += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
-  }
-  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF`;
-
-  const blob = new Blob([pdf], { type: 'application/pdf' });
-  return URL.createObjectURL(blob);
-}
-
-/**
- * 零依赖快速解析 PDF 总页数：优先匹配 /Type /Pages ... /Count N，回退统计 /Type /Page 节点数。
- *
- * 局限（有意为之，解析失败一律返回 null 让 UI 显示「共 ? 页」）：
- * - 走的是明文正则扫描，页对象被 FlateDecode 压进对象流（/ObjStm）的真实 PDF 扫不到；
- * - 因此 /Type /Pages 与 /Count 之间的间隔窗口放到 4KB，仍不保证覆盖所有生成器。
- * 需要精确页数时应在服务端用成熟解析库，而不是加大这里的正则。
+ * 零依赖快速解析 PDF 总页数：优先在 4KB 窗口内匹配 /Type /Pages ... /Count N，回退统计 /Type /Page 节点数。
+ * 局限：若真实世界 PDF 使用 FlateDecode 将页对象压进 /ObjStm 压缩流，明文正则扫不到，会返回 null 由 UI 展示「共 ? 页」。
  */
 export function countPdfPagesFromBytes(bytes: Uint8Array): number | null {
   try {

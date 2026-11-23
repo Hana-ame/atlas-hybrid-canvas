@@ -51,7 +51,7 @@ import {
 import { AnnotationNode, type AnnotationNodeData } from './canvas/AnnotationNode';
 import { ChunkUnderlayCanvas } from './canvas/ChunkUnderlayCanvas';
 import { WidgetNode, type WidgetNodeData } from './canvas/WidgetNode';
-import { NodeInspectorPanel } from './components/NodeInspectorPanel';
+import { NodeInspectorPanel, type ScriptConsoleEntry } from './components/NodeInspectorPanel';
 import { SearchJumpModal } from './components/SearchJumpModal';
 import {
   ScriptTrustModal,
@@ -135,7 +135,7 @@ function HybridCanvasWorkspace() {
 
   const [showChunkGrid, setShowChunkGrid] = useState(true);
   const [annotationEditMode, setAnnotationEditMode] = useState(false);
-  const [templateDrawerOpen, setTemplateDrawerOpen] = useState(true);
+  const [templateDrawerOpen, setTemplateDrawerOpen] = useState(() => (typeof window !== 'undefined' ? window.innerWidth >= 768 : true));
   const [inspectingNodeId, setInspectingNodeId] = useState<string | null>(null);
   const [busyButtonKey, setBusyButtonKey] = useState<string | null>(null);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
@@ -165,6 +165,37 @@ function HybridCanvasWorkspace() {
   const [roomStatus, setRoomStatus] = useState<RoomStatus>('disconnected');
   const roomClientRef = useRef<CollaborativeRoomClient | null>(null);
   const [statusLog, setStatusLog] = useState<string>('');
+  const [scriptLogsByNode, setScriptLogsByNode] = useState<Record<string, ScriptConsoleEntry[]>>({});
+
+  const appendNodeLogs = useCallback(
+    (nodeId: string, triggerLabel: string, entries: Array<{ level: 'log' | 'error' | 'info'; message: string }>) => {
+      if (entries.length === 0) return;
+      const now = new Date();
+      const ts = now.toTimeString().slice(0, 8);
+      const stamped: ScriptConsoleEntry[] = entries.map((e, idx) => ({
+        id: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+        ts,
+        level: e.level,
+        trigger: triggerLabel,
+        message: e.message,
+      }));
+      setScriptLogsByNode((prev) => {
+        const cur = prev[nodeId] ?? [];
+        const merged = [...cur, ...stamped].slice(-50);
+        return { ...prev, [nodeId]: merged };
+      });
+    },
+    []
+  );
+
+  const handleClearScriptLogs = useCallback((nodeId: string) => {
+    setScriptLogsByNode((prev) => {
+      if (!prev[nodeId]) return prev;
+      const next = { ...prev };
+      delete next[nodeId];
+      return next;
+    });
+  }, []);
   useEffect(() => {
     if (!statusLog) return;
     const t = window.setTimeout(() => setStatusLog(''), 3500);
@@ -225,7 +256,10 @@ function HybridCanvasWorkspace() {
   const overlayRef = useRef(overlay);
   overlayRef.current = overlay;
 
-  const bumpChunkSyncTick = useCallback(() => setChunkSyncTick((t) => t + 1), []);
+  const bumpChunkSyncTick = useCallback(() => {
+    renderedScriptsRef.current.clear();
+    setChunkSyncTick((t) => t + 1);
+  }, []);
   const { pushHistory, handleUndo, handleRedo, historyMeta } = useBlueprintHistory(
     baseRef,
     overlayRef,
@@ -381,6 +415,9 @@ function HybridCanvasWorkspace() {
     [base, overlay]
   );
   const effectiveNodesRef = useRef(effectiveNodes);
+  const validateConnectionByWidgetsRef = useRef<
+    (source: string, target: string, fromPort: string, toPort: string, activeEdgeMap: Record<string, BlueprintEdge>) => Promise<{ ok: boolean; reason?: string }>
+  >(async () => ({ ok: true }));
   const edgesRef = useRef(base.edges);
   edgesRef.current = base.edges;
   effectiveNodesRef.current = effectiveNodes;
@@ -563,8 +600,19 @@ function HybridCanvasWorkspace() {
           edges: edgesSnap,
         });
         if (!res.ok) {
+          appendNodeLogs(nodeId, `btn:${btn.label}`, [
+            ...res.logs.map((m) => ({ level: 'log' as const, message: m })),
+            { level: 'error', message: res.error || '脚本运行失败' },
+          ]);
           setStatusLog(`沙箱拦截/报错：${res.error}`);
           return;
+        }
+        if (res.logs.length > 0) {
+          appendNodeLogs(
+            nodeId,
+            `btn:${btn.label}`,
+            res.logs.map((m) => ({ level: 'log' as const, message: m }))
+          );
         }
         setOverlay((prev) => {
           const nextAnnOverrides = { ...(prev.annotationOverrides ?? {}) };
@@ -738,9 +786,30 @@ function HybridCanvasWorkspace() {
         trigger,
       });
 
+      const triggerTag =
+        trigger.kind === 'click'
+          ? `click:${trigger.buttonId}`
+          : trigger.kind === 'submit'
+            ? `submit:${trigger.inputId}`
+            : trigger.kind === 'message'
+              ? `msg:${trigger.event}`
+              : trigger.kind === 'varsChanged'
+                ? `var:${trigger.changedKeys.join(',')}`
+                : trigger.kind;
       if (!res.ok) {
+        appendNodeLogs(nodeId, triggerTag, [
+          ...res.logs.map((m) => ({ level: 'log' as const, message: m })),
+          { level: 'error', message: res.error || '脚本运行失败' },
+        ]);
         setStatusLog(`脚本错误 (${entity.title})：${res.error}`);
         return;
+      }
+      if (res.logs.length > 0) {
+        appendNodeLogs(
+          nodeId,
+          triggerTag,
+          res.logs.map((m) => ({ level: 'log' as const, message: m }))
+        );
       }
 
       // 1) 更新自身 runtimeVars 与画板背景注释覆盖
@@ -759,7 +828,25 @@ function HybridCanvasWorkspace() {
         };
       });
 
-      // 2) 处理 widgets.create / connect / remove 指令
+      // 2) 处理 widgets.create / connect / remove 指令（先对脚本发起的 connect 执行控件自主 onValidateConnect 校验）
+      const approvedConnectOps = new Set<number>();
+      for (let i = 0; i < res.widgetOps.length; i++) {
+        const op = res.widgetOps[i];
+        if (op.op === 'connect') {
+          const check = await validateConnectionByWidgetsRef.current(
+            op.fromId,
+            op.toId,
+            'out-1',
+            'in-1',
+            activeEdges
+          );
+          if (check.ok) {
+            approvedConnectOps.add(i);
+          } else {
+            setStatusLog(check.reason || '目标控件拒绝了脚本连线');
+          }
+        }
+      }
       const newlyCreatedScripts: Array<{
         id: string;
         title: string;
@@ -777,7 +864,8 @@ function HybridCanvasWorkspace() {
         setBase((prev) => {
           const nextNodes = { ...prev.nodes };
           const nextEdges = { ...prev.edges };
-          for (const op of res.widgetOps) {
+          for (let opIdx = 0; opIdx < res.widgetOps.length; opIdx++) {
+            const op = res.widgetOps[opIdx];
             if (op.op === 'create') {
               nextNodes[op.id] = {
                 id: op.id,
@@ -825,6 +913,7 @@ function HybridCanvasWorkspace() {
                 createdEdges[eid] = createdEdge;
               }
             } else if (op.op === 'connect') {
+              if (!approvedConnectOps.has(opIdx)) continue;
               const eid = `edge-${op.fromId}-${op.toId}-${Date.now()}`;
               const createdEdge: BlueprintEdge = {
                 id: eid,
@@ -1175,6 +1264,10 @@ function HybridCanvasWorkspace() {
     else if (rawVal === 'false') parsed = false;
     else if (rawVal !== '' && Number.isFinite(Number(rawVal))) parsed = Number(rawVal);
 
+    const prevEntity = effectiveNodesRef.current[nodeId];
+    const prevVars = prevEntity ? { ...prevEntity.effectiveVars } : {};
+    const nextEffectiveVars = { ...prevVars, [key]: parsed };
+
     setBase((prev) => {
       const cur = prev.nodes[nodeId];
       if (!cur) return prev;
@@ -1192,9 +1285,32 @@ function HybridCanvasWorkspace() {
         },
       };
     });
-  }, []);
+    setOverlay((prev) => {
+      const curRv = prev.runtimeVars[nodeId];
+      if (!curRv) return prev;
+      return {
+        ...prev,
+        runtimeVars: {
+          ...prev.runtimeVars,
+          [nodeId]: { ...curRv, [key]: parsed },
+        },
+      };
+    });
+    if (prevEntity?.script) {
+      void executeUnifiedWidgetScript(
+        nodeId,
+        { kind: 'varsChanged', prevVars, changedKeys: [key] },
+        nextEffectiveVars
+      );
+    }
+  }, [executeUnifiedWidgetScript]);
 
   const handleDeleteDefaultVar = useCallback((nodeId: string, key: string) => {
+    const prevEntity = effectiveNodesRef.current[nodeId];
+    const prevVars = prevEntity ? { ...prevEntity.effectiveVars } : {};
+    const nextEffectiveVars = { ...prevVars };
+    delete nextEffectiveVars[key];
+
     setBase((prev) => {
       const cur = prev.nodes[nodeId];
       if (!cur) return prev;
@@ -1209,7 +1325,27 @@ function HybridCanvasWorkspace() {
         },
       };
     });
-  }, []);
+    setOverlay((prev) => {
+      const curRv = prev.runtimeVars[nodeId];
+      if (!curRv || !(key in curRv)) return prev;
+      const nextRv = { ...curRv };
+      delete nextRv[key];
+      return {
+        ...prev,
+        runtimeVars: {
+          ...prev.runtimeVars,
+          [nodeId]: nextRv,
+        },
+      };
+    });
+    if (prevEntity?.script) {
+      void executeUnifiedWidgetScript(
+        nodeId,
+        { kind: 'varsChanged', prevVars, changedKeys: [key] },
+        nextEffectiveVars
+      );
+    }
+  }, [executeUnifiedWidgetScript]);
 
   const handleDuplicateNode = useCallback((nodeId: string) => {
     const src = effectiveNodesRef.current[nodeId];
@@ -1592,6 +1728,8 @@ function HybridCanvasWorkspace() {
     [buildEdgeSnapshots, buildPeerSnapshots, untrustedScriptKeys]
   );
 
+  validateConnectionByWidgetsRef.current = validateConnectionByWidgets;
+
   const onConnect = useCallback((conn: Connection) => {
     if (!conn.source || !conn.target) return;
     const source = conn.source;
@@ -1897,6 +2035,8 @@ function HybridCanvasWorkspace() {
       {/* 右侧控件属性与脚本编辑器 */}
       <NodeInspectorPanel
         node={inspectingNode}
+        scriptLogs={inspectingNode ? (scriptLogsByNode[inspectingNode.id] ?? []) : []}
+        onClearScriptLogs={handleClearScriptLogs}
         onClose={() => setInspectingNodeId(null)}
         onPatchNode={handlePatchNode}
         onRunScriptRefresh={handleRunScriptRefresh}
@@ -1923,6 +2063,8 @@ function HybridCanvasWorkspace() {
       <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}
+        panOnDrag
+        zoomOnPinch
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}

@@ -11,6 +11,8 @@ import {
   PROXY_DEFAULT_TIMEOUT_MS,
   PROXY_MAX_RESPONSE_CHARS,
   sanitizeProxyHeaders,
+  readResponseBufferWithLimit,
+  sanitizeBinaryProxyContentType,
   validateProxyTargetUrl,
 } from './proxySecurity';
 
@@ -36,7 +38,7 @@ async function startServer() {
   // 导致文件在进入路由前就被 413 掉。这里用 express.raw 精确接住 PDF 字节，
   // 体积按原始大小算，上限就是文件真实大小，不再有编码膨胀这层耦合。
   // json 的 limit 也回落到常规的 1mb——它现在只承载 blueprint 这类小 JSON。
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '10mb' }));
   app.use('/api/pdf/upload', express.raw({ type: 'application/pdf', limit: PDF_UPLOAD_MAX_BYTES }));
 
   const blueprintSaveKey = (process.env.BLUEPRINT_SAVE_KEY || '').trim();
@@ -315,16 +317,33 @@ async function startServer() {
       if (proxyApiKey && target.injectSecret) {
         headers[proxyApiKeyHeader] = `${proxyApiKeyPrefix}${proxyApiKey}`;
       }
-      const upstream = await fetch(target.url.toString(), { method: 'GET', headers, signal: controller.signal });
-      const arr = Buffer.from(await upstream.arrayBuffer());
-      // 代理拉回来的也是 PDF，与上传共用同一上限，免得「能上传却打不开代理的同类文件」
-      if (arr.byteLength > PDF_UPLOAD_MAX_BYTES) {
+      // redirect: 'manual' 必须显式指定。Node fetch 默认跟随跳转，白名单上游返回 302 指向
+      // 127.0.0.1 / 169.254.169.254 时会在 fetch 内部完成跳转，前面那轮 dns.lookup 校验对
+      // 跳转后的地址完全无效 —— SSRF 由此绕过。/api/proxy 早已这么做了，binary 分支此前漏了。
+      const upstream = await fetch(target.url.toString(), {
+        method: 'GET',
+        headers,
+        redirect: 'manual',
+        signal: controller.signal,
+      });
+      if (upstream.status >= 300 && upstream.status < 400) {
+        res.status(502).json({ ok: false, error: '安全限制：已拦截上游 3xx 重定向' });
+        return;
+      }
+      // 流式读并累计字节，超限立刻中断。原先 arrayBuffer() 全量读入再比大小，
+      // 恶意大响应在比对之前就已经把内存吃满了。
+      // 这里不把 timer 的 controller 传进去：那个 controller 一 abort，下面的 catch 就会
+      // 把「超限」误报成「代理拉取失败」。readResponseBufferWithLimit 内部自己 cancel 流即可。
+      const read = await readResponseBufferWithLimit(upstream, PDF_UPLOAD_MAX_BYTES);
+      if (!read.ok) {
         res.status(413).json({ ok: false, error: `PDF 文件超过 ${PDF_UPLOAD_MAX_LABEL} 代理上限` });
         return;
       }
-      res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/pdf');
+      // 上游 Content-Type 不可全信：透传 text/html 或 image/svg+xml 配合 inline 会在同源执行脚本。
+      res.setHeader('Content-Type', sanitizeBinaryProxyContentType(upstream.headers.get('content-type')));
+      res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Content-Disposition', 'inline');
-      res.status(upstream.status).send(arr);
+      res.status(upstream.status).send(read.buffer);
     } catch (err) {
       res.status(502).json({ ok: false, error: err instanceof Error ? err.message : 'PDF 代理拉取失败' });
     } finally {

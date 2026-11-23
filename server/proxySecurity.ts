@@ -223,7 +223,7 @@ export function validateProxyTargetUrl(
   // (never leak upstream secrets to unrelated third-party hosts such as httpbin.org in allowedHosts).
   // 注意：判「是否配置了上游」必须看 upstreamBase 原始字符串，不能看 upstreamHost。
   // upstreamHost 在上游 URL 解析失败时会退化成空串，若用它做判据，配置写错的部署会静默回落到
-  // allowedHosts 分支，把密钥重新发给 httpbin.org 这类演示域名 —— 正是本版要堵的那个洞。
+  // allowedHosts 分支，把密钥重新发给 httpbin.org 这类演示域名 —— 正是要堵的那个洞。
   const injectSecret = upstreamBase
     ? host === upstreamHost // upstreamHost 为空时恒为 false，即配置非法时不向任何主机注入
     : allowedHosts.length > 0 && hostMatchesAllowlist(host, allowedHosts);
@@ -266,4 +266,61 @@ export function sanitizeProxyHeaders(
     clean[key] = val;
   }
   return { ok: true, headers: clean };
+}
+
+export type BoundedReadResult =
+  | { ok: true; buffer: Buffer }
+  | { ok: false; tooLarge: true };
+
+/**
+ * 流式读取上游二进制响应并强制执行字节上限，避免大响应先全量落内存导致 OOM。
+ */
+export async function readResponseBufferWithLimit(
+  response: Pick<Response, 'headers' | 'body' | 'arrayBuffer'>,
+  maxBytes: number,
+  controller?: AbortController
+): Promise<{ ok: true; buffer: Buffer } | { ok: false; tooLarge: true }> {
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    controller?.abort();
+    return { ok: false, tooLarge: true };
+  }
+
+  if (!response.body) {
+    const arr = Buffer.from(await response.arrayBuffer());
+    if (arr.byteLength > maxBytes) return { ok: false, tooLarge: true };
+    return { ok: true, buffer: arr };
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        controller?.abort();
+        await reader.cancel().catch(() => {});
+        return { ok: false, tooLarge: true };
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return { ok: true, buffer: Buffer.concat(chunks, total) };
+}
+
+/**
+ * 限制 /api/proxy/binary 下发的 Content-Type，防止上游返回 text/html 造成同源 XSS。
+ */
+export function sanitizeBinaryProxyContentType(raw: string | null): string {
+  const normalized = (raw || '').split(';')[0].trim().toLowerCase();
+  if (normalized === 'application/pdf' || normalized === 'application/octet-stream') {
+    return normalized;
+  }
+  return 'application/pdf';
 }

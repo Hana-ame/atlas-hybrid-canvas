@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyOverlayToBase, clearConflictingRuntimeVars, createEmptyOverlay, resolveEffectiveAnnotations, resolveEffectiveNodes } from '../src/core/layeredStore.ts';
+import { applyOverlayToBase, clearConflictingRuntimeVars, createEmptyOverlay, resolveEffectiveAnnotations, resolveEffectiveNodes, sanitizeEphemeralBlobVars } from '../src/core/layeredStore.ts';
 import { createSeedBlueprint } from '../src/core/seedBlueprint.ts';
 
 test('resolveEffectiveNodes() lets vars control type, title, color, width, height, and pos/x/y', () => {
@@ -95,4 +95,16 @@ test('applyOverlayToBase() commits patches, increments rev, and ignores orphan n
   assert.equal(published.nodes['node-world-hub'].rev, prevRev + 1);
   assert.equal(published.nodes['node-world-hub'].cid, 'publisher-cid');
   assert.equal(published.nodes['deleted-orphan'], undefined);
+});
+
+test('sanitizeEphemeralBlobVars() strips stale blob: pdfUrl across page reloads while preserving https/server URLs', () => {
+  const cleaned = sanitizeEphemeralBlobVars({
+    a: { pdfUrl: 'blob:https://example.com/dead-id', pdfTotalPages: 3, pdfPage: 2 },
+    b: { pdfUrl: '/api/pdf/abc123', pdfTotalPages: 12, pdfPage: 4 },
+    c: { pdfUrl: 'https://example.com/paper.pdf', pdfTotalPages: 8 },
+  });
+  assert.equal(cleaned.a.pdfUrl, '');
+  assert.equal(cleaned.a.pdfTotalPages, 0);
+  assert.equal(cleaned.b.pdfUrl, '/api/pdf/abc123');
+  assert.equal(cleaned.c.pdfUrl, 'https://example.com/paper.pdf');
 });

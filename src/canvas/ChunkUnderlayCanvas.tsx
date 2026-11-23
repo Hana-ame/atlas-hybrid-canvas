@@ -206,6 +206,10 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
           const cached = cur.tileCache.get(chunk, cur.lod, scale);
           if (cached) continue;
           cur.tileCache.bake(chunk, cur.chunkManager.chunkSize, cur.lod, scale, (bctx) => {
+            for (const aid of chunk.annotationIds) {
+              const ann = cur.annotations[aid];
+              if (ann) drawAnnotation(bctx, ann);
+            }
             if (cur.lod === 'macro') {
               for (const nid of chunk.nodeIds) {
                 const n = cur.nodes[nid];

@@ -26,12 +26,31 @@ export function createEmptyOverlay(): LocalOverlayState {
   };
 }
 
+/**
+ * 清理跨会话已失效的临时 blob: URL（如本地上传 PDF 或内置演示 PDF），避免刷新页面后 iframe 加载 404 死链。
+ */
+export function sanitizeEphemeralBlobVars(
+  runtimeVars: Record<string, Record<string, unknown>>
+): Record<string, Record<string, unknown>> {
+  const cleaned: Record<string, Record<string, unknown>> = {};
+  for (const [nodeId, vars] of Object.entries(runtimeVars)) {
+    if (!vars || typeof vars !== 'object') continue;
+    const nextVars = { ...vars };
+    if (typeof nextVars.pdfUrl === 'string' && nextVars.pdfUrl.startsWith('blob:')) {
+      nextVars.pdfUrl = '';
+      nextVars.pdfTotalPages = 0;
+    }
+    cleaned[nodeId] = nextVars;
+  }
+  return cleaned;
+}
+
 export async function loadLocalOverlay(): Promise<LocalOverlayState> {
   try {
     const parsed = await idbGet<Partial<LocalOverlayState>>(OVERLAY_STORAGE_KEY);
     if (!parsed) return createEmptyOverlay();
     return {
-      runtimeVars: parsed.runtimeVars ?? {},
+      runtimeVars: sanitizeEphemeralBlobVars(parsed.runtimeVars ?? {}),
       nodePatches: parsed.nodePatches ?? {},
       annotationOverrides: parsed.annotationOverrides ?? {},
       trustedRemoteScripts: parsed.trustedRemoteScripts ?? {},

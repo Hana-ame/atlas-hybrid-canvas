@@ -24,6 +24,7 @@ Atlas Hybrid Canvas 的每个控件（`BlueprintNode`）都支持两种脚本模
 | `log(...args)` | 输出日志至底部状态栏 | `log('完成', vars.count);` |
 | `on(idOrEvent, fn)` | 注册按钮点击回调或跨控件事件监听 `(payload, meta) => {}` | `on('ping', (msg, meta) => ...)` |
 | `onSubmit(inputId, fn)` | 注册单行输入框按 Enter 回车时的提交回调 `(val) => {}` | `onSubmit('msgInput', (v) => ...)` |
+| `onChange(key \| keys[] \| '*', fn)` | 变量变更订阅，回调签名 `(nextVal, prevVal, key)`；`'*'` 匹配任意变量（跳过 `contents`） | 见「变量响应式订阅」一节 |
 | `widgets.get(id)` | 读取任意其他控件的快照（含 `title` 与 `vars`） | `widgets.get('node-world-hub')` |
 | `widgets.vars(id)` | 读取指定控件的实时变量表 | `widgets.vars(vars.lastChildId)` |
 | `widgets.list()` | 获取画布上全部控件快照数组 | `widgets.list().length` |
@@ -144,3 +145,24 @@ onValidateConnect((conn) => {
 - 钩子执行失败（语法错误 / 超时 / 抛异常）按**拦截**处理，不会静默放行。
 - `wouldCycle` 与 `cyclePath` 由引擎预先算好；也可以在钩子里自己调 `widgets.checkDag(conn.source, conn.target)` 复核。
 - 环路导致的事件无限传导由调度器的递归深度上限兜底，超出时状态栏会给出提示。
+
+## 变量响应式订阅 `onChange()`（v47 新增）
+
+在脚本里维护派生字段过去只能靠手写重复逻辑。`onChange()` 提供细粒度订阅，变量一变就回调：
+
+```js
+onChange(['price', 'qty'], (next, prev, key) => {
+  vars.subtotal = (Number(vars.price) || 0) * (Number(vars.qty) || 0);
+});
+onChange('subtotal', (next) => {
+  vars.total = Math.round(next * 1.1 * 100) / 100;
+});
+onChange('*', (next, prev, key) => {
+  log('变量变了：' + key + ' ' + prev + ' -> ' + next);
+});
+```
+
+- **触发时机**：`click` / `submit` / `message` 回调执行后自动 diff `vars`；属性检查器里改/删变量时也会派发 `varsChanged` 触发。
+- **链式派生**：回调里再改别的变量，会继续触发对应订阅，**最多传导 3 轮**（`MAX_REACTION_PASSES = 3`）。超过 3 轮的派生不会执行 —— 这是防 `a ↔ b` 死循环的硬上限，不是 bug。需要更长的派生链时，请把逻辑合并到更少的回调里，或在回调内直接算完。
+- **`'*'` 通配符**跳过 `contents`，避免声明式 UI 重建引发的自激。
+- 每次执行前订阅会被重新收集，脚本里重复写 `onChange` 不会叠加。

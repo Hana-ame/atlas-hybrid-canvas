@@ -6,8 +6,44 @@ html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.react-flow {
+  touch-action: none;
 }
 
 .react-flow__attribution {
   display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* 触屏设备（手机 / 平板）增大端口锚点、缩放手柄与右下角控件的触控热区 */
+@media (pointer: coarse) {
+  .react-flow__handle {
+    width: 18px !important;
+    height: 18px !important;
+  }
+  .react-flow__handle::after {
+    content: "";
+    position: absolute;
+    inset: -8px;
+    border-radius: 9999px;
+  }
+  .react-flow__resize-control.handle {
+    width: 16px !important;
+    height: 16px !important;
+  }
+  .react-flow__controls-button {
+    width: 36px !important;
+    height: 36px !important;
+  }
 }
