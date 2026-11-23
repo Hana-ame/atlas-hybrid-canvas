@@ -325,11 +325,20 @@ export async function runInIsolatedWorker(
       };
       const emitDownstream = async (event, payload, portId) => {
         const outs = widgets.outputs(portId);
-        if (outs.length === 0) return { ok: false, count: 0, error: '当前出口尚未连线到任何下游控件' };
+        // 同一出口可能有 2 条边连到同一个下游控件（如 out-1 双出线），按控件去重，
+        // 否则 count 会虚高、接收方也会被同一条消息触发两次。
+        const targetIds = [];
+        const seen = new Set();
         for (const dst of outs) {
-          emitOps.push({ targetId: dst.id, event: String(event), payload });
+          if (seen.has(dst.id)) continue;
+          seen.add(dst.id);
+          targetIds.push(dst.id);
         }
-        return { ok: true, count: outs.length };
+        if (targetIds.length === 0) return { ok: false, count: 0, error: '当前出口尚未连线到任何下游控件' };
+        for (const tid of targetIds) {
+          emitOps.push({ targetId: tid, event: String(event), payload });
+        }
+        return { ok: true, count: targetIds.length };
       };
 
       const handlers = Object.create(null);
@@ -459,8 +468,9 @@ export async function runInIsolatedWorker(
   });
 }
 
-// 常驻可复用 Worker 池（最多保留 3 个空闲 Worker，避免链式事件高频冷启动/GC 抖动）
-const MAX_POOLED_WORKERS = 3;
+// 常驻可复用 Worker 池（最多保留 MAX_POOLED_WORKERS 个空闲 Worker，避免链式事件高频冷启动/GC 抖动）
+// 扇出并发时会同时占用多个 Worker，池容量需不低于常见扇出宽度，否则并发退化为冷启动。
+const MAX_POOLED_WORKERS = 6;
 let cachedWorkerBlobUrl: string | null = null;
 const idleWorkerPool: Worker[] = [];
 

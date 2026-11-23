@@ -117,7 +117,7 @@ vars.contents = [
     { type: 'button', id: 'readChild', label: '读子控件变量', variant: 'secondary' }
   ],
   [
-    { type: 'input', id: 'msgInput', bind: 'draft', placeholder: '输入消息发给最新子控件（回车发送）...' },
+    { type: 'input', id: 'msgInput', bind: 'draft', placeholder: '输入消息回车，沿连线同时发给所有下游子控件...' },
     { type: 'button', id: 'send', label: '发送', width: 68, variant: 'success' }
   ],
   { type: 'text', text: vars.statusLine || '提示：点右上角 ⚙ 可查看完整 widgets.create / emit / onSubmit 源码', fontSize: 11, color: '#475569' }
@@ -169,9 +169,23 @@ on('spawn', async () => {
   }
 });
 
+// 同一目标控件可能有多条边接过来（一个出口连两条线到同一张卡），
+// 统计「几个下游」时按控件去重，否则会重复计数、重复展示。
+function uniqueOutputs() {
+  const seen = {};
+  const list = [];
+  for (const o of widgets.outputs()) {
+    if (seen[o.id]) continue;
+    seen[o.id] = true;
+    list.push(o);
+  }
+  return list;
+}
+
 async function sendMessage(rawText) {
-  if (!vars.lastChildId) {
-    vars.statusLine = '请先点一次「+ 创建子控件」，再给它发消息';
+  const outs = uniqueOutputs();
+  if (outs.length === 0) {
+    vars.statusLine = '请先点一次「+ 创建子控件」或连线到下游控件，再发送消息';
     return;
   }
   const text = String(rawText ?? vars.draft ?? '').trim();
@@ -179,21 +193,24 @@ async function sendMessage(rawText) {
     vars.statusLine = '请先在输入框输入要发送的内容';
     return;
   }
-  const res = await emit(vars.lastChildId, 'ping', { text });
+  const res = await emitDownstream('ping', { text });
   vars.draft = '';
-  vars.statusLine = res.ok ? '已发送到 ' + vars.lastChildId + '：' + text : '发送失败：' + (res.error || '目标不存在');
+  vars.statusLine = res.ok
+    ? '已沿连线并发扇出到 ' + res.count + ' 个下游控件：' + text
+    : '发送失败：' + (res.error || '无下游连线');
 }
 
 on('send', async () => { await sendMessage(vars.draft); });
 onSubmit('msgInput', async (val) => { await sendMessage(val); });
 
 on('readChild', () => {
-  if (!vars.lastChildId) {
-    vars.statusLine = '请先点一次「+ 创建子控件」';
+  const outs = uniqueOutputs();
+  if (outs.length === 0) {
+    vars.statusLine = '当前出口暂无已连线的下游控件';
     return;
   }
-  const childVars = widgets.vars(vars.lastChildId);
-  vars.statusLine = '读取到 ' + vars.lastChildId + '：score=' + (childVars.score ?? 0) + ' · inbox=' + (childVars.inbox ?? '-');
+  const summary = outs.map((o) => o.title + '(分数=' + (o.vars && o.vars.score !== undefined ? o.vars.score : 0) + ')').join(' · ');
+  vars.statusLine = '已读取 ' + outs.length + ' 个下游：' + summary;
 });
 
 on('childReply', (msg) => {

@@ -798,8 +798,14 @@ function HybridCanvasWorkspace() {
         [nodeId]: { ...(peerOverrides?.[nodeId] ?? {}), vars: res.updatedVars },
       };
 
-      // 3) 处理跨控件 emit / broadcast / emitDownstream 事件投递
+      // 3) 处理跨控件 emit / broadcast / emitDownstream 事件投递（扇出目标通过 Promise.all 并发同时驱动）
+      // 注意：同一目标可能被多条 emitOp 命中（例如脚本里 emit 了两次，或 broadcast 与 emitDownstream 重叠）。
+      // 串行版本里这些是逐个 await 的独立执行；改成并发后若不去重，同一脚本会被多个 Worker 同时跑，
+      // 各自拿同一份 inputVars，最后由 setOverlay 的后写者覆盖前写者 —— 结果是丢更新。
+      // 因此按 targetId + event 归并：同目标同事件的载荷合并成一次投递。
       const notifiedIds = new Set<string>();
+      const emitTasks: Array<Promise<void>> = [];
+      const mergedEmits = new Map<string, { targetId: string; event: string; payloads: unknown[] }>();
       for (const em of res.emitOps) {
         const targets =
           em.targetId === '*'
@@ -809,12 +815,25 @@ function HybridCanvasWorkspace() {
             : [em.targetId];
         for (const tid of targets) {
           notifiedIds.add(tid);
-          await executeUnifiedWidgetScript(
+          const key = `${tid}\u0000${em.event}`;
+          const bucket = mergedEmits.get(key);
+          if (bucket) {
+            bucket.payloads.push(em.payload);
+          } else {
+            mergedEmits.set(key, { targetId: tid, event: em.event, payloads: [em.payload] });
+          }
+        }
+      }
+      for (const { targetId: tid, event, payloads } of mergedEmits.values()) {
+        // 单条载荷保持原样传入，多载荷包成数组，接收方无需区分正常/合并两种情况
+        const payload = payloads.length === 1 ? payloads[0] : payloads;
+        emitTasks.push(
+          executeUnifiedWidgetScript(
             tid,
             {
               kind: 'message',
-              event: em.event,
-              payload: em.payload,
+              event,
+              payload,
               fromId: nodeId,
               fromTitle: entity.title,
             },
@@ -822,11 +841,14 @@ function HybridCanvasWorkspace() {
             depth + 1,
             nextPeerOverrides,
             activeEdges
-          );
-        }
+          )
+        );
+      }
+      if (emitTasks.length > 0) {
+        await Promise.all(emitTasks);
       }
 
-      // 4) 若本次交互修改了自身状态，自动刷新所有通过连线接在下游的脚本控件（实现所连即所得的数据流）
+      // 4) 若本次交互修改了自身状态，并发同时刷新所有通过连线接在下游的脚本控件（扇出同步生效）
       if (trigger.kind !== 'render') {
         const downstreamIds = Array.from(
           new Set(
@@ -834,18 +856,20 @@ function HybridCanvasWorkspace() {
               .filter((e) => e.source === nodeId && e.target !== nodeId && !notifiedIds.has(e.target))
               .map((e) => e.target)
           )
-        );
-        for (const dstId of downstreamIds) {
-          if (effectiveNodesRef.current[dstId]?.script) {
-            await executeUnifiedWidgetScript(
-              dstId,
-              { kind: 'render' },
-              undefined,
-              depth + 1,
-              nextPeerOverrides,
-              activeEdges
-            );
-          }
+        ).filter((dstId) => Boolean(effectiveNodesRef.current[dstId]?.script));
+        if (downstreamIds.length > 0) {
+          await Promise.all(
+            downstreamIds.map((dstId) =>
+              executeUnifiedWidgetScript(
+                dstId,
+                { kind: 'render' },
+                undefined,
+                depth + 1,
+                nextPeerOverrides,
+                activeEdges
+              )
+            )
+          );
         }
       }
     },
