@@ -1,8 +1,10 @@
 import { memo, useEffect, useRef } from 'react';
 import { useStoreApi } from '@xyflow/react';
 import type { ChunkManager } from '../core/chunkManager';
+import { formatTaskTextForCanvas } from '../core/taskList';
 import type { ChunkTileCache } from '../core/chunkTileCache';
 import type {
+  BlueprintEdge,
   CanvasAnnotation,
   EffectiveBlueprintNode,
   LODLevel,
@@ -13,6 +15,7 @@ interface ChunkUnderlayCanvasProps {
   tileCache: ChunkTileCache;
   nodes: Record<string, EffectiveBlueprintNode>;
   annotations: Record<string, CanvasAnnotation>;
+  edges: Record<string, BlueprintEdge>;
   lod: LODLevel;
   showChunkGrid: boolean;
   annotationEditMode: boolean;
@@ -159,7 +162,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
       bctx.fillStyle = ann.color;
       bctx.font = `${ann.weight === 'bold' ? '700' : '400'} ${ann.fontSize}px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif`;
       bctx.textBaseline = 'top';
-      const lines = wrapTextLines(bctx, ann.text, Math.max(24, ann.width - pad * 2));
+      const lines = wrapTextLines(bctx, formatTaskTextForCanvas(ann.text), Math.max(24, ann.width - pad * 2));
       const lineHeight = ann.fontSize * 1.38;
       for (let i = 0; i < lines.length; i++) {
         const ly = ann.y + pad + i * lineHeight;
@@ -251,47 +254,41 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
       }
 
       const visibleChunks = p.chunkManager.queryVisibleChunks(worldBounds);
-      const tileScale = p.lod === 'macro' ? 0.35 : p.lod === 'meso' ? 0.65 : 1.0;
-      const drawAnnotationsInTile = !p.annotationEditMode;
+      // 瓦片分辨率乘以 dpr（解决 Retina/高分屏模糊）；近/中景的背景文本框与插图直接画在主 HiDPI 画布上，保证文字 100% 锐利！
+      const tileScale = 0.35 * dpr;
       let bakesThisFrame = 0;
       let hasPendingBakes = false;
       const bakeStart = performance.now();
 
-      for (const chunk of visibleChunks) {
-        if (p.lod !== 'macro' && (!drawAnnotationsInTile || chunk.annotationIds.size === 0)) {
-          continue;
-        }
-        if (p.lod === 'macro' && chunk.nodeIds.size === 0 && chunk.annotationIds.size === 0) {
-          continue;
-        }
+      if (p.lod === 'macro') {
+        for (const chunk of visibleChunks) {
+          if (chunk.nodeIds.size === 0 && chunk.annotationIds.size === 0) continue;
 
-        let tile = p.tileCache.get(chunk, p.lod, tileScale);
-        if (!tile) {
-          const withinBudget =
-            bakesThisFrame < MAX_BAKES_PER_FRAME &&
-            (bakesThisFrame === 0 || performance.now() - bakeStart < MAX_BAKE_MS);
+          let tile = p.tileCache.get(chunk, p.lod, tileScale);
+          if (!tile) {
+            const withinBudget =
+              bakesThisFrame < MAX_BAKES_PER_FRAME &&
+              (bakesThisFrame === 0 || performance.now() - bakeStart < MAX_BAKE_MS);
 
-          if (withinBudget) {
-            tile = p.tileCache.bake(chunk, cs, p.lod, tileScale, (bctx) => {
-              if (drawAnnotationsInTile) {
-                for (const annId of chunk.annotationIds) {
-                  const ann = p.annotations[annId];
-                  if (!ann) continue;
-                  // Macro 下背景色块和插图进瓦片，文字标题留在下面大字层清晰绘制
-                  if (p.lod === 'macro' && ann.kind === 'text') {
-                    const fill = hexToRgba(ann.bgColor, ann.bgOpacity ?? 0.85);
-                    if (fill) {
-                      bctx.fillStyle = fill;
-                      drawRoundedRect(bctx, ann.x, ann.y, ann.width, ann.height || 56, 8);
-                      bctx.fill();
+            if (withinBudget) {
+              tile = p.tileCache.bake(chunk, cs, p.lod, tileScale, (bctx) => {
+                if (!p.annotationEditMode) {
+                  for (const annId of chunk.annotationIds) {
+                    const ann = p.annotations[annId];
+                    if (!ann) continue;
+                    if (ann.kind === 'text') {
+                      const fill = hexToRgba(ann.bgColor, ann.bgOpacity ?? 0.85);
+                      if (fill) {
+                        bctx.fillStyle = fill;
+                        drawRoundedRect(bctx, ann.x, ann.y, ann.width, ann.height || 56, 8);
+                        bctx.fill();
+                      }
+                    } else {
+                      drawAnnotation(bctx, ann);
                     }
-                  } else {
-                    drawAnnotation(bctx, ann);
                   }
                 }
-              }
 
-              if (p.lod === 'macro') {
                 for (const nodeId of chunk.nodeIds) {
                   const n = p.nodes[nodeId];
                   if (!n) continue;
@@ -301,23 +298,70 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
                   bctx.fillRect(n.x, n.y, n.width, n.height);
                   bctx.strokeRect(n.x, n.y, n.width, n.height);
                 }
-              }
-            });
-            p.chunkManager.markClean(chunk.key);
-            bakesThisFrame++;
-          } else {
-            tile = p.tileCache.getFallback(chunk);
-            hasPendingBakes = true;
+              });
+              p.chunkManager.markClean(chunk.key);
+              bakesThisFrame++;
+            } else {
+              tile = p.tileCache.getFallback(chunk);
+              hasPendingBakes = true;
+            }
+          }
+
+          if (tile) {
+            ctx.drawImage(tile.canvas, chunk.bounds.minX, chunk.bounds.minY, cs, cs);
           }
         }
-
-        if (tile) {
-          ctx.drawImage(tile.canvas, chunk.bounds.minX, chunk.bounds.minY, cs, cs);
+      } else if (!p.annotationEditMode) {
+        // 近/中景下直接在主 HiDPI Canvas 矢量绘制可见背景文本框与插图，彻底告别低分瓦片发糊
+        const drawnAnns = new Set<string>();
+        for (const chunk of visibleChunks) {
+          for (const annId of chunk.annotationIds) {
+            if (drawnAnns.has(annId)) continue;
+            drawnAnns.add(annId);
+            const ann = p.annotations[annId];
+            if (!ann) continue;
+            drawAnnotation(ctx, ann);
+          }
         }
       }
 
-      // 全景（macro）清晰大字层
+      // 全景（macro）连线与箭头层 + 清晰大字层
       if (p.lod === 'macro') {
+        // 3a) 在全景视图下绘制节点间连线与入箭头，保证鸟瞰拓扑不丢失
+        const edgeLineW = Math.max(2, 1.8 / zoom);
+        const arrowLen = Math.max(10, 9 / zoom);
+        for (const edge of Object.values(p.edges)) {
+          const src = p.nodes[edge.source];
+          const tgt = p.nodes[edge.target];
+          if (!src || !tgt) continue;
+          const sx = src.x + src.width;
+          const sy = src.y + src.height * 0.5;
+          const tx2 = tgt.x;
+          const ty2 = tgt.y + tgt.height * 0.5;
+          const dx = Math.max(40, Math.abs(tx2 - sx) * 0.45);
+          const stroke = edge.color || '#64748B';
+
+          ctx.save();
+          ctx.strokeStyle = stroke;
+          ctx.fillStyle = stroke;
+          ctx.lineWidth = edgeLineW;
+          if (edge.dashed) ctx.setLineDash([8 / zoom, 6 / zoom]);
+          ctx.beginPath();
+          ctx.moveTo(sx, sy);
+          ctx.bezierCurveTo(sx + dx, sy, tx2 - dx, ty2, tx2, ty2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // 闭合入箭头
+          const angle = Math.atan2(ty2 - ty2, tx2 - (tx2 - dx));
+          ctx.beginPath();
+          ctx.moveTo(tx2, ty2);
+          ctx.lineTo(tx2 - arrowLen * Math.cos(angle - 0.42), ty2 - arrowLen * Math.sin(angle - 0.42));
+          ctx.lineTo(tx2 - arrowLen * Math.cos(angle + 0.42), ty2 - arrowLen * Math.sin(angle + 0.42));
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+        }
         const seenNodes = new Set<string>();
         const seenAnns = new Set<string>();
         const targetNodeScreenPx = 13.5;
@@ -363,7 +407,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
 
             const annWorldFontPx = Math.max(ann.fontSize, targetAnnScreenPx / zoom);
             ctx.font = `700 ${annWorldFontPx}px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif`;
-            const firstLine = (ann.text || '').split('\n')[0];
+            const firstLine = formatTaskTextForCanvas(ann.text || '').split('\n')[0];
             const label = truncateTextToWidth(ctx, firstLine, Math.max(ann.width, cs - 24));
             if (!label) continue;
 
@@ -405,7 +449,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
 
   useEffect(() => {
     drawRef.current?.();
-  }, [props.renderVersion, props.lod, props.showChunkGrid, props.annotationEditMode, props.annotations]);
+  }, [props.renderVersion, props.lod, props.showChunkGrid, props.annotationEditMode, props.annotations, props.edges]);
 
   return (
     <canvas

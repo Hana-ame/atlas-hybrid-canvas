@@ -41,8 +41,78 @@ export async function loadLocalOverlay(): Promise<LocalOverlayState> {
   }
 }
 
+const SYNC_CHANNEL_NAME = 'atlas-hybrid-canvas-sync-v1';
+const TAB_ID = `tab-${Math.random().toString(36).slice(2, 10)}`;
+let pendingSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingOverlay: LocalOverlayState | null = null;
+let syncChannel: BroadcastChannel | null = null;
+
+function getSyncChannel(): BroadcastChannel | null {
+  if (typeof BroadcastChannel === 'undefined') return null;
+  if (!syncChannel) {
+    try {
+      syncChannel = new BroadcastChannel(SYNC_CHANNEL_NAME);
+    } catch {
+      return null;
+    }
+  }
+  return syncChannel;
+}
+
 export async function saveLocalOverlay(overlay: LocalOverlayState): Promise<void> {
   await idbSet(OVERLAY_STORAGE_KEY, overlay);
+  const ch = getSyncChannel();
+  if (ch) {
+    try {
+      ch.postMessage({ type: 'overlay_updated', tabId: TAB_ID, overlay });
+    } catch {
+      // 忽略克隆或关闭通道异常
+    }
+  }
+}
+
+/**
+ * 防抖写盘（默认 300ms 合并高频输入/勾选），大幅降低 IndexedDB 写入放大。
+ */
+export function scheduleSaveLocalOverlay(overlay: LocalOverlayState, delayMs = 300): void {
+  pendingOverlay = overlay;
+  if (pendingSaveTimer) clearTimeout(pendingSaveTimer);
+  pendingSaveTimer = setTimeout(() => {
+    pendingSaveTimer = null;
+    const toFlush = pendingOverlay;
+    pendingOverlay = null;
+    if (toFlush) {
+      void saveLocalOverlay(toFlush);
+    }
+  }, delayMs);
+}
+
+/** 页面关闭前兜底立即刷盘 */
+export function flushLocalOverlaySave(): void {
+  if (pendingSaveTimer) {
+    clearTimeout(pendingSaveTimer);
+    pendingSaveTimer = null;
+  }
+  const toFlush = pendingOverlay;
+  pendingOverlay = null;
+  if (toFlush) {
+    void saveLocalOverlay(toFlush);
+  }
+}
+
+/**
+ * 订阅同一浏览器其他标签页的本地叠加层变更，避免双开页签静默互相覆盖。
+ */
+export function subscribeCrossTabOverlay(onRemoteOverlay: (overlay: LocalOverlayState) => void): () => void {
+  const ch = getSyncChannel();
+  if (!ch) return () => {};
+  const handler = (ev: MessageEvent<{ type?: string; tabId?: string; overlay?: LocalOverlayState }>) => {
+    const data = ev.data;
+    if (!data || data.type !== 'overlay_updated' || data.tabId === TAB_ID || !data.overlay) return;
+    onRemoteOverlay(data.overlay);
+  };
+  ch.addEventListener('message', handler);
+  return () => ch.removeEventListener('message', handler);
 }
 
 export function resolveEffectiveNodes(

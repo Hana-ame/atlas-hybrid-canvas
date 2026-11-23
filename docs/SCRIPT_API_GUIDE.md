@@ -99,3 +99,13 @@ on('doneReport', (msg) => {
   vars.status = '收到汇报：' + msg.from + ' 已完成！';
 });
 ```
+
+
+## 连线数据通路 API（v19 新增）
+
+控件之间通过端口连线后，下游脚本无需写死上游 `id`，可直接按端口读取上游数据或沿出口连线向下游推送事件：
+
+- `widgets.inputs(portId?)`：返回连入当前控件入口（或指定端口如 `'in-1'`）的上游控件快照数组，每项包含 `id / title / body / vars / edgeId / fromPort / toPort / edgeLabel`。
+- `widgets.outputs(portId?)`：返回从当前控件出口连出的下游控件快照数组。
+- `emitDownstream(event, payload, portId?)`：沿当前出口连线向所有下游控件投递事件（接收方用 `on(event, (payload, meta) => ...)` 处理）。
+- 当上游修改正文（例如勾选 `- [ ]` 复选框）、执行脚本修改 `vars`，或建立/删除连线时，已连线的下游脚本控件会自动触发实时刷新。

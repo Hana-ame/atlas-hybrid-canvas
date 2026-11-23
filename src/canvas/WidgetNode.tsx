@@ -10,6 +10,7 @@
 import { memo, useEffect, useState } from 'react';
 import { Handle, NodeResizer, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import { Copy, Globe, Lock, Play, RotateCcw, Settings2, Trash2, Unlock } from 'lucide-react';
+import { parseTaskLine, toggleTaskLine } from '../core/taskList';
 import type {
   ContentFlowItem,
   ContentLeafBlock,
@@ -74,8 +75,8 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
   const [editingBody, setEditingBody] = useState(false);
 
   const updateNodeInternals = useUpdateNodeInternals();
-  const inputPorts = entity.inputPorts && entity.inputPorts.length > 0 ? entity.inputPorts : DEFAULT_INPUT_PORTS;
-  const outputPorts = entity.outputPorts && entity.outputPorts.length > 0 ? entity.outputPorts : DEFAULT_OUTPUT_PORTS;
+  const inputPorts = entity.inputPorts !== undefined ? entity.inputPorts : DEFAULT_INPUT_PORTS;
+  const outputPorts = entity.outputPorts !== undefined ? entity.outputPorts : DEFAULT_OUTPUT_PORTS;
   const portSignature = `${inputPorts.map((p) => p.id).join(',')}|${outputPorts.map((p) => p.id).join(',')}`;
 
   useEffect(() => {
@@ -273,21 +274,59 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
           )}
         </div>
 
-        <div className="nodrag nopan flex shrink-0 items-center gap-0.5">
-          {(entity.hasLocalOverride || entity.hasRuntimeVars) && (
+        {/* 平时右上角只固定留一个 Lock 按钮；hover 时其余操作在 Lock 左侧浮现，0 位移不挤标题 */}
+        <div className="nodrag nopan relative flex shrink-0 items-center">
+          <div className="pointer-events-none absolute right-6 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 bg-gradient-to-r from-transparent via-white via-20% to-white pl-3 pr-0.5 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+            {(entity.hasLocalOverride || entity.hasRuntimeVars) && (
+              <button
+                type="button"
+                title="还原为后端默认"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onResetLocal(entity.id);
+                }}
+                className="flex items-center gap-0.5 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap text-amber-800 hover:bg-amber-100"
+              >
+                <RotateCcw className="h-3 w-3" />
+                还原
+              </button>
+            )}
             <button
               type="button"
-              title="还原为后端默认"
+              title="编辑属性 / 统一脚本 / 端口 / 按钮"
               onClick={(e) => {
                 e.stopPropagation();
-                onResetLocal(entity.id);
+                onOpenInspector(entity.id);
               }}
-              className="flex items-center gap-0.5 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 hover:bg-amber-100"
+              className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-blue-700"
             >
-              <RotateCcw className="h-3 w-3" />
-              还原
+              <Settings2 className="h-3.5 w-3.5" />
             </button>
-          )}
+            <button
+              type="button"
+              title="复制控件"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDuplicateNode(entity.id);
+              }}
+              className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+            >
+              <Copy className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              disabled={Boolean(entity.locked)}
+              title={entity.locked ? '已锁定，解锁后可删除' : '删除控件'}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (!entity.locked) onDeleteNode(entity.id);
+              }}
+              className="rounded p-1 text-slate-500 hover:bg-rose-50 hover:text-rose-600 disabled:pointer-events-none disabled:opacity-25"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+
           <button
             type="button"
             title={entity.locked ? '已锁定位置（点此解锁拖动）' : '锁定控件位置（防止误拖）'}
@@ -303,46 +342,11 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
           >
             {entity.locked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
           </button>
-          <button
-            type="button"
-            title="编辑属性 / 统一脚本 / 端口 / 按钮"
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpenInspector(entity.id);
-            }}
-            className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-blue-700"
-          >
-            <Settings2 className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            title="复制控件"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDuplicateNode(entity.id);
-            }}
-            className="hidden rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 group-hover:inline-flex"
-          >
-            <Copy className="h-3.5 w-3.5" />
-          </button>
-          {!entity.locked && (
-            <button
-              type="button"
-              title="删除控件"
-              onClick={(e) => {
-                e.stopPropagation();
-                onDeleteNode(entity.id);
-              }}
-              className="hidden rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 group-hover:inline-flex"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
-          )}
         </div>
       </div>
 
-      {/* 主体区：默认整块正文可拖动，双击进入多行编辑 */}
-      <div className="flex flex-1 flex-col gap-2 px-3 py-2.5">
+      {/* 主体区：默认整块正文可拖动，双击进入多行编辑；超长内容自动内部滚动不裁切 */}
+      <div className="nowheel flex max-h-[420px] flex-1 flex-col gap-2 overflow-y-auto px-3 py-2.5">
         {hasScriptContents ? (
           <div className="flex flex-col gap-2">
             {flowItems.map((item, idx) =>
@@ -378,10 +382,68 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
                   e.stopPropagation();
                   setEditingBody(true);
                 }}
-                title="按住拖动 · 双击编辑正文"
-                className="min-h-[44px] flex-1 select-none whitespace-pre-wrap break-words rounded px-0.5 py-0.5 text-xs leading-relaxed text-slate-600 hover:bg-slate-50/70"
+                title="按住拖动 · 双击编辑正文（支持 - [] / - [ ] / - [x] 复选框）"
+                className="min-h-[44px] flex-1 select-none break-words rounded px-0.5 py-0.5 text-xs leading-relaxed text-slate-600 hover:bg-slate-50/70"
               >
-                {entity.body || <span className="text-slate-400">双击编辑正文…</span>}
+                {entity.body ? (
+                  <div className="flex flex-col gap-0.5">
+                    {entity.body.split('\n').map((line, lineIdx) => {
+                      const task = parseTaskLine(line);
+                      if (task) {
+                        return (
+                          <div
+                            key={`line-${lineIdx}`}
+                            role="checkbox"
+                            aria-checked={task.checked}
+                            tabIndex={0}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onEditBody(entity.id, toggleTaskLine(entity.body, lineIdx));
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === ' ' || e.key === 'Enter') {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                onEditBody(entity.id, toggleTaskLine(entity.body, lineIdx));
+                              }
+                            }}
+                            className="nodrag nopan flex cursor-pointer items-start gap-2 rounded px-1 py-0.5 transition-colors hover:bg-slate-100/90"
+                            style={{ paddingLeft: task.indent.length * 6 + 4 }}
+                          >
+                            <span
+                              aria-hidden="true"
+                              className={`mt-[2px] inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
+                                task.checked
+                                  ? 'border-blue-600 bg-blue-600 text-white'
+                                  : 'border-slate-400 bg-white text-transparent hover:border-blue-500'
+                              }`}
+                            >
+                              <svg viewBox="0 0 12 12" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="2.2 6.2 4.8 8.8 9.8 3.2" />
+                              </svg>
+                            </span>
+                            <span
+                              className={`min-w-0 flex-1 whitespace-pre-wrap break-words ${
+                                task.checked ? 'text-slate-400 line-through' : 'text-slate-700'
+                              }`}
+                            >
+                              {task.label || '\u00A0'}
+                            </span>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div key={`line-${lineIdx}`} className="min-h-[1.25em] whitespace-pre-wrap break-words">
+                          {line || '\u00A0'}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <span className="text-slate-400">双击编辑正文…</span>
+                )}
               </div>
             )}
 

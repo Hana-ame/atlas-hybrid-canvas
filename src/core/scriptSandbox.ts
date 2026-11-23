@@ -31,16 +31,80 @@ export function validateScriptSafety(code: string): { ok: boolean; reason?: stri
   return { ok: true };
 }
 
+/**
+ * 即时编译预检（不执行脚本），供属性检查器实时提示语法错误。
+ */
+export function validateScriptSyntax(code: string): { ok: boolean; error?: string } {
+  const trimmed = code.trim();
+  if (!trimmed) return { ok: true };
+  try {
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
+      ...args: string[]
+    ) => unknown;
+    new AsyncFunction(
+      'vars', 'ctx', 'lib', 'log', 'canvas', 'widgets', 'emit', 'broadcast', 'emitDownstream', 'on', 'onSubmit',
+      'window', 'document', 'fetch', 'localStorage',
+      trimmed
+    );
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * 有向无环图（DAG）连线检测：防止连线成环导致数据流无限递归。
+ */
+export function validateDagConnection(
+  edges: Array<{ source: string; target: string }>,
+  source: string,
+  target: string
+): { ok: boolean; reason?: string } {
+  if (!source || !target) return { ok: false, reason: '起点或终点无效' };
+  if (source === target) return { ok: false, reason: '禁止控件自连成环' };
+  const adj = new Map<string, string[]>();
+  for (const e of edges) {
+    const list = adj.get(e.source) ?? [];
+    list.push(e.target);
+    adj.set(e.source, list);
+  }
+  const visited = new Set<string>([target]);
+  const queue: string[] = [target];
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    for (const next of adj.get(cur) ?? []) {
+      if (next === source) {
+        return { ok: false, reason: '检测到有向环路：该连线会导致上下游数据流循环触发，已自动拦截' };
+      }
+      if (!visited.has(next)) {
+        visited.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  return { ok: true };
+}
+
 export interface PeerWidgetSnapshot {
   id: string;
   title: string;
   label: string;
+  body: string;
   x: number;
   y: number;
   width: number;
   height: number;
   color: string;
   vars: Record<string, unknown>;
+}
+
+export interface EdgeSnapshot {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string;
+  targetHandle?: string;
+  label?: string;
 }
 
 export interface AnnotationScriptOp {
@@ -99,6 +163,7 @@ export async function runInIsolatedWorker(
   options?: {
     selfEntity?: PeerWidgetSnapshot;
     peers?: Record<string, PeerWidgetSnapshot>;
+    edges?: EdgeSnapshot[];
     trigger?: ScriptTriggerEvent;
   }
 ): Promise<SandboxExecutionResult> {
@@ -118,15 +183,16 @@ export async function runInIsolatedWorker(
   const workerBootstrap = `
     const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
     self.onmessage = async (ev) => {
-      const { code, initialVars, selfEntity, peers, trigger } = ev.data;
+      const { code, initialVars, selfEntity, peers, edges, trigger } = ev.data;
       const logs = [];
       const annotationOps = [];
       const widgetOps = [];
       const emitOps = [];
       const peerMap = Object.assign(Object.create(null), peers || {});
+      const edgeList = Array.isArray(edges) ? edges.slice() : [];
       const vars = Object.assign(Object.create(null), initialVars || {});
       const ctx = {
-        entity: selfEntity || { id: 'self', title: '控件', label: '控件', x: 0, y: 0, width: 280, height: 180, color: '#2563EB', vars: {} },
+        entity: selfEntity || { id: 'self', title: '控件', label: '控件', body: '', x: 0, y: 0, width: 280, height: 180, color: '#2563EB', vars: {} },
       };
 
       const log = (...args) => logs.push(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '));
@@ -156,6 +222,39 @@ export async function runInIsolatedWorker(
         get: (id) => peerMap[String(id)] || null,
         vars: (id) => (peerMap[String(id)] && peerMap[String(id)].vars) || {},
         list: () => Object.values(peerMap),
+        edges: () => edgeList.slice(),
+        inputs: (portId) => {
+          const wantPort = portId ? String(portId) : '';
+          return edgeList
+            .filter((e) => e.target === ctx.entity.id && (!wantPort || (e.targetHandle || 'in-1') === wantPort))
+            .map((e) => {
+              const src = peerMap[e.source];
+              if (!src) return null;
+              return Object.assign({}, src, {
+                edgeId: e.id,
+                fromPort: e.sourceHandle || 'out-1',
+                toPort: e.targetHandle || 'in-1',
+                edgeLabel: e.label || '',
+              });
+            })
+            .filter(Boolean);
+        },
+        outputs: (portId) => {
+          const wantPort = portId ? String(portId) : '';
+          return edgeList
+            .filter((e) => e.source === ctx.entity.id && (!wantPort || (e.sourceHandle || 'out-1') === wantPort))
+            .map((e) => {
+              const dst = peerMap[e.target];
+              if (!dst) return null;
+              return Object.assign({}, dst, {
+                edgeId: e.id,
+                fromPort: e.sourceHandle || 'out-1',
+                toPort: e.targetHandle || 'in-1',
+                edgeLabel: e.label || '',
+              });
+            })
+            .filter(Boolean);
+        },
         create: async (spec) => {
           if (!spec || typeof spec !== 'object') return { ok: false, error: '无效参数' };
           spawnSeq += 1;
@@ -186,11 +285,25 @@ export async function runInIsolatedWorker(
             script: typeof spec.script === 'string' ? spec.script : undefined,
           };
           widgetOps.push(created);
-          peerMap[id] = { id, title, label: title, x, y, width, height, color, vars: created.vars || {} };
+          peerMap[id] = { id, title, label: title, body: created.body || '', x, y, width, height, color, vars: created.vars || {} };
+          if (spec.connect) {
+            edgeList.push({
+              id: 'tmp-edge-' + ctx.entity.id + '-' + id,
+              source: ctx.entity.id,
+              target: id,
+              sourceHandle: 'out-1',
+              targetHandle: 'in-1',
+              label: typeof spec.connect === 'string' ? spec.connect : '',
+            });
+          }
           return { ok: true, id, title };
         },
         connect: (fromId, toId, label) => {
-          widgetOps.push({ op: 'connect', fromId: String(fromId), toId: String(toId), label: label ? String(label) : undefined });
+          const f = String(fromId);
+          const t = String(toId);
+          const lbl = label ? String(label) : undefined;
+          widgetOps.push({ op: 'connect', fromId: f, toId: t, label: lbl });
+          edgeList.push({ id: 'tmp-edge-' + f + '-' + t, source: f, target: t, sourceHandle: 'out-1', targetHandle: 'in-1', label: lbl });
           return { ok: true };
         },
         remove: (id) => {
@@ -210,6 +323,14 @@ export async function runInIsolatedWorker(
         emitOps.push({ targetId: '*', event: String(event), payload });
         return { ok: true };
       };
+      const emitDownstream = async (event, payload, portId) => {
+        const outs = widgets.outputs(portId);
+        if (outs.length === 0) return { ok: false, count: 0, error: '当前出口尚未连线到任何下游控件' };
+        for (const dst of outs) {
+          emitOps.push({ targetId: dst.id, event: String(event), payload });
+        }
+        return { ok: true, count: outs.length };
+      };
 
       const handlers = Object.create(null);
       const submitHandlers = Object.create(null);
@@ -222,12 +343,12 @@ export async function runInIsolatedWorker(
 
       const runUserCode = async () => {
         const fn = new AsyncFunction(
-          'vars', 'ctx', 'lib', 'log', 'canvas', 'widgets', 'emit', 'broadcast', 'on', 'onSubmit',
+          'vars', 'ctx', 'lib', 'log', 'canvas', 'widgets', 'emit', 'broadcast', 'emitDownstream', 'on', 'onSubmit',
           'window', 'document', 'fetch', 'localStorage',
           code
         );
         await fn(
-          vars, ctx, lib, log, canvas, widgets, emit, broadcast, on, onSubmit,
+          vars, ctx, lib, log, canvas, widgets, emit, broadcast, emitDownstream, on, onSubmit,
           undefined, undefined, undefined, undefined
         );
       };
@@ -265,34 +386,34 @@ export async function runInIsolatedWorker(
     };
   `;
 
-  const blob = new Blob([workerBootstrap], { type: 'application/javascript' });
-  const blobUrl = URL.createObjectURL(blob);
-  const worker = new Worker(blobUrl);
+  const worker = acquirePooledWorker(workerBootstrap);
 
   return new Promise<SandboxExecutionResult>((resolve) => {
     let settled = false;
-    const cleanup = () => {
-      clearTimeout(timer);
-      worker.terminate();
-      URL.revokeObjectURL(blobUrl);
-    };
-    const finish = (res: SandboxExecutionResult) => {
+
+    const finish = (res: SandboxExecutionResult, reusable: boolean) => {
       if (settled) return;
       settled = true;
-      cleanup();
+      clearTimeout(timer);
+      worker.onmessage = null;
+      worker.onerror = null;
+      releasePooledWorker(worker, reusable);
       resolve(res);
     };
 
     const timer = setTimeout(() => {
-      finish({
-        ok: false,
-        updatedVars: initialVars,
-        annotationOps: [],
-        widgetOps: [],
-        emitOps: [],
-        logs: [],
-        error: `脚本执行超时（超过 ${MAX_COMPUTE_MS / 1000}s 已强杀 Worker）`,
-      });
+      finish(
+        {
+          ok: false,
+          updatedVars: initialVars,
+          annotationOps: [],
+          widgetOps: [],
+          emitOps: [],
+          logs: [],
+          error: `脚本执行超时（超过 ${MAX_COMPUTE_MS / 1000}s 已强杀 Worker）`,
+        },
+        false
+      );
     }, MAX_COMPUTE_MS);
 
     worker.onmessage = (ev: MessageEvent<SandboxExecutionResult>) => {
@@ -300,25 +421,31 @@ export async function runInIsolatedWorker(
       for (const [k, v] of Object.entries(ev.data.updatedVars || {})) {
         if (isSafeVarKey(k)) sanitized[k] = v;
       }
-      finish({
-        ...ev.data,
-        updatedVars: sanitized,
-        annotationOps: Array.isArray(ev.data.annotationOps) ? ev.data.annotationOps : [],
-        widgetOps: Array.isArray(ev.data.widgetOps) ? ev.data.widgetOps : [],
-        emitOps: Array.isArray(ev.data.emitOps) ? ev.data.emitOps : [],
-      });
+      finish(
+        {
+          ...ev.data,
+          updatedVars: sanitized,
+          annotationOps: Array.isArray(ev.data.annotationOps) ? ev.data.annotationOps : [],
+          widgetOps: Array.isArray(ev.data.widgetOps) ? ev.data.widgetOps : [],
+          emitOps: Array.isArray(ev.data.emitOps) ? ev.data.emitOps : [],
+        },
+        true
+      );
     };
 
     worker.onerror = (ev) => {
-      finish({
-        ok: false,
-        updatedVars: initialVars,
-        annotationOps: [],
-        widgetOps: [],
-        emitOps: [],
-        logs: [],
-        error: ev.message || 'Worker 运行异常',
-      });
+      finish(
+        {
+          ok: false,
+          updatedVars: initialVars,
+          annotationOps: [],
+          widgetOps: [],
+          emitOps: [],
+          logs: [],
+          error: ev.message || 'Worker 运行异常',
+        },
+        false
+      );
     };
 
     worker.postMessage({
@@ -326,7 +453,31 @@ export async function runInIsolatedWorker(
       initialVars,
       selfEntity: options?.selfEntity,
       peers: options?.peers,
+      edges: options?.edges,
       trigger: options?.trigger ?? { kind: 'render' },
     });
   });
+}
+
+// 常驻可复用 Worker 池（最多保留 3 个空闲 Worker，避免链式事件高频冷启动/GC 抖动）
+const MAX_POOLED_WORKERS = 3;
+let cachedWorkerBlobUrl: string | null = null;
+const idleWorkerPool: Worker[] = [];
+
+function acquirePooledWorker(bootstrapCode: string): Worker {
+  const existing = idleWorkerPool.pop();
+  if (existing) return existing;
+  if (!cachedWorkerBlobUrl) {
+    const blob = new Blob([bootstrapCode], { type: 'application/javascript' });
+    cachedWorkerBlobUrl = URL.createObjectURL(blob);
+  }
+  return new Worker(cachedWorkerBlobUrl);
+}
+
+function releasePooledWorker(worker: Worker, reusable: boolean): void {
+  if (reusable && idleWorkerPool.length < MAX_POOLED_WORKERS) {
+    idleWorkerPool.push(worker);
+    return;
+  }
+  worker.terminate();
 }

@@ -26,12 +26,38 @@ let serverRevision = 1;
 async function startServer() {
   const app = express();
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: '10mb' }));
 
   const blueprintSaveKey = (process.env.BLUEPRINT_SAVE_KEY || '').trim();
   const upstreamBaseUrl = (process.env.PROXY_UPSTREAM_BASE_URL || '').trim();
   const allowedHosts = parseAllowedHosts(process.env.PROXY_ALLOWED_HOSTS);
   const proxyApiKey = (process.env.PROXY_API_KEY || '').trim();
+  const proxyClientToken = (process.env.PROXY_CLIENT_TOKEN || '').trim();
+  const proxyRateLimitPerMin = Math.max(1, Number(process.env.PROXY_RATE_LIMIT_PER_MIN || 30));
+  const proxyRateHits = new Map<string, number[]>();
+
+  const verifyProxyClientToken = (provided: string): boolean => {
+    if (!proxyClientToken) return true;
+    if (!provided) return false;
+    const a = Buffer.from(provided, 'utf8');
+    const b = Buffer.from(proxyClientToken, 'utf8');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  };
+
+  const checkProxyRateLimit = (ip: string): { ok: boolean; retryAfterSec?: number } => {
+    const now = Date.now();
+    const windowMs = 60_000;
+    const list = (proxyRateHits.get(ip) ?? []).filter((ts) => now - ts < windowMs);
+    if (list.length >= proxyRateLimitPerMin) {
+      const oldest = list[0];
+      proxyRateHits.set(ip, list);
+      return { ok: false, retryAfterSec: Math.max(1, Math.ceil((windowMs - (now - oldest)) / 1000)) };
+    }
+    list.push(now);
+    proxyRateHits.set(ip, list);
+    return { ok: true };
+  };
   const proxyApiKeyHeader = (process.env.PROXY_API_KEY_HEADER || 'Authorization').trim() || 'Authorization';
   const proxyApiKeyPrefix =
     process.env.PROXY_API_KEY_PREFIX !== undefined
@@ -93,6 +119,26 @@ async function startServer() {
   });
 
   app.post('/api/proxy', async (req, res) => {
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    const rl = checkProxyRateLimit(clientIp);
+    if (!rl.ok) {
+      res.setHeader('Retry-After', String(rl.retryAfterSec ?? 10));
+      res.status(429).json({
+        ok: false,
+        error: `代理请求过于频繁（上限 ${proxyRateLimitPerMin} 次/分钟），请 ${rl.retryAfterSec} 秒后重试`,
+      });
+      return;
+    }
+
+    const providedProxyToken = String(req.header('x-proxy-token') || '').trim();
+    if (!verifyProxyClientToken(providedProxyToken)) {
+      res.status(401).json({
+        ok: false,
+        error: '代理调用未授权：缺少或错误的 X-Proxy-Token',
+      });
+      return;
+    }
+
     const body = req.body as {
       url?: unknown;
       method?: unknown;

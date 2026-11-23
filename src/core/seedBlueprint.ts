@@ -149,7 +149,7 @@ on('spawn', async () => {
     '  const txt = msg && msg.text ? msg.text : String(msg || "");',
     '  vars.inbox = "收到[" + meta.fromTitle + "]：" + txt;',
     '});'
-  ].join('\n');
+  ].join('\\n');
 
   const res = await widgets.create({
     title: '子控件 #' + n,
@@ -198,6 +198,127 @@ on('readChild', () => {
 
 on('childReply', (msg) => {
   vars.statusLine = '子控件回信：' + (msg && msg.text ? msg.text : JSON.stringify(msg));
+});`,
+      rev: 1,
+      cid: 'server-base',
+    },
+    'demo-flow-checklist': {
+      id: 'demo-flow-checklist',
+      x: 560,
+      y: 675,
+      width: 310,
+      height: 185,
+      title: '① 上游数据源：任务清单',
+      body: '- [x] 连接上下游端口\n- [ ] 勾选任意待办测试实时同步\n- [ ] 双击可新增 - [] 待办行\n- [ ] 选中连线按 Delete 测试断开',
+      category: '数据流',
+      color: '#0284C7',
+      inputPorts: [],
+      outputPorts: [{ id: 'out-1', label: '正文输出' }],
+      defaultVars: {},
+      rev: 1,
+      cid: 'server-base',
+    },
+    'demo-flow-source': {
+      id: 'demo-flow-source',
+      x: 560,
+      y: 890,
+      width: 310,
+      height: 175,
+      title: '② 上游数据源：数值发生器',
+      body: '',
+      category: '数据流',
+      color: '#7C3AED',
+      inputPorts: [],
+      outputPorts: [{ id: 'out-1', label: '数值与事件输出' }],
+      defaultVars: { score: 40, lastPush: '' },
+      script: `const score = Number(vars.score) || 0;
+vars.contents = [
+  { type: 'text', text: '当前输出数值：' + score, align: 'center', color: '#6D28D9', fontSize: 13, bold: true },
+  [
+    { type: 'button', id: 'minus', label: '-10', variant: 'secondary' },
+    { type: 'button', id: 'plus', label: '+10', variant: 'primary' }
+  ],
+  { type: 'button', id: 'push', label: '沿连线推送事件 (emitDownstream)', variant: 'success' },
+  { type: 'text', text: vars.lastPush || '修改数值或点击推送，右侧下游汇总会实时更新', fontSize: 11, color: '#64748B' }
+];
+on('minus', () => { vars.score = score - 10; });
+on('plus', () => { vars.score = score + 10; });
+on('push', async () => {
+  const res = await emitDownstream('boost', { delta: 5, score, at: lib.now() });
+  vars.lastPush = res.ok ? '已沿连线推送到 ' + res.count + ' 个下游控件 (' + lib.now() + ')' : (res.error || '无下游连线');
+});`,
+      rev: 1,
+      cid: 'server-base',
+    },
+    'demo-flow-aggregator': {
+      id: 'demo-flow-aggregator',
+      x: 960,
+      y: 745,
+      width: 380,
+      height: 235,
+      title: '③ 下游消费者：连线数据汇总',
+      body: '',
+      category: '数据流',
+      color: '#059669',
+      inputPorts: [
+        { id: 'in-1', label: '清单入口' },
+        { id: 'in-2', label: '数值入口' },
+      ],
+      outputPorts: [{ id: 'out-1', label: '汇总输出' }],
+      defaultVars: { bonus: 0, lastEvent: '尚未收到上游推送事件' },
+      script: String.raw`const allIn = widgets.inputs();
+const checklistIn = widgets.inputs('in-1');
+const numIn = widgets.inputs('in-2');
+
+// 解析 in-1 连入的所有上游清单正文里的 - [] / - [ ] / - [x]
+let done = 0;
+let total = 0;
+for (const src of checklistIn) {
+  const lines = String(src.body || '').split('\n');
+  for (const line of lines) {
+    const m = /^\s*[-*+]\s*\[([ xX]?)\]/.exec(line);
+    if (m) {
+      total += 1;
+      if (m[1].toLowerCase() === 'x') done += 1;
+    }
+  }
+}
+const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+
+// 汇总 in-2 连入的所有上游数值变量（兼容 score / visits / count）
+let sum = 0;
+const numNames = [];
+for (const src of numIn) {
+  const v = Number(src.vars && (src.vars.score ?? src.vars.visits ?? src.vars.count));
+  if (Number.isFinite(v)) {
+    sum += v;
+    numNames.push(src.title + '=' + v);
+  }
+}
+const totalWithBonus = sum + (Number(vars.bonus) || 0);
+
+vars.contents = [
+  { type: 'text', text: '已接入上游：' + allIn.length + ' 个（删线或连入新卡片立即生效）', color: '#047857', fontSize: 12, bold: true },
+  { type: 'text', text: total > 0 ? ('in-1 清单进度：' + done + ' / ' + total + '（' + pct + '%）') : 'in-1 清单入口：未接入清单', color: '#0F172A', fontSize: 12 },
+  { type: 'text', text: numIn.length > 0 ? ('in-2 数值汇总：' + sum + ' + 推送加成 ' + (Number(vars.bonus) || 0) + ' = ' + totalWithBonus) : 'in-2 数值入口：未接入数值源', color: '#0F172A', fontSize: 12 },
+  { type: 'text', text: '最近推送：' + (vars.lastEvent || '-'), color: '#475569', fontSize: 11 },
+  [
+    { type: 'button', id: 'refresh', label: '手动刷新上游', variant: 'secondary' },
+    { type: 'button', id: 'resetBonus', label: '清零推送加成', variant: 'secondary' }
+  ]
+];
+
+on('boost', (payload, meta) => {
+  const delta = Number(payload && payload.delta) || 1;
+  vars.bonus = (Number(vars.bonus) || 0) + delta;
+  vars.lastEvent = '收到[' + meta.fromTitle + '] +' + delta + '（源值=' + (payload && payload.score) + '，' + (payload && payload.at || lib.now()) + '）';
+});
+on('refresh', () => {
+  vars.lastEvent = '已手动重新拉取 ' + allIn.length + ' 个上游 (' + lib.now() + ')';
+});
+on('resetBonus', () => {
+  vars.bonus = 0;
+  vars.lastEvent = '已清零推送加成';
 });`,
       rev: 1,
       cid: 'server-base',
@@ -256,6 +377,23 @@ on('childReply', (msg) => {
       rev: 1,
       cid: 'server-base',
     },
+    'ann-zone-flow': {
+      id: 'ann-zone-flow',
+      kind: 'text',
+      x: 540,
+      y: 615,
+      width: 820,
+      height: 46,
+      text: 'ZONE D · 连线数据通路演示（勾选左侧清单、点 +10 / 沿连线推送，或删线重连，右侧实时响应）',
+      fontSize: 15,
+      color: '#065F46',
+      bgColor: '#DCFCE7',
+      bgOpacity: 0.85,
+      weight: 'bold',
+      nonInteractive: true,
+      rev: 1,
+      cid: 'server-base',
+    },
   };
 
   return {
@@ -284,6 +422,28 @@ on('childReply', (msg) => {
         label: '跨 Chunk 联动',
         color: '#0F766E',
         dashed: true,
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-flow-1': {
+        id: 'edge-flow-1',
+        source: 'demo-flow-checklist',
+        target: 'demo-flow-aggregator',
+        sourceHandle: 'out-1',
+        targetHandle: 'in-1',
+        label: '读取正文 body',
+        color: '#0284C7',
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-flow-2': {
+        id: 'edge-flow-2',
+        source: 'demo-flow-source',
+        target: 'demo-flow-aggregator',
+        sourceHandle: 'out-1',
+        targetHandle: 'in-2',
+        label: '读取 vars + 推送事件',
+        color: '#7C3AED',
         rev: 1,
         cid: 'server-base',
       },

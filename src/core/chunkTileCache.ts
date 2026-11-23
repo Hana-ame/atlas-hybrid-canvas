@@ -96,6 +96,10 @@ export class ChunkTileCache {
   }
 
   clear(): void {
+    for (const tile of this.tiles.values()) {
+      tile.canvas.width = 0;
+      tile.canvas.height = 0;
+    }
     this.tiles.clear();
   }
 
@@ -113,6 +117,13 @@ export class ChunkTileCache {
         oldestKey = k;
       }
     }
-    if (oldestKey) this.tiles.delete(oldestKey);
+    if (oldestKey) {
+      const evicted = this.tiles.get(oldestKey);
+      if (evicted) {
+        evicted.canvas.width = 0;
+        evicted.canvas.height = 0;
+      }
+      this.tiles.delete(oldestKey);
+    }
   }
 }

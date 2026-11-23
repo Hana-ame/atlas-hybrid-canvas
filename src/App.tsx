@@ -33,18 +33,36 @@ import {
   type NodeChange,
 } from '@xyflow/react';
 import {
+  Download,
+  KeyRound,
   LayoutGrid,
   Layers,
+  Link2,
   Plus,
+  Redo2,
   RotateCcw,
-  KeyRound,
   Save,
+  Search,
+  Undo2,
+  Upload,
+  Users,
   Zap,
 } from 'lucide-react';
 import { AnnotationNode, type AnnotationNodeData } from './canvas/AnnotationNode';
 import { ChunkUnderlayCanvas } from './canvas/ChunkUnderlayCanvas';
 import { WidgetNode, type WidgetNodeData } from './canvas/WidgetNode';
 import { NodeInspectorPanel } from './components/NodeInspectorPanel';
+import { SearchJumpModal } from './components/SearchJumpModal';
+import {
+  ScriptTrustModal,
+  auditBlueprintScripts,
+  type ScriptAuditEntry,
+} from './components/ScriptTrustModal';
+import {
+  CollaborativeRoomClient,
+  mergeRemoteBlueprintCRDT,
+  type RoomStatus,
+} from './core/roomClient';
 import { TEMPLATE_DRAG_MIME, TemplateDrawer } from './components/TemplateDrawer';
 import { ChunkManager } from './core/chunkManager';
 import { ChunkTileCache } from './core/chunkTileCache';
@@ -56,7 +74,15 @@ import {
   resolveEffectiveNodes,
   saveLocalOverlay,
 } from './core/layeredStore';
-import { runInIsolatedWorker, type PeerWidgetSnapshot, type ScriptTriggerEvent } from './core/scriptSandbox';
+import {
+  runInIsolatedWorker,
+  validateDagConnection,
+  type EdgeSnapshot,
+  type PeerWidgetSnapshot,
+  type ScriptTriggerEvent,
+} from './core/scriptSandbox';
+import { useBlueprintHistory } from './hooks/useBlueprintHistory';
+import { useOverlaySync } from './hooks/useOverlaySync';
 import { createSeedBlueprint, spawnStressChunks } from './core/seedBlueprint';
 import {
   BUILTIN_TEMPLATES,
@@ -66,6 +92,7 @@ import {
 } from './core/widgetTemplates';
 import type {
   BaseBlueprint,
+  BlueprintEdge,
   BlueprintNode,
   BlueprintTemplate,
   CanvasAnnotation,
@@ -114,6 +141,30 @@ function HybridCanvasWorkspace() {
   const [saveKeyInput, setSaveKeyInput] = useState('');
   const [saveKeyError, setSaveKeyError] = useState<string | null>(null);
   const [isSavingBase, setIsSavingBase] = useState(false);
+
+  // 1) 撤销/重做历史栈（最多 50 步）
+  const historyPastRef = useRef<Array<{ base: BaseBlueprint; overlay: LocalOverlayState }>>([]);
+  const historyFutureRef = useRef<Array<{ base: BaseBlueprint; overlay: LocalOverlayState }>>([]);
+  const [historyMeta, setHistoryMeta] = useState({ canUndo: false, canRedo: false });
+
+  // 2) Ctrl+K 全局搜索与坐标跳转弹窗
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  // 3) 外部 JSON 导入与脚本信任锁
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+  const [untrustedScriptKeys, setUntrustedScriptKeys] = useState<Set<string>>(() => new Set());
+  const [trustModalState, setTrustModalState] = useState<{
+    open: boolean;
+    sourceLabel: string;
+    entries: ScriptAuditEntry[];
+  }>({ open: false, sourceLabel: '', entries: [] });
+
+  // 4) 多人实时协同房间（WebSocket + CRDT）
+  const [roomModalOpen, setRoomModalOpen] = useState(false);
+  const [roomWsUrl, setRoomWsUrl] = useState('ws://localhost:8787/ws');
+  const [roomName, setRoomName] = useState('atlas-main');
+  const [roomStatus, setRoomStatus] = useState<RoomStatus>('disconnected');
+  const roomClientRef = useRef<CollaborativeRoomClient | null>(null);
   const [statusLog, setStatusLog] = useState<string>('就绪：直接从左侧拖出控件放到画布，拖动过程零频闪');
   const [renderVersion, setRenderVersion] = useState(0);
   const [chunkSyncTick, setChunkSyncTick] = useState(0);
@@ -147,12 +198,205 @@ function HybridCanvasWorkspace() {
     [customTemplates]
   );
 
+
+  const baseRef = useRef(base);
+  baseRef.current = base;
+  const overlayRef = useRef(overlay);
+  overlayRef.current = overlay;
+
+  const pushHistory = useCallback(() => {
+    const snap = {
+      base: structuredClone(baseRef.current),
+      overlay: structuredClone(overlayRef.current),
+    };
+    historyPastRef.current.push(snap);
+    if (historyPastRef.current.length > 50) historyPastRef.current.shift();
+    historyFutureRef.current = [];
+    setHistoryMeta({ canUndo: true, canRedo: false });
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    const prev = historyPastRef.current.pop();
+    if (!prev) return;
+    historyFutureRef.current.push({
+      base: structuredClone(baseRef.current),
+      overlay: structuredClone(overlayRef.current),
+    });
+    setBase(prev.base);
+    setOverlay(prev.overlay);
+    setChunkSyncTick((t) => t + 1);
+    setHistoryMeta({
+      canUndo: historyPastRef.current.length > 0,
+      canRedo: historyFutureRef.current.length > 0,
+    });
+    setStatusLog('已撤销上一步操作');
+  }, []);
+
+  const handleRedo = useCallback(() => {
+    const next = historyFutureRef.current.pop();
+    if (!next) return;
+    historyPastRef.current.push({
+      base: structuredClone(baseRef.current),
+      overlay: structuredClone(overlayRef.current),
+    });
+    setBase(next.base);
+    setOverlay(next.overlay);
+    setChunkSyncTick((t) => t + 1);
+    setHistoryMeta({
+      canUndo: historyPastRef.current.length > 0,
+      canRedo: historyFutureRef.current.length > 0,
+    });
+    setStatusLog('已重做操作');
+  }, []);
+
+  // 全局快捷键：Ctrl+K 搜索跳转，Ctrl+Z / Ctrl+Y 撤销重做（输入框聚焦时放行原生撤销）
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      const key = e.key.toLowerCase();
+      if (key === 'k') {
+        e.preventDefault();
+        setSearchOpen((v) => !v);
+        return;
+      }
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      } else if (key === 'y' || (key === 'z' && e.shiftKey)) {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleUndo, handleRedo]);
+
+  // URL Hash 精确分区跳转（/#chunk=cx,cy&zoom=z）
+  useEffect(() => {
+    const hash = window.location.hash;
+    const m = hash.match(/chunk=(-?\d+),(-?\d+)(?:&zoom=(\d+(?:\.\d+)?))?/);
+    if (!m) return;
+    const cx = Number(m[1]);
+    const cy = Number(m[2]);
+    const zoom = m[3] ? Math.max(0.15, Math.min(2.2, Number(m[3]))) : 0.85;
+    window.setTimeout(() => {
+      rf.setCenter(cx * 512 + 256, cy * 512 + 256, { zoom, duration: 350 });
+      setStatusLog(`已按 URL 坐标定位到 Chunk (${cx}, ${cy})`);
+    }, 120);
+  }, [rf]);
+
+  const handleCopyChunkLink = useCallback(async () => {
+    const [tx, ty, zoom] = rfStore.getState().transform;
+    const centerWorldX = (window.innerWidth * 0.5 - tx) / zoom;
+    const centerWorldY = (window.innerHeight * 0.5 - ty) / zoom;
+    const cx = Math.floor(centerWorldX / 512);
+    const cy = Math.floor(centerWorldY / 512);
+    const hash = `#chunk=${cx},${cy}&zoom=${zoom.toFixed(2)}`;
+    window.history.replaceState(null, '', hash);
+    const fullUrl = `${window.location.origin}${window.location.pathname}${hash}`;
+    try {
+      await navigator.clipboard.writeText(fullUrl);
+      setStatusLog(`已复制分区坐标链接：Chunk (${cx}, ${cy}) @ ${Math.round(zoom * 100)}%`);
+    } catch {
+      setStatusLog(`已更新地址栏坐标：${hash}`);
+    }
+  }, [rfStore]);
+
+  const handleExportJSON = useCallback(() => {
+    const merged = applyOverlayToBase(baseRef.current, overlayRef.current, SELF_CID);
+    const blob = new Blob([JSON.stringify(merged, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `atlas-blueprint-v${merged.version}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setStatusLog('已导出完整蓝图 JSON 文件');
+  }, []);
+
+  const handleImportJSONFile = useCallback((file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result || '')) as BaseBlueprint;
+        if (!parsed || typeof parsed !== 'object' || !parsed.nodes) {
+          setStatusLog('导入失败：JSON 缺少有效的 nodes 字段');
+          return;
+        }
+        pushHistory();
+        const normalized: BaseBlueprint = {
+          version: Number(parsed.version) || 1,
+          chunkSize: Number(parsed.chunkSize) || 512,
+          nodes: parsed.nodes || {},
+          annotations: parsed.annotations || {},
+          edges: parsed.edges || {},
+        };
+        const entries = auditBlueprintScripts(normalized);
+        renderedScriptsRef.current.clear();
+        setBase(normalized);
+        setOverlay(createEmptyOverlay());
+        setChunkSyncTick((t) => t + 1);
+        if (entries.length > 0) {
+          setUntrustedScriptKeys(new Set(entries.map((e) => e.key)));
+          setTrustModalState({ open: true, sourceLabel: file.name, entries });
+          setStatusLog(`已导入「${file.name}」，检测到 ${entries.length} 条外部脚本已默认锁定等待审阅`);
+        } else {
+          setUntrustedScriptKeys(new Set());
+          setStatusLog(`已安全导入蓝图「${file.name}」`);
+        }
+      } catch {
+        setStatusLog('导入失败：文件不是合法的 JSON 格式');
+      }
+    };
+    reader.readAsText(file);
+  }, [pushHistory]);
+
+  const handleConnectRoom = useCallback(() => {
+    if (!roomClientRef.current) {
+      roomClientRef.current = new CollaborativeRoomClient(
+        SELF_CID,
+        (st, info) => {
+          setRoomStatus(st);
+          if (info) setStatusLog(info);
+        },
+        (msg) => {
+          if (msg.t === 'state' && msg.blueprint) {
+            const entries = auditBlueprintScripts(msg.blueprint);
+            if (entries.length > 0) {
+              setUntrustedScriptKeys((prev) => {
+                const next = new Set(prev);
+                for (const e of entries) next.add(e.key);
+                return next;
+              });
+              setTrustModalState({ open: true, sourceLabel: `协同房间 ${roomName}`, entries });
+            }
+            setBase((prev) => mergeRemoteBlueprintCRDT(prev, msg.blueprint));
+            setChunkSyncTick((t) => t + 1);
+          }
+        }
+      );
+    }
+    roomClientRef.current.connect(roomWsUrl, roomName);
+    setRoomModalOpen(false);
+  }, [roomWsUrl, roomName]);
+
+  useEffect(() => {
+    return () => {
+      roomClientRef.current?.disconnect();
+    };
+  }, []);
+
   const effectiveNodes = useMemo(() => resolveEffectiveNodes(base, overlay), [base, overlay]);
   const effectiveAnnotations = useMemo(
     () => resolveEffectiveAnnotations(base, overlay),
     [base, overlay]
   );
   const effectiveNodesRef = useRef(effectiveNodes);
+  const edgesRef = useRef(base.edges);
+  edgesRef.current = base.edges;
   effectiveNodesRef.current = effectiveNodes;
   const effectiveAnnotationsRef = useRef(effectiveAnnotations);
   effectiveAnnotationsRef.current = effectiveAnnotations;
@@ -233,6 +477,7 @@ function HybridCanvasWorkspace() {
 
   // 实例化任意模板到指定世界坐标
   const instantiateTemplateAt = useCallback((tpl: BlueprintTemplate, worldX: number, worldY: number) => {
+    pushHistory();
     const x = Math.round(worldX);
     const y = Math.round(worldY);
     if (tpl.kind === 'annotation' && tpl.annotationPreset) {
@@ -318,8 +563,19 @@ function HybridCanvasWorkspace() {
     setBusyButtonKey(key);
 
     try {
+      if (untrustedScriptKeys.has(`${nodeId}:${btn.id}`)) {
+        setTrustModalState((s) => ({ ...s, open: true }));
+        setStatusLog('该外部按钮脚本尚未获得信任授权，请先在审计弹窗中审阅');
+        return;
+      }
       if (btn.actionType === 'script' && btn.code) {
-        const res = await runInIsolatedWorker(btn.code, entity.effectiveVars);
+        const peers = buildPeerSnapshots(effectiveNodesRef.current);
+        const edgesSnap = buildEdgeSnapshots(edgesRef.current);
+        const res = await runInIsolatedWorker(btn.code, entity.effectiveVars, {
+          selfEntity: peers[nodeId],
+          peers,
+          edges: edgesSnap,
+        });
         if (!res.ok) {
           setStatusLog(`沙箱拦截/报错：${res.error}`);
           return;
@@ -343,6 +599,20 @@ function HybridCanvasWorkspace() {
         });
         if (res.annotationOps.length > 0) {
           setChunkSyncTick((t) => t + 1);
+        }
+        const downstreamIds = Array.from(
+          new Set(
+            Object.values(edgesRef.current)
+              .filter((e) => e.source === nodeId && e.target !== nodeId)
+              .map((e) => e.target)
+          )
+        );
+        for (const dstId of downstreamIds) {
+          if (effectiveNodesRef.current[dstId]?.script) {
+            void executeUnifiedWidgetScript(dstId, { kind: 'render' }, undefined, 1, {
+              [nodeId]: { vars: res.updatedVars },
+            });
+          }
         }
         setStatusLog(res.logs.length > 0 ? `Worker 输出：${res.logs.join(' | ')}` : `已更新本地 vars (${entity.title})`);
       } else if (btn.actionType === 'proxy_http' && btn.proxyUrl) {
@@ -371,19 +641,24 @@ function HybridCanvasWorkspace() {
 
 
   const buildPeerSnapshots = useCallback(
-    (sourceNodes: Record<string, EffectiveBlueprintNode>): Record<string, PeerWidgetSnapshot> => {
+    (
+      sourceNodes: Record<string, EffectiveBlueprintNode>,
+      overrides?: Record<string, Partial<PeerWidgetSnapshot>>
+    ): Record<string, PeerWidgetSnapshot> => {
       const peers: Record<string, PeerWidgetSnapshot> = {};
       for (const n of Object.values(sourceNodes)) {
+        const ov = overrides?.[n.id];
         peers[n.id] = {
           id: n.id,
-          title: n.title,
-          label: n.title,
-          x: n.x,
-          y: n.y,
-          width: n.width,
-          height: n.height,
-          color: n.color,
-          vars: { ...n.effectiveVars },
+          title: ov?.title ?? n.title,
+          label: ov?.label ?? ov?.title ?? n.title,
+          body: ov?.body ?? n.body ?? '',
+          x: ov?.x ?? n.x,
+          y: ov?.y ?? n.y,
+          width: ov?.width ?? n.width,
+          height: ov?.height ?? n.height,
+          color: ov?.color ?? n.color,
+          vars: ov?.vars ? { ...ov.vars } : { ...n.effectiveVars },
         };
       }
       return peers;
@@ -391,24 +666,49 @@ function HybridCanvasWorkspace() {
     []
   );
 
-  // 统一脚本调度器：支持 render / click / submit / message，递归处理 widgets.create/connect/remove 与 emit/broadcast
+  const buildEdgeSnapshots = useCallback(
+    (edgeMap: Record<string, BlueprintEdge>): EdgeSnapshot[] =>
+      Object.values(edgeMap).map((e) => ({
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        sourceHandle: e.sourceHandle,
+        targetHandle: e.targetHandle,
+        label: e.label,
+      })),
+    []
+  );
+
+  // 统一脚本调度器：支持 render / click / submit / message，递归处理 widgets.create/connect/remove 与 emit/broadcast/emitDownstream，并自动刷新下游连线控件
   const executeUnifiedWidgetScript = useCallback(
     async (
       nodeId: string,
       trigger: ScriptTriggerEvent,
       overrideVars?: Record<string, unknown>,
-      depth = 0
+      depth = 0,
+      peerOverrides?: Record<string, Partial<PeerWidgetSnapshot>>,
+      edgesOverride?: Record<string, BlueprintEdge>
     ) => {
       if (depth > 4) return;
       const entity = effectiveNodesRef.current[nodeId];
       if (!entity || !entity.script) return;
+      if (untrustedScriptKeys.has(`${nodeId}:__script__`)) {
+        if (trigger.kind !== 'render') {
+          setTrustModalState((s) => ({ ...s, open: true }));
+          setStatusLog('该外部控件脚本处于安全只读锁定态，请先审阅信任');
+        }
+        return;
+      }
 
-      const peers = buildPeerSnapshots(effectiveNodesRef.current);
+      const activeEdges = edgesOverride ?? edgesRef.current;
+      const peers = buildPeerSnapshots(effectiveNodesRef.current, peerOverrides);
+      const edgesSnap = buildEdgeSnapshots(activeEdges);
       const selfEntity = peers[nodeId];
       const inputVars = overrideVars ?? entity.effectiveVars;
       const res = await runInIsolatedWorker(entity.script, inputVars, {
         selfEntity,
         peers,
+        edges: edgesSnap,
         trigger,
       });
 
@@ -508,6 +808,7 @@ function HybridCanvasWorkspace() {
             id: child.id,
             title: child.id,
             label: child.id,
+            body: '',
             x: 0,
             y: 0,
             width: 320,
@@ -516,6 +817,7 @@ function HybridCanvasWorkspace() {
             vars: child.vars,
           },
           peers,
+          edges: edgesSnap,
           trigger: { kind: 'render' },
         });
         if (childRes.ok) {
@@ -526,7 +828,13 @@ function HybridCanvasWorkspace() {
         }
       }
 
-      // 3) 处理跨控件 emit / broadcast 事件投递
+      const nextPeerOverrides: Record<string, Partial<PeerWidgetSnapshot>> = {
+        ...(peerOverrides ?? {}),
+        [nodeId]: { ...(peerOverrides?.[nodeId] ?? {}), vars: res.updatedVars },
+      };
+
+      // 3) 处理跨控件 emit / broadcast / emitDownstream 事件投递
+      const notifiedIds = new Set<string>();
       for (const em of res.emitOps) {
         const targets =
           em.targetId === '*'
@@ -535,6 +843,7 @@ function HybridCanvasWorkspace() {
                 .map((n) => n.id)
             : [em.targetId];
         for (const tid of targets) {
+          notifiedIds.add(tid);
           await executeUnifiedWidgetScript(
             tid,
             {
@@ -545,12 +854,37 @@ function HybridCanvasWorkspace() {
               fromTitle: entity.title,
             },
             undefined,
-            depth + 1
+            depth + 1,
+            nextPeerOverrides,
+            activeEdges
           );
         }
       }
+
+      // 4) 若本次交互修改了自身状态，自动刷新所有通过连线接在下游的脚本控件（实现所连即所得的数据流）
+      if (trigger.kind !== 'render') {
+        const downstreamIds = Array.from(
+          new Set(
+            Object.values(activeEdges)
+              .filter((e) => e.source === nodeId && e.target !== nodeId && !notifiedIds.has(e.target))
+              .map((e) => e.target)
+          )
+        );
+        for (const dstId of downstreamIds) {
+          if (effectiveNodesRef.current[dstId]?.script) {
+            await executeUnifiedWidgetScript(
+              dstId,
+              { kind: 'render' },
+              undefined,
+              depth + 1,
+              nextPeerOverrides,
+              activeEdges
+            );
+          }
+        }
+      }
     },
-    [buildPeerSnapshots]
+    [buildEdgeSnapshots, buildPeerSnapshots, untrustedScriptKeys]
   );
 
   // 初始化所有带 script 的控件，首次自动渲染其 vars.contents
@@ -661,8 +995,24 @@ function HybridCanvasWorkspace() {
   );
 
   const handleEditBody = useCallback(
-    (nodeId: string, nextBody: string) => handlePatchNode(nodeId, { body: nextBody }),
-    [handlePatchNode]
+    (nodeId: string, nextBody: string) => {
+      handlePatchNode(nodeId, { body: nextBody });
+      const downstreamIds = Array.from(
+        new Set(
+          Object.values(edgesRef.current)
+            .filter((e) => e.source === nodeId && e.target !== nodeId)
+            .map((e) => e.target)
+        )
+      );
+      for (const dstId of downstreamIds) {
+        if (effectiveNodesRef.current[dstId]?.script) {
+          void executeUnifiedWidgetScript(dstId, { kind: 'render' }, undefined, 1, {
+            [nodeId]: { body: nextBody },
+          });
+        }
+      }
+    },
+    [executeUnifiedWidgetScript, handlePatchNode]
   );
 
   const handleResizeNode = useCallback(
@@ -744,6 +1094,7 @@ function HybridCanvasWorkspace() {
   }, []);
 
   const handleDeleteNode = useCallback((nodeId: string) => {
+    pushHistory();
     setBase((prev) => {
       const nextNodes = { ...prev.nodes };
       delete nextNodes[nodeId];
@@ -983,6 +1334,7 @@ function HybridCanvasWorkspace() {
 
       if (widgetFinals.length > 0) {
         queueMicrotask(() => {
+          pushHistory();
           setOverlay((o) => {
             const nextPatches = { ...o.nodePatches };
             for (const u of widgetFinals) {
@@ -1014,37 +1366,61 @@ function HybridCanvasWorkspace() {
 
   const onConnect = useCallback((conn: Connection) => {
     if (!conn.source || !conn.target) return;
+    const dagCheck = validateDagConnection(Object.values(edgesRef.current), conn.source, conn.target);
+    if (!dagCheck.ok) {
+      setStatusLog(dagCheck.reason || '检测到有向环路，已阻止连线');
+      return;
+    }
+    pushHistory();
     const id = `edge-${conn.source}-${conn.target}-${Date.now()}`;
+    const nextEdge: BlueprintEdge = {
+      id,
+      source: conn.source,
+      target: conn.target,
+      sourceHandle: conn.sourceHandle ?? undefined,
+      targetHandle: conn.targetHandle ?? undefined,
+      color: '#2563EB',
+      rev: 1,
+      cid: SELF_CID,
+    };
+    const nextEdges = { ...edgesRef.current, [id]: nextEdge };
+    edgesRef.current = nextEdges;
     setBase((prev) => ({
       ...prev,
       version: prev.version + 1,
       edges: {
         ...prev.edges,
-        [id]: {
-          id,
-          source: conn.source!,
-          target: conn.target!,
-          sourceHandle: conn.sourceHandle ?? undefined,
-          targetHandle: conn.targetHandle ?? undefined,
-          color: '#2563EB',
-          rev: 1,
-          cid: SELF_CID,
-        },
+        [id]: nextEdge,
       },
     }));
-    setStatusLog('已建立节点连线（选中连线按 Delete 可删除）');
-  }, []);
+    if (effectiveNodesRef.current[conn.target]?.script) {
+      void executeUnifiedWidgetScript(conn.target, { kind: 'render' }, undefined, 1, undefined, nextEdges);
+    }
+    setStatusLog('已建立节点连线并同步下游数据通路（选中连线按 Delete 可删除）');
+  }, [executeUnifiedWidgetScript, pushHistory]);
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
     const removed = changes.filter((c) => c.type === 'remove').map((c) => c.id);
     if (removed.length === 0) return;
+    const affectedTargets = new Set<string>();
+    const nextEdges = { ...edgesRef.current };
+    for (const id of removed) {
+      if (nextEdges[id]?.target) affectedTargets.add(nextEdges[id].target);
+      delete nextEdges[id];
+    }
+    edgesRef.current = nextEdges;
     setBase((prev) => {
-      const nextEdges = { ...prev.edges };
-      for (const id of removed) delete nextEdges[id];
-      return { ...prev, version: prev.version + 1, edges: nextEdges };
+      const updated = { ...prev.edges };
+      for (const id of removed) delete updated[id];
+      return { ...prev, version: prev.version + 1, edges: updated };
     });
-    setStatusLog('已删除连线');
-  }, []);
+    for (const tid of affectedTargets) {
+      if (effectiveNodesRef.current[tid]?.script) {
+        void executeUnifiedWidgetScript(tid, { kind: 'render' }, undefined, 1, undefined, nextEdges);
+      }
+    }
+    setStatusLog('已删除连线并刷新下游汇总');
+  }, [executeUnifiedWidgetScript]);
 
   const handleSaveToBackend = async () => {
     const key = saveKeyInput.trim();
@@ -1150,6 +1526,87 @@ function HybridCanvasWorkspace() {
         <div className="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
+            disabled={!historyMeta.canUndo}
+            title="撤销 (Ctrl+Z)"
+            onClick={handleUndo}
+            className="inline-flex items-center rounded-md border border-slate-300 bg-white p-1.5 text-slate-700 hover:bg-slate-50 disabled:opacity-35"
+          >
+            <Undo2 className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            disabled={!historyMeta.canRedo}
+            title="重做 (Ctrl+Y)"
+            onClick={handleRedo}
+            className="inline-flex items-center rounded-md border border-slate-300 bg-white p-1.5 text-slate-700 hover:bg-slate-50 disabled:opacity-35"
+          >
+            <Redo2 className="h-3.5 w-3.5" />
+          </button>
+
+          <button
+            type="button"
+            title="搜索节点或输入 Chunk 坐标跳转 (Ctrl+K)"
+            onClick={() => setSearchOpen(true)}
+            className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+          >
+            <Search className="h-3.5 w-3.5" />
+            定位
+          </button>
+
+          <button
+            type="button"
+            title="复制当前分区坐标深链 (#chunk=cx,cy&zoom=z)"
+            onClick={() => void handleCopyChunkLink()}
+            className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+          >
+            <Link2 className="h-3.5 w-3.5" />
+            坐标链
+          </button>
+
+          <button
+            type="button"
+            title="导出完整蓝图 JSON"
+            onClick={handleExportJSON}
+            className="inline-flex items-center rounded-md border border-slate-300 bg-white p-1.5 text-slate-700 hover:bg-slate-50"
+          >
+            <Download className="h-3.5 w-3.5" />
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json,.json"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) handleImportJSONFile(f);
+              e.target.value = '';
+            }}
+            className="hidden"
+          />
+          <button
+            type="button"
+            title="导入外部蓝图 JSON（自动触发脚本安全审计）"
+            onClick={() => importInputRef.current?.click()}
+            className="inline-flex items-center rounded-md border border-slate-300 bg-white p-1.5 text-slate-700 hover:bg-slate-50"
+          >
+            <Upload className="h-3.5 w-3.5" />
+          </button>
+
+          <button
+            type="button"
+            title="连接 WebSocket CRDT 多人协同房间"
+            onClick={() => setRoomModalOpen(true)}
+            className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium ${
+              roomStatus === 'connected'
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            <Users className="h-3.5 w-3.5" />
+            {roomStatus === 'connected' ? '已联机' : '协同房间'}
+          </button>
+
+          <button
+            type="button"
             onClick={() => setShowChunkGrid((v) => !v)}
             className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
           >
@@ -1245,6 +1702,8 @@ function HybridCanvasWorkspace() {
           }));
         }}
         onPaneClick={() => setInspectingNodeId(null)}
+        selectionKeyCode="Shift"
+        multiSelectionKeyCode="Shift"
         minZoom={0.12}
         maxZoom={2.5}
         defaultViewport={{ x: 360, y: 90, zoom: 0.88 }}
@@ -1255,6 +1714,7 @@ function HybridCanvasWorkspace() {
           tileCache={tileCacheRef.current}
           nodes={effectiveNodes}
           annotations={effectiveAnnotations}
+          edges={base.edges}
           lod={lod}
           showChunkGrid={showChunkGrid}
           annotationEditMode={annotationEditMode}
@@ -1262,6 +1722,106 @@ function HybridCanvasWorkspace() {
         />
         <Controls position="bottom-right" />
       </ReactFlow>
+
+      {/* Ctrl+K 全局搜索与 Chunk 坐标跳转弹窗 */}
+      <SearchJumpModal
+        open={searchOpen}
+        nodes={effectiveNodes}
+        annotations={effectiveAnnotations}
+        onClose={() => setSearchOpen(false)}
+        onJumpToPoint={(wx, wy, z, selectId) => {
+          rf.setCenter(wx, wy, { zoom: z ?? 0.95, duration: 350 });
+          if (selectId) setInspectingNodeId(selectId);
+        }}
+      />
+
+      {/* 外部导入 / 远端同步脚本安全审计门禁 */}
+      <ScriptTrustModal
+        open={trustModalState.open}
+        sourceLabel={trustModalState.sourceLabel}
+        entries={trustModalState.entries}
+        onKeepLocked={() => {
+          setTrustModalState((s) => ({ ...s, open: false }));
+          setStatusLog('外部脚本保持禁用锁定态（安全只读）');
+        }}
+        onTrustAll={() => {
+          setUntrustedScriptKeys(new Set());
+          setTrustModalState((s) => ({ ...s, open: false }));
+          renderedScriptsRef.current.clear();
+          setChunkSyncTick((t) => t + 1);
+          setStatusLog('已信任并启用导入脚本');
+        }}
+      />
+
+      {/* 多人实时协同房间（WebSocket + CRDT）弹窗 */}
+      {roomModalOpen && (
+        <div
+          className="pointer-events-auto fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-[2px]"
+          onClick={() => setRoomModalOpen(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 text-slate-900">
+              <Users className="h-5 w-5 text-teal-700" />
+              <h3 className="text-sm font-bold">连接多人协同房间（CRDT）</h3>
+            </div>
+            <p className="mt-2 text-xs leading-relaxed text-slate-600">
+              接入兼容 <code className="rounded bg-slate-100 px-1 font-mono">(rev, cid)</code> CRDT 协议的 WebSocket 房间服务（如扩展后的 <code className="rounded bg-slate-100 px-1 font-mono">room-go</code>）。远端同步的新脚本会自动触发安全审计锁，绝不静默执行。
+            </p>
+            <div className="mt-3 space-y-2.5 text-xs">
+              <div>
+                <label className="mb-1 block font-semibold text-slate-700">WebSocket 地址</label>
+                <input
+                  type="text"
+                  value={roomWsUrl}
+                  onChange={(e) => setRoomWsUrl(e.target.value)}
+                  className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 font-mono text-xs outline-none focus:border-teal-600"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block font-semibold text-slate-700">房间号</label>
+                <input
+                  type="text"
+                  value={roomName}
+                  onChange={(e) => setRoomName(e.target.value)}
+                  className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 font-mono text-xs outline-none focus:border-teal-600"
+                />
+              </div>
+            </div>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              {roomStatus === 'connected' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    roomClientRef.current?.disconnect();
+                    setRoomModalOpen(false);
+                  }}
+                  className="mr-auto rounded-md border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100"
+                >
+                  断开连接
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setRoomModalOpen(false)}
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={handleConnectRoom}
+                className="rounded-md bg-teal-700 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-teal-800"
+              >
+                加入房间
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 保存密钥验证弹窗 */}
       {saveModalOpen && (
         <div

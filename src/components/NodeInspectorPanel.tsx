@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { BookmarkPlus, Copy, Plus, RotateCcw, Trash2, X } from 'lucide-react';
+import { validateScriptSafety, validateScriptSyntax } from '../core/scriptSandbox';
 import type { EffectiveBlueprintNode, WidgetButtonSpec } from '../core/types';
 
 interface NodeInspectorPanelProps {
@@ -165,6 +166,31 @@ vars.updatedAt = lib.now();`,
             placeholder="支持 vars.contents / on(id, fn) / onSubmit(inp, fn) / widgets.create / emit / broadcast / canvas.setAnnotationBg"
             className="w-full rounded-md border border-slate-200 bg-slate-900 p-2 font-mono text-[11px] leading-relaxed text-emerald-300 outline-none focus:border-blue-500"
           />
+          {(() => {
+            const code = node.script ?? '';
+            if (!code.trim()) return null;
+            const safe = validateScriptSafety(code);
+            if (!safe.ok) {
+              return (
+                <div className="mt-1.5 rounded border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] text-rose-700">
+                  安全预检拦截：{safe.reason}
+                </div>
+              );
+            }
+            const syn = validateScriptSyntax(code);
+            if (!syn.ok) {
+              return (
+                <div className="mt-1.5 rounded border border-amber-300 bg-amber-50 px-2 py-1 font-mono text-[11px] text-amber-800">
+                  语法错误：{syn.error}
+                </div>
+              );
+            }
+            return (
+              <div className="mt-1.5 rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] text-emerald-700">
+                ✓ 语法与安全预检通过（支持 widgets.inputs / widgets.outputs / emitDownstream）
+              </div>
+            );
+          })()}
         </div>
 
         {/* 入/出箭头端口配置 */}
@@ -191,6 +217,9 @@ vars.updatedAt = lib.now();`,
             </button>
           </div>
           <div className="space-y-1">
+            {node.inputPorts && node.inputPorts.length === 0 && (
+              <div className="rounded bg-slate-50 px-2 py-1 text-[11px] text-slate-400">当前 0 个入点（纯起点/独立控件）</div>
+            )}
             {(node.inputPorts ?? [
               { id: 'in-1', label: '入口 1' },
               { id: 'in-2', label: '入口 2' },
@@ -207,19 +236,18 @@ vars.updatedAt = lib.now();`,
                   }}
                   className="flex-1 rounded border border-slate-200 px-2 py-1 text-[11px] text-slate-800 outline-none focus:border-blue-500"
                 />
-                {arr.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onPatchNode(node.id, {
-                        inputPorts: arr.filter((p) => p.id !== port.id),
-                      })
-                    }
-                    className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </button>
-                )}
+                <button
+                  type="button"
+                  title="删除此入点（可减至 0 个）"
+                  onClick={() =>
+                    onPatchNode(node.id, {
+                      inputPorts: arr.filter((p) => p.id !== port.id),
+                    })
+                  }
+                  className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
               </div>
             ))}
           </div>
@@ -243,6 +271,9 @@ vars.updatedAt = lib.now();`,
             </button>
           </div>
           <div className="space-y-1">
+            {node.outputPorts && node.outputPorts.length === 0 && (
+              <div className="rounded bg-slate-50 px-2 py-1 text-[11px] text-slate-400">当前 0 个出点（纯终点/独立控件）</div>
+            )}
             {(node.outputPorts ?? [{ id: 'out-1', label: '出口 1' }]).map((port, idx, arr) => (
               <div key={port.id} className="flex items-center gap-1.5">
                 <span className="w-10 shrink-0 font-mono text-[10px] text-slate-400">#{idx + 1}</span>
@@ -256,19 +287,18 @@ vars.updatedAt = lib.now();`,
                   }}
                   className="flex-1 rounded border border-slate-200 px-2 py-1 text-[11px] text-slate-800 outline-none focus:border-blue-500"
                 />
-                {arr.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onPatchNode(node.id, {
-                        outputPorts: arr.filter((p) => p.id !== port.id),
-                      })
-                    }
-                    className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </button>
-                )}
+                <button
+                  type="button"
+                  title="删除此出点（可减至 0 个）"
+                  onClick={() =>
+                    onPatchNode(node.id, {
+                      outputPorts: arr.filter((p) => p.id !== port.id),
+                    })
+                  }
+                  className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
               </div>
             ))}
           </div>

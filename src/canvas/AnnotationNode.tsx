@@ -8,6 +8,7 @@
 import { memo, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { ImagePlus, Trash2 } from 'lucide-react';
+import { parseTaskLine, toggleTaskLine } from '../core/taskList';
 import type { CanvasAnnotation } from '../core/types';
 
 export interface AnnotationNodeData extends Record<string, unknown> {
@@ -46,9 +47,34 @@ function AnnotationNodeInner({ data, selected }: NodeProps) {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        onUpdateAnnotation(annotation.id, { imageUrl: reader.result });
+      const rawUrl = typeof reader.result === 'string' ? reader.result : '';
+      if (!rawUrl) return;
+      // 自动等比压缩超大图（最大边 1280px），防止几 MB 原图撑爆 JSON 保存与快照
+      if (file.type === 'image/svg+xml' || file.size < 180_000) {
+        onUpdateAnnotation(annotation.id, { imageUrl: rawUrl });
+        return;
       }
+      const img = new Image();
+      img.onload = () => {
+        const maxSide = 1280;
+        const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+        const w = Math.max(1, Math.round(img.naturalWidth * scale));
+        const h = Math.max(1, Math.round(img.naturalHeight * scale));
+        const c = document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+        const ctx = c.getContext('2d');
+        if (!ctx) {
+          onUpdateAnnotation(annotation.id, { imageUrl: rawUrl });
+          return;
+        }
+        ctx.drawImage(img, 0, 0, w, h);
+        const outMime = file.type === 'image/png' ? 'image/png' : 'image/webp';
+        const compressed = c.toDataURL(outMime, 0.82);
+        onUpdateAnnotation(annotation.id, { imageUrl: compressed.length < rawUrl.length ? compressed : rawUrl });
+      };
+      img.onerror = () => onUpdateAnnotation(annotation.id, { imageUrl: rawUrl });
+      img.src = rawUrl;
     };
     reader.readAsDataURL(file);
   };
@@ -213,15 +239,79 @@ function AnnotationNodeInner({ data, selected }: NodeProps) {
             e.stopPropagation();
             setEditingText(true);
           }}
-          title="按住任意处拖动 · 双击编辑文字"
-          className="h-full w-full cursor-grab select-none overflow-hidden whitespace-pre-wrap break-words rounded-lg p-2.5 leading-snug active:cursor-grabbing"
+          title="按住任意处拖动 · 双击编辑文字（支持 - [] / - [ ] / - [x] 复选框）"
+          className="h-full w-full cursor-grab select-none overflow-hidden break-words rounded-lg p-2.5 leading-snug active:cursor-grabbing"
           style={{
             fontSize: annotation.fontSize,
             fontWeight: annotation.weight === 'bold' ? 700 : 400,
             color: annotation.color,
           }}
         >
-          {annotation.text || '双击输入文字…'}
+          {annotation.text ? (
+            <div className="flex flex-col gap-0.5">
+              {annotation.text.split('\n').map((line, lineIdx) => {
+                const task = parseTaskLine(line);
+                if (task) {
+                  const boxPx = Math.max(14, Math.round(annotation.fontSize * 0.82));
+                  return (
+                    <div
+                      key={`ann-line-${lineIdx}`}
+                      role="checkbox"
+                      aria-checked={task.checked}
+                      tabIndex={0}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onUpdateAnnotation(annotation.id, {
+                          text: toggleTaskLine(annotation.text, lineIdx),
+                        });
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === ' ' || e.key === 'Enter') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onUpdateAnnotation(annotation.id, {
+                            text: toggleTaskLine(annotation.text, lineIdx),
+                          });
+                        }
+                      }}
+                      className="nodrag nopan flex cursor-pointer items-start gap-2 rounded px-1 py-0.5 transition-colors hover:bg-black/5"
+                      style={{ paddingLeft: task.indent.length * 6 + 4 }}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={`mt-[0.18em] inline-flex shrink-0 items-center justify-center rounded border transition-colors ${
+                          task.checked
+                            ? 'border-blue-600 bg-blue-600 text-white'
+                            : 'border-slate-500 bg-white/90 text-transparent'
+                        }`}
+                        style={{ width: boxPx, height: boxPx }}
+                      >
+                        <svg viewBox="0 0 12 12" className="h-[75%] w-[75%]" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="2.2 6.2 4.8 8.8 9.8 3.2" />
+                        </svg>
+                      </span>
+                      <span
+                        className={`min-w-0 flex-1 whitespace-pre-wrap break-words ${
+                          task.checked ? 'line-through opacity-55' : ''
+                        }`}
+                      >
+                        {task.label || '\u00A0'}
+                      </span>
+                    </div>
+                  );
+                }
+                return (
+                  <div key={`ann-line-${lineIdx}`} className="min-h-[1.2em] whitespace-pre-wrap break-words">
+                    {line || '\u00A0'}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            '双击输入文字…'
+          )}
         </div>
       )}
     </div>
