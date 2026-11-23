@@ -44,4 +44,4 @@
 - **前端 pdf.js 依赖公网 CDN**（`cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69`）。断网、内网、CDN 不可达时前端兜底失效。
 - **前后端页数上限不对称**：服务端 `MAX_RENDER_PAGES = 200`，前端无上限，超长文档两端行为不一致。
 - **`PdfViewerBlockProps` 残留 `useProxy` / `onChangeUseProxy`**：组件已不解构使用，`WidgetNode.tsx` 仍在传入，可编译但属死参数。
-- **`v49.md` 的 Blame 段落措辞过重**（「偷懒」「擅自」「幻觉」），属表述问题，不影响功能；历史文件只读，不回头改。
+- **`v49.md` 的 Blame 段落措辞过重且归属有偏**（「偷懒」「擅自」「幻觉」，v35 主体实为视锥裁剪，源码实际由 `2b1b489` 引入）。原文件只读不改，另见 `changelog/v49-blame-01.md` 逐条更正。

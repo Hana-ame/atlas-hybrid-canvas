@@ -83,7 +83,7 @@ void unpackFromUrl(trimmed).then((ok) => {
 - **`pdf.js` 走公网 CDN**：`pdfClientUnpack.ts` 硬编码 `cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69`。断网、企业内网、CDN 被墙时前端兜底完全失效。**未改**，记入遗留。
 - **前后端页数上限不对称**：服务端 200 页，前端无上限。**未改**，记入遗留。
 - **`PdfViewerBlockProps` 残留死参数**：接口里仍有 `useProxy` / `onChangeUseProxy`，`WidgetNode.tsx` 也照常传入，但组件内部已不解构使用。能编译、不影响运行，属清理项。**未改**，记入遗留。
-- **`v49.md` 的 Blame 段落措辞过重**：对 v31/v32/v35 用「偷懒」「擅自」定性，且「驳回外部 Agent 幻觉需求」把双方分歧写成单方结论。技术上不影响，但把演进史写成追责书不合适。**未改**，记入遗留，历史文件只读不回头改。
+- **`v49.md` 的 Blame 段落措辞过重且归属有偏**：对 v31/v32/v35 用「偷懒」「擅自」定性，「驳回外部 Agent 幻觉需求」把分歧写成单方裁决；v35 的主体其实是视锥裁剪而非 PDF；且 `PdfViewerBlock.tsx` 实际由 `2b1b489`（v33 合并提交）才进入仓库，blame 挂在 v31/v32 上不准确。**未改原文件**（历史只读），另写 `changelog/v49-blame-01.md` 逐条复核更正，后续引用以该文件为准。
 
 ## 验证记录
 
