@@ -36,7 +36,7 @@ jobs:
       # tests/serverIntegration.test.ts 会 spawn `node dist-server/server.mjs` 起真后端，
       # 必须先构建服务端包再跑测试，否则 E2E 会因找不到入口而超时。
       - name: Build server bundle
-        run: npm run build:server
+        run: npm run build:server && npm run build:mcp
 
       - name: Run unit & roomServer tests
         run: npm test

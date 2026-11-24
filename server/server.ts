@@ -863,9 +863,21 @@ async function startServer() {
     await handleAgentStateRequest(requestedRoom, req, res);
   });
 
+  const safeDecodeRoomParam = (raw: string): string | null => {
+    try {
+      return normalizeRoomPath(decodeURIComponent(raw));
+    } catch {
+      return null;
+    }
+  };
+
   app.get(/^\/api\/rooms\/(.+)\/agent\/state$/, async (req, res) => {
     const raw = (req.params as Record<string, string>)[0] || DEFAULT_ROOM_PATH;
-    const roomPath = normalizeRoomPath(decodeURIComponent(raw));
+    const roomPath = safeDecodeRoomParam(raw);
+    if (!roomPath) {
+      res.status(400).json({ ok: false, error: '非法房间路径编码' });
+      return;
+    }
     await handleAgentStateRequest(roomPath, req, res);
   });
 
@@ -950,7 +962,11 @@ async function startServer() {
 
   app.post(/^\/api\/rooms\/(.+)\/ops$/, async (req, res) => {
     const raw = (req.params as Record<string, string>)[0] || DEFAULT_ROOM_PATH;
-    const roomPath = normalizeRoomPath(decodeURIComponent(raw));
+    const roomPath = safeDecodeRoomParam(raw);
+    if (!roomPath) {
+      res.status(400).json({ ok: false, error: '非法房间路径编码' });
+      return;
+    }
     await handleAgentOpsRequest(roomPath, req, res);
   });
 
@@ -972,13 +988,15 @@ async function startServer() {
       res.status(400).json({ ok: false, error: '缺少合法的目标版本号 version' });
       return;
     }
-    const out = await roomBlueprintRegistry.getStore(roomPath).rollbackToVersion(Math.trunc(version), getRealClientIp(req));
-    if (!out.ok) {
-      res.status(404).json({ ok: false, error: out.error || '版本不存在' });
-      return;
-    }
-    roomServer?.syncPublishedBlueprint(roomPath, out.blueprint);
-    res.json({ ok: true, room: roomPath, revision: out.revision, blueprint: out.blueprint, entry: out.entry });
+    await runSerializedForRoom(roomPath, async () => {
+      const out = await roomBlueprintRegistry.getStore(roomPath).rollbackToVersion(Math.trunc(version), getRealClientIp(req));
+      if (!out.ok) {
+        res.status(404).json({ ok: false, error: out.error || '版本不存在' });
+        return;
+      }
+      roomServer?.syncPublishedBlueprint(roomPath, out.blueprint);
+      res.json({ ok: true, room: roomPath, revision: out.revision, blueprint: out.blueprint, entry: out.entry });
+    });
   };
 
   const requireSessionOrAgentKey: express.RequestHandler = (req, res, next) => {

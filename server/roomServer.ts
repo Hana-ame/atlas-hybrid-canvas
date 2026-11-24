@@ -684,6 +684,8 @@ export function attachRoomServer(
       if (!roomName || roomName === '__rpc__') return null;
       const st = states.get(roomName);
       if (!st) return null;
+      // 若房间刚创建且尚未完成磁盘水合、也无待落盘 WS 编辑，绝不返回空快照遮蔽磁盘数据
+      if (!hydratedRooms.has(roomName) && !persistTimers.has(roomName)) return null;
       const timer = persistTimers.get(roomName);
       if (timer) {
         clearTimeout(timer);

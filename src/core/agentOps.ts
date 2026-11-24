@@ -25,7 +25,9 @@ import type {
   NodePortSpec,
   WidgetButtonSpec,
 } from './types';
-import { isSafeImageUrl } from './mediaHelper';
+import { isSafeImageUrl, isSafeVideoUrl } from './mediaHelper';
+import { isSafePdfUrl } from './pdfHelper';
+import { isSafePollUrl } from './apiPoller';
 import { findNonOverlappingPosition, type RectBox } from './placement';
 import { validateScriptSafety } from './scriptSandbox';
 import { BUILTIN_TEMPLATES } from './widgetTemplates';
@@ -224,6 +226,62 @@ export interface AgentBlueprintSummary {
 }
 
 const MAX_OPS_PER_BATCH = 50;
+
+function validateLeafBlockSafety(block: unknown): string | null {
+  if (!block || typeof block !== 'object') return 'blocks 中包含非法元素';
+  const b = block as Record<string, unknown>;
+  switch (b.type) {
+    case 'image':
+      if (typeof b.url === 'string' && b.url.trim() && !isSafeImageUrl(b.url)) {
+        return `image 积木包含不安全的 url：${b.url}`;
+      }
+      break;
+    case 'video':
+      if (typeof b.url === 'string' && b.url.trim() && !isSafeVideoUrl(b.url)) {
+        return `video 积木包含不安全的 url：${b.url}`;
+      }
+      if (typeof b.poster === 'string' && b.poster.trim() && !isSafeImageUrl(b.poster)) {
+        return `video 积木包含不安全的 poster：${b.poster}`;
+      }
+      break;
+    case 'pdf':
+      if (typeof b.url === 'string' && b.url.trim() && !isSafePdfUrl(b.url)) {
+        return `pdf 积木包含不安全的 url：${b.url}`;
+      }
+      break;
+    case 'api_poller':
+      if (typeof b.url === 'string' && b.url.trim() && !isSafePollUrl(b.url)) {
+        return `api_poller 积木包含不安全的 url：${b.url}`;
+      }
+      break;
+    case 'image_button':
+      for (const field of ['offImage', 'onImage', 'hoverImage', 'clickImage']) {
+        const v = b[field];
+        if (typeof v === 'string' && v.trim() && !isSafeImageUrl(v)) {
+          return `image_button 积木包含不安全的 ${field}：${v}`;
+        }
+      }
+      break;
+    default:
+      break;
+  }
+  return null;
+}
+
+function validateBlocksSafety(blocks: unknown[]): string | null {
+  for (const item of blocks) {
+    if (Array.isArray(item)) {
+      for (const sub of item) {
+        const err = validateLeafBlockSafety(sub);
+        if (err) return err;
+      }
+    } else {
+      const err = validateLeafBlockSafety(item);
+      if (err) return err;
+    }
+  }
+  return null;
+}
 
 function clampDim(val: unknown, fallback: number, min: number, max: number): number {
   const n = Number(val);
@@ -468,6 +526,8 @@ export function applyAgentOperations(
             ? JSON.parse(JSON.stringify(item.defaultVars))
             : {};
         if (Array.isArray(item.blocks)) {
+          const blockErr = validateBlocksSafety(item.blocks);
+          if (blockErr) return { ok: false, error: blockErr, failedIndex: i };
           defaultVars.contents = JSON.parse(JSON.stringify(item.blocks));
         }
         const node: BlueprintNode = {
@@ -512,6 +572,8 @@ export function applyAgentOperations(
               : { ...(target.defaultVars || {}), ...JSON.parse(JSON.stringify(item.defaultVars)) }
             : { ...(target.defaultVars || {}) };
         if (Array.isArray(item.blocks)) {
+          const blockErr = validateBlocksSafety(item.blocks);
+          if (blockErr) return { ok: false, error: blockErr, failedIndex: i };
           nextVars.contents = JSON.parse(JSON.stringify(item.blocks));
         }
         const updated: BlueprintNode = {

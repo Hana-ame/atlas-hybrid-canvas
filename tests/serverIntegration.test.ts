@@ -530,3 +530,111 @@ test('E2E Agent v88: preserves unflushed human WS edit, supports agent/state, dr
   assert.ok(afterData.summary.nodes.some((n: any) => n.id === 'human-node-1'), 'human WS node must be preserved');
   assert.ok(afterData.summary.nodes.some((n: any) => n.id === 'agent-slider-1'), 'Agent template node must exist');
 });
+
+test('E2E v89 adversarial: malformed room percent-encoding returns 400 cleanly + real spawned stdio mcp-server.mjs process roundtrip', async (t) => {
+  const tmpDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'atlas-e2e-v89-'));
+  const port = 22700 + Math.floor(Math.random() * 1000);
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const serverEntry = path.resolve('dist-server/server.mjs');
+  const mcpEntry = path.resolve('dist-server/mcp-server.mjs');
+
+  const child = spawn(process.execPath, [serverEntry], {
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      PORT: String(port),
+      ATLAS_DATA_DIR: tmpDataDir,
+      AUTH_SESSION_SECRET: 'e2e-v89-session-secret',
+      BLUEPRINT_SAVE_KEY: 'e2e-v89-admin-key',
+      AGENT_API_KEY: 'e2e-v89-agent-key',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  t.after(async () => {
+    child.kill('SIGTERM');
+    await new Promise((r) => setTimeout(r, 150));
+    await fs.rm(tmpDataDir, { recursive: true, force: true });
+  });
+
+  await waitForHealth(baseUrl);
+
+  // 1) Malformed percent-encoding MUST return 400 cleanly without crashing or hanging
+  const badState = await fetch(`${baseUrl}/api/rooms/%E0%A4%A/agent/state`, {
+    headers: { 'X-Agent-Api-Key': 'e2e-v89-agent-key' },
+  });
+  assert.equal(badState.status, 400);
+
+  const badOps = await fetch(`${baseUrl}/api/rooms/%ZZ/ops`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Agent-Api-Key': 'e2e-v89-agent-key' },
+    body: JSON.stringify({ ops: [{ op: 'create_widget', title: 'X' }] }),
+  });
+  assert.equal(badOps.status, 400);
+
+  // 2) Real child-process stdio MCP server test (dist-server/mcp-server.mjs)
+  const mcpProc = spawn(process.execPath, [mcpEntry], {
+    env: {
+      ...process.env,
+      ATLAS_BASE_URL: baseUrl,
+      AGENT_API_KEY: 'e2e-v89-agent-key',
+      ATLAS_DEFAULT_ROOM: 'team/stdio-mcp',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  t.after(() => mcpProc.kill('SIGTERM'));
+
+  const responses: any[] = [];
+  let stdoutBuf = '';
+  mcpProc.stdout.on('data', (chunk) => {
+    stdoutBuf += String(chunk);
+    const lines = stdoutBuf.split('\n');
+    stdoutBuf = lines.pop() || '';
+    for (const line of lines) {
+      if (line.trim()) responses.push(JSON.parse(line));
+    }
+  });
+
+  const sendRpc = (msg: unknown) => {
+    mcpProc.stdin.write(`${JSON.stringify(msg)}\n`);
+  };
+  const waitForId = async (id: number, timeoutMs = 4000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const found = responses.find((r) => r.id === id);
+      if (found) return found;
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    throw new Error(`MCP stdio response timeout for id=${id}`);
+  };
+
+  sendRpc({ jsonrpc: '2.0', id: 1, method: 'initialize' });
+  const initResp = await waitForId(1);
+  assert.equal(initResp.result.serverInfo.name, 'atlas-hybrid-canvas-mcp');
+
+  sendRpc({
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: {
+      name: 'atlas_apply_ops',
+      arguments: {
+        ops: [{ op: 'create_widget', id: 'stdio-w1', title: 'Stdio MCP 实测节点' }],
+      },
+    },
+  });
+  const opsResp = await waitForId(2);
+  const opsPayload = JSON.parse(opsResp.result.content[0].text);
+  assert.equal(opsPayload.ok, true);
+  assert.equal(opsPayload.room, 'team/stdio-mcp');
+
+  sendRpc({
+    jsonrpc: '2.0',
+    id: 3,
+    method: 'tools/call',
+    params: { name: 'atlas_inspect_room', arguments: {} },
+  });
+  const inspectResp = await waitForId(3);
+  const inspectPayload = JSON.parse(inspectResp.result.content[0].text);
+  assert.ok(inspectPayload.summary.nodes.some((n: any) => n.id === 'stdio-w1'));
+});

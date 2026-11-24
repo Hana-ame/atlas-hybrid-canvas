@@ -137,3 +137,32 @@ test('applyAgentOperations() supports create_from_template (widget & annotation)
   ]);
   assert.equal(unknownTpl.ok, false);
 });
+
+test('applyAgentOperations() rejects unsafe URLs inside structured blocks (image/video/pdf/image_button)', () => {
+  const badImgBlock = applyAgentOperations(null, [
+    {
+      op: 'create_widget',
+      title: 'Bad Image Block',
+      blocks: [{ type: 'image', id: 'img-1', url: 'javascript:alert(1)' }],
+    },
+  ]);
+  assert.equal(badImgBlock.ok, false);
+
+  const badVideoBlock = applyAgentOperations(null, [
+    {
+      op: 'create_widget',
+      title: 'Bad Video Block',
+      blocks: [{ type: 'video', id: 'vid-1', url: 'blob:https://example.com/123' }],
+    },
+  ]);
+  assert.equal(badVideoBlock.ok, false);
+
+  const badPdfBlock = applyAgentOperations(null, [
+    {
+      op: 'create_widget',
+      title: 'Bad PDF Block',
+      blocks: [{ type: 'pdf', id: 'pdf-1', url: 'javascript:alert(1)' }],
+    },
+  ]);
+  assert.equal(badPdfBlock.ok, false);
+});
