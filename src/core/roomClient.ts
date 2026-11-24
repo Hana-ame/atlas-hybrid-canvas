@@ -1,5 +1,6 @@
 import { appendProxyTokenQuery, buildWsAuthProtocols } from './apiClient';
 import { buildRoomWsUrl, normalizeRoomPath } from './roomPath';
+import { RoomWebRtcMesh, type RtcSignalMessage } from './webrtcMesh';
 /**
  * @file roomClient.ts
  * @description 多人实时协同房间客户端（WebSocket + 字段级 (rev, cid) CRDT + 指数退避自动重连 + 离线缓冲队列）。
@@ -14,13 +15,17 @@ export type RoomStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnec
 
 export type RoomWireMessage =
   | { t: 'hello'; room: string; cid: string }
-  | { t: 'state'; blueprint: BaseBlueprint }
+  | { t: 'state'; blueprint: BaseBlueprint; replace?: boolean }
   | { t: 'upsert_node'; node: BlueprintNode }
   | { t: 'delete_node'; id: string }
   | { t: 'upsert_ann'; annotation: CanvasAnnotation }
   | { t: 'delete_ann'; id: string }
   | { t: 'upsert_edge'; edge: BlueprintEdge }
-  | { t: 'delete_edge'; id: string };
+  | { t: 'delete_edge'; id: string }
+  | { t: 'peer_joined'; cid: string }
+  | { t: 'peer_left'; cid: string }
+  | { t: 'peers'; peers: string[] }
+  | RtcSignalMessage;
 
 const MAX_OFFLINE_QUEUE = 200;
 const INITIAL_RECONNECT_MS = 500;
@@ -41,6 +46,8 @@ export class CollaborativeRoomClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private stabilityTimer: ReturnType<typeof setTimeout> | null = null;
   private offlineQueue: RoomWireMessage[] = [];
+  private rtcMesh: RoomWebRtcMesh | null = null;
+  private recentFrames = new Map<string, number>();
 
   constructor(
     cid: string,
@@ -75,6 +82,8 @@ export class CollaborativeRoomClient {
   }
 
   private closeSocketOnly(): void {
+    this.rtcMesh?.closeAll();
+    this.rtcMesh = null;
     if (this.ws) {
       const old = this.ws;
       this.ws = null;
@@ -121,13 +130,51 @@ export class CollaborativeRoomClient {
         this.flushOfflineQueue(ws);
       };
 
+      this.rtcMesh?.closeAll();
+      this.rtcMesh = new RoomWebRtcMesh({
+        selfCid: this.cid,
+        sendSignal: (sig) => this.sendImmediate(ws, sig),
+        onDataMessage: (raw) => {
+          if (this.isDuplicateFrame(raw)) return;
+          try {
+            const p2pMsg = JSON.parse(raw) as RoomWireMessage;
+            if (p2pMsg && typeof p2pMsg === 'object' && typeof p2pMsg.t === 'string') {
+              this.onRemoteMessage(p2pMsg);
+            }
+          } catch {
+            // ignore malformed P2P frame
+          }
+        },
+      });
+
       ws.onmessage = (ev) => {
         if (this.ws !== ws) return;
         try {
           const msg = JSON.parse(String(ev.data)) as RoomWireMessage;
-          if (msg && typeof msg === 'object' && typeof msg.t === 'string') {
-            this.onRemoteMessage(msg);
+          if (!msg || typeof msg !== 'object' || typeof msg.t !== 'string') return;
+          if (msg.t === 'peers' && Array.isArray(msg.peers)) {
+            for (const peerCid of msg.peers) void this.rtcMesh?.handlePeerJoined(peerCid);
+            return;
           }
+          if (msg.t === 'rtc_offer' || msg.t === 'rtc_answer' || msg.t === 'rtc_ice') {
+            void this.rtcMesh?.handleSignal(msg);
+            return;
+          }
+          if (msg.t === 'peer_joined' && msg.cid) {
+            void this.rtcMesh?.handlePeerJoined(msg.cid);
+          } else if (msg.t === 'peer_left' && msg.cid) {
+            this.rtcMesh?.removePeer(msg.cid);
+          } else if (
+            msg.t === 'upsert_node' ||
+            msg.t === 'delete_node' ||
+            msg.t === 'upsert_ann' ||
+            msg.t === 'delete_ann' ||
+            msg.t === 'upsert_edge' ||
+            msg.t === 'delete_edge'
+          ) {
+            if (this.isDuplicateFrame(String(ev.data))) return;
+          }
+          this.onRemoteMessage(msg);
         } catch {
           // ignore malformed frames
         }
@@ -144,6 +191,8 @@ export class CollaborativeRoomClient {
           clearTimeout(this.stabilityTimer);
           this.stabilityTimer = null;
         }
+        this.rtcMesh?.closeAll();
+        this.rtcMesh = null;
         this.ws = null;
         if (this.manualDisconnect) {
           this.onStatus('disconnected', '已断开房间连接');
@@ -174,6 +223,21 @@ export class CollaborativeRoomClient {
     }, delay);
   }
 
+  private isDuplicateFrame(raw: string): boolean {
+    const now = Date.now();
+    const seenAt = this.recentFrames.get(raw);
+    if (seenAt !== undefined && now - seenAt < 2000) return true;
+    this.recentFrames.set(raw, now);
+    if (this.recentFrames.size > 256) {
+      for (const [k, ts] of this.recentFrames) {
+        if (now - ts >= 2000 || this.recentFrames.size > 256) {
+          this.recentFrames.delete(k);
+        }
+      }
+    }
+    return false;
+  }
+
   private sendImmediate(ws: WebSocket, msg: RoomWireMessage): void {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(msg));
@@ -189,11 +253,24 @@ export class CollaborativeRoomClient {
   }
 
   send(msg: RoomWireMessage): void {
+    const serialized = JSON.stringify(msg);
+    let p2pDelivered = 0;
+    if (
+      this.rtcMesh &&
+      (msg.t === 'upsert_node' ||
+        msg.t === 'delete_node' ||
+        msg.t === 'upsert_ann' ||
+        msg.t === 'delete_ann' ||
+        msg.t === 'upsert_edge' ||
+        msg.t === 'delete_edge')
+    ) {
+      p2pDelivered = this.rtcMesh.broadcastRaw(serialized);
+    }
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(msg));
+      this.ws.send(serialized);
       return;
     }
-    if (!this.manualDisconnect && msg.t !== 'hello') {
+    if (!this.manualDisconnect && msg.t !== 'hello' && p2pDelivered === 0) {
       if (this.offlineQueue.length >= MAX_OFFLINE_QUEUE) {
         this.offlineQueue.shift();
       }

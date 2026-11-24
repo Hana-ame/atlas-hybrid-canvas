@@ -229,3 +229,13 @@ test('apiCore: /api/rooms/<roomPath>/blueprint 与 publish 按房间路径隔离
   assert.equal(gotB?.status, 200);
   assert.equal(parse(gotB!).blueprint, null);
 });
+
+test('apiCore: 静态模式兜底 /api/rooms/<room>/history 与 rollback 不穿透 CDN', async () => {
+  const deps = makeDeps();
+  const h = await handleApiRequest(deps, makeReq('GET', '/api/rooms/team/design/history'));
+  assert.equal(h?.status, 200);
+  assert.deepEqual(parse(h!).entries, []);
+
+  const rb = await handleApiRequest(deps, makeReq('POST', '/api/rooms/team/design/rollback', { body: { version: 1 } }));
+  assert.equal(rb?.status, 403);
+});

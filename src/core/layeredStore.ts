@@ -6,6 +6,7 @@
  */
 
 import { idbGet, idbSet } from './idbStorage';
+import { DEFAULT_ROOM_PATH, normalizeRoomPath } from './roomPath';
 import type {
   BaseBlueprint,
   CanvasAnnotation,
@@ -16,6 +17,12 @@ import type {
 } from './types';
 
 const OVERLAY_STORAGE_KEY = 'atlas-hybrid-local-overlay-v1';
+
+export function getOverlayStorageKey(roomPath?: string): string {
+  const normalized = normalizeRoomPath(roomPath);
+  const isDefault = normalized === DEFAULT_ROOM_PATH || normalized === 'default';
+  return isDefault ? OVERLAY_STORAGE_KEY : `${OVERLAY_STORAGE_KEY}:room:${normalized}`;
+}
 
 export function createEmptyOverlay(): LocalOverlayState {
   return {
@@ -51,9 +58,9 @@ export function sanitizeEphemeralBlobVars(
   return cleaned;
 }
 
-export async function loadLocalOverlay(): Promise<LocalOverlayState> {
+export async function loadLocalOverlay(roomPath?: string): Promise<LocalOverlayState> {
   try {
-    const parsed = await idbGet<Partial<LocalOverlayState>>(OVERLAY_STORAGE_KEY);
+    const parsed = await idbGet<Partial<LocalOverlayState>>(getOverlayStorageKey(roomPath));
     if (!parsed) return createEmptyOverlay();
     return {
       runtimeVars: sanitizeEphemeralBlobVars(parsed.runtimeVars ?? {}),
@@ -70,6 +77,7 @@ const SYNC_CHANNEL_NAME = 'atlas-hybrid-canvas-sync-v1';
 const TAB_ID = `tab-${Math.random().toString(36).slice(2, 10)}`;
 let pendingSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingOverlay: LocalOverlayState | null = null;
+let pendingRoomPath: string | undefined = undefined;
 let syncChannel: BroadcastChannel | null = null;
 
 function getSyncChannel(): BroadcastChannel | null {
@@ -84,12 +92,13 @@ function getSyncChannel(): BroadcastChannel | null {
   return syncChannel;
 }
 
-export async function saveLocalOverlay(overlay: LocalOverlayState): Promise<void> {
-  await idbSet(OVERLAY_STORAGE_KEY, overlay);
+export async function saveLocalOverlay(overlay: LocalOverlayState, roomPath?: string): Promise<void> {
+  const storageKey = getOverlayStorageKey(roomPath);
+  await idbSet(storageKey, overlay);
   const ch = getSyncChannel();
   if (ch) {
     try {
-      ch.postMessage({ type: 'overlay_updated', tabId: TAB_ID, overlay });
+      ch.postMessage({ type: 'overlay_updated', tabId: TAB_ID, storageKey, overlay });
     } catch {
       // 忽略克隆或关闭通道异常
     }
@@ -99,15 +108,22 @@ export async function saveLocalOverlay(overlay: LocalOverlayState): Promise<void
 /**
  * 防抖写盘（默认 300ms 合并高频输入/勾选），大幅降低 IndexedDB 写入放大。
  */
-export function scheduleSaveLocalOverlay(overlay: LocalOverlayState, delayMs = 300): void {
+export function scheduleSaveLocalOverlay(
+  overlay: LocalOverlayState,
+  delayMs = 300,
+  roomPath?: string
+): void {
   pendingOverlay = overlay;
+  pendingRoomPath = roomPath;
   if (pendingSaveTimer) clearTimeout(pendingSaveTimer);
   pendingSaveTimer = setTimeout(() => {
     pendingSaveTimer = null;
     const toFlush = pendingOverlay;
+    const targetRoom = pendingRoomPath;
     pendingOverlay = null;
+    pendingRoomPath = undefined;
     if (toFlush) {
-      void saveLocalOverlay(toFlush);
+      void saveLocalOverlay(toFlush, targetRoom);
     }
   }, delayMs);
 }
@@ -128,21 +144,30 @@ export function flushLocalOverlaySave(): void {
     pendingSaveTimer = null;
   }
   const toFlush = pendingOverlay;
+  const targetRoom = pendingRoomPath;
   pendingOverlay = null;
+  pendingRoomPath = undefined;
   if (toFlush) {
-    void saveLocalOverlay(toFlush);
+    void saveLocalOverlay(toFlush, targetRoom);
   }
 }
 
 /**
  * 订阅同一浏览器其他标签页的本地叠加层变更，避免双开页签静默互相覆盖。
  */
-export function subscribeCrossTabOverlay(onRemoteOverlay: (overlay: LocalOverlayState) => void): () => void {
+export function subscribeCrossTabOverlay(
+  onRemoteOverlay: (overlay: LocalOverlayState) => void,
+  roomPath?: string
+): () => void {
   const ch = getSyncChannel();
   if (!ch) return () => {};
-  const handler = (ev: MessageEvent<{ type?: string; tabId?: string; overlay?: LocalOverlayState }>) => {
+  const expectedKey = getOverlayStorageKey(roomPath);
+  const handler = (
+    ev: MessageEvent<{ type?: string; tabId?: string; storageKey?: string; overlay?: LocalOverlayState }>
+  ) => {
     const data = ev.data;
     if (!data || data.type !== 'overlay_updated' || data.tabId === TAB_ID || !data.overlay) return;
+    if (data.storageKey && data.storageKey !== expectedKey) return;
     onRemoteOverlay(data.overlay);
   };
   ch.addEventListener('message', handler);

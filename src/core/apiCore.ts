@@ -385,6 +385,17 @@ export async function handleApiRequest(
     );
   }
 
+  const roomHistMatch = pathname.match(/^\/api\/rooms\/(.+)\/(history|rollback)$/);
+  if (roomHistMatch || pathname === '/api/history' || pathname === '/api/rollback') {
+    const kind = roomHistMatch ? roomHistMatch[2] : pathname.endsWith('/history') ? 'history' : 'rollback';
+    if (kind === 'history') {
+      if (method !== 'GET') return jsonResult({ ok: false, error: 'Method Not Allowed' }, 405);
+      return jsonResult({ ok: true, entries: [] }, 200);
+    }
+    if (method !== 'POST') return jsonResult({ ok: false, error: 'Method Not Allowed' }, 405);
+    return jsonResult({ ok: false, error: '纯静态模式不支持服务端版本回档' }, 403);
+  }
+
   switch (pathname) {
     case '/api/auth/session': {
       if (method !== 'POST') {

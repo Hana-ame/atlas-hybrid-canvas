@@ -9,7 +9,7 @@
  * 5. 提供左侧所见即所得拖放模板库、右侧属性脚本编辑器及带 X-Blueprint-Save-Key 鉴权的保存弹窗。
  */
 
-import { DEFAULT_ROOM_PATH, buildRoomBlueprintPublishUrl, buildRoomBlueprintUrl, encodeRoomPathForUrl, extractRoomPathFromBrowserLocation, normalizeRoomPath } from './core/roomPath';
+import { DEFAULT_ROOM_PATH, buildBrowserRoomUrl, buildRoomBlueprintPublishUrl, buildRoomBlueprintUrl, buildRoomHistoryUrl, buildRoomRollbackUrl, extractRoomPathFromBrowserLocation } from './core/roomPath';
 import {
   Suspense,
   lazy,
@@ -81,6 +81,7 @@ import {
   applyOverlayToBase,
   clearConflictingRuntimeVars,
   createEmptyOverlay,
+  flushLocalOverlaySave,
   loadLocalOverlay,
   resolveEffectiveAnnotations,
   resolveEffectiveNodes,
@@ -163,6 +164,74 @@ function HybridCanvasWorkspace() {
   const [saveKeyInput, setSaveKeyInput] = useState('');
   const [saveKeyError, setSaveKeyError] = useState<string | null>(null);
   const [isSavingBase, setIsSavingBase] = useState(false);
+  const [roomHistory, setRoomHistory] = useState<
+    Array<{ version: number; ts: number; action: string; actor: string; summary: string }>
+  >([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  const loadRoomHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    try {
+      const resp = await fetch(buildRoomHistoryUrl(roomNameRef.current), {
+        headers: proxyHeaders(),
+        credentials: 'same-origin',
+      });
+      if (resp.ok) {
+        const json = (await resp.json()) as {
+          ok?: boolean;
+          entries?: Array<{ version: number; ts: number; action: string; actor: string; summary: string }>;
+        };
+        if (json.ok && Array.isArray(json.entries)) setRoomHistory(json.entries);
+      }
+    } catch {
+      // 静态模式下忽略
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (saveModalOpen) void loadRoomHistory();
+  }, [saveModalOpen, loadRoomHistory]);
+
+  const handleRollbackVersion = async (version: number) => {
+    const key = saveKeyInput.trim();
+    if (!key) {
+      setSaveKeyError('回档同样需要输入管理员保存密钥 (X-Blueprint-Save-Key)');
+      return;
+    }
+    setIsSavingBase(true);
+    setSaveKeyError(null);
+    try {
+      const res = await fetch(buildRoomRollbackUrl(roomNameRef.current), {
+        method: 'POST',
+        headers: proxyHeaders({
+          'Content-Type': 'application/json',
+          'X-Blueprint-Save-Key': key,
+        }),
+        credentials: 'same-origin',
+        body: JSON.stringify({ version }),
+      });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        blueprint?: BaseBlueprint;
+        error?: string;
+      };
+      if (!res.ok || !json.ok || !json.blueprint) {
+        setSaveKeyError(json.error || `回档失败 (HTTP ${res.status})`);
+        return;
+      }
+      renderedScriptsRef.current.clear();
+      setBase(json.blueprint);
+      setChunkSyncTick((t) => t + 1);
+      setStatusLog(`已回档至版本 v${version}`);
+      void loadRoomHistory();
+    } catch (err) {
+      setSaveKeyError(err instanceof Error ? err.message : '回档请求失败');
+    } finally {
+      setIsSavingBase(false);
+    }
+  };
 
   // 1) IndexedDB 恢复就绪标记（驱动 useOverlaySync 防抖与跨页签同步）
   const [overlayHydrated, setOverlayHydrated] = useState(false);
@@ -185,18 +254,20 @@ function HybridCanvasWorkspace() {
   const [roomModalOpen, setRoomModalOpen] = useState(false);
   const [roomWsUrl, setRoomWsUrl] = useState(() => defaultRoomWsUrl());
   const [roomName, setRoomName] = useState(() =>
-    typeof window !== 'undefined' ? extractRoomPathFromBrowserLocation(window.location.pathname) : DEFAULT_ROOM_PATH
+    typeof window !== 'undefined'
+      ? extractRoomPathFromBrowserLocation(window.location.pathname, import.meta.env.BASE_URL, window.location.search)
+      : DEFAULT_ROOM_PATH
   );
   const roomNameRef = useRef(roomName);
   roomNameRef.current = roomName;
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const normalized = normalizeRoomPath(roomName);
-    const targetPath = normalized === DEFAULT_ROOM_PATH ? '/' : `/${encodeRoomPathForUrl(normalized)}`;
-    if (window.location.pathname !== targetPath) {
+    const nextUrl = buildBrowserRoomUrl(roomName, import.meta.env.BASE_URL, window.location.search, window.location.hash);
+    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (currentUrl !== nextUrl) {
       try {
-        window.history.replaceState(null, '', `${targetPath}${window.location.search}${window.location.hash}`);
+        window.history.replaceState(null, '', nextUrl);
       } catch {
         // 某些嵌入式沙箱不允许 replaceState 时静默忽略
       }
@@ -206,7 +277,7 @@ function HybridCanvasWorkspace() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const onPopState = () => {
-      setRoomName(extractRoomPathFromBrowserLocation(window.location.pathname));
+      setRoomName(extractRoomPathFromBrowserLocation(window.location.pathname, import.meta.env.BASE_URL, window.location.search));
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -434,25 +505,33 @@ function HybridCanvasWorkspace() {
     tileCacheRef.current.clear();
   }, [annotationEditMode]);
 
-  // 启动时从 IndexedDB 恢复本地叠加层与自定义模板
+  // 启动时恢复自定义模板，并随 roomName 隔离加载对应房间的本地叠加层
   useEffect(() => {
     let active = true;
-    void (async () => {
-      const [savedOverlay, savedTpls] = await Promise.all([
-        loadLocalOverlay(),
-        loadCustomTemplates(),
-      ]);
-      if (!active) return;
-      overlayHydratedRef.current = true;
-      setOverlayHydrated(true);
-      setOverlay(savedOverlay);
-      setCustomTemplates(savedTpls);
-      setChunkSyncTick((t) => t + 1);
-    })();
+    void loadCustomTemplates().then((savedTpls) => {
+      if (active) setCustomTemplates(savedTpls);
+    });
     return () => {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    flushLocalOverlaySave();
+    overlayHydratedRef.current = false;
+    setOverlayHydrated(false);
+    void loadLocalOverlay(roomName).then((savedOverlay) => {
+      if (!active) return;
+      overlayHydratedRef.current = true;
+      setOverlayHydrated(true);
+      setOverlay(savedOverlay);
+      setChunkSyncTick((t) => t + 1);
+    });
+    return () => {
+      active = false;
+    };
+  }, [roomName]);
 
   // 按当前房间路径加载独立蓝图（首次加载及切换房间 / 浏览器前进后退均自动重新拉取）
   const initialRoomLoadRef = useRef(true);
@@ -492,7 +571,7 @@ function HybridCanvasWorkspace() {
 
   // 本地叠加层 300ms 防抖写盘 + beforeunload 刷盘 + BroadcastChannel 跨页签防回环同步
   const handleRemoteOverlayApplied = useCallback(() => setChunkSyncTick((t) => t + 1), []);
-  useOverlaySync(overlay, overlayHydrated, setOverlay, setStatusLog, handleRemoteOverlayApplied);
+  useOverlaySync(overlay, overlayHydrated, setOverlay, setStatusLog, handleRemoteOverlayApplied, roomName);
 
   // 实例化任意模板到指定世界坐标
   const instantiateTemplateAt = useCallback((tpl: BlueprintTemplate, worldX: number, worldY: number) => {
@@ -2667,6 +2746,47 @@ function HybridCanvasWorkspace() {
                 {saveKeyError}
               </div>
             )}
+
+            <div className="mt-4 border-t border-slate-100 pt-3">
+              <div className="mb-1.5 flex items-center justify-between text-xs font-semibold text-slate-700">
+                <span>房间修改日志与版本回档</span>
+                <button
+                  type="button"
+                  onClick={() => void loadRoomHistory()}
+                  className="text-[11px] font-normal text-blue-600 hover:underline"
+                >
+                  {historyLoading ? '加载中…' : '刷新'}
+                </button>
+              </div>
+              {roomHistory.length === 0 ? (
+                <div className="rounded bg-slate-50 px-2.5 py-2 text-[11px] text-slate-500">
+                  暂无后端修改记录（发布或协同保存后自动生成可回档版本）
+                </div>
+              ) : (
+                <div className="max-h-36 space-y-1 overflow-y-auto pr-1">
+                  {roomHistory.map((item) => (
+                    <div
+                      key={item.version}
+                      className="flex items-center justify-between gap-2 rounded border border-slate-100 bg-slate-50/70 px-2 py-1 text-[11px]"
+                    >
+                      <div className="min-w-0 truncate text-slate-700">
+                        <span className="font-mono font-semibold text-slate-900">v{item.version}</span>{' '}
+                        <span className="rounded bg-slate-200/70 px-1 text-[10px]">{item.action}</span>{' '}
+                        <span>{item.summary}</span>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={isSavingBase}
+                        onClick={() => void handleRollbackVersion(item.version)}
+                        className="shrink-0 rounded border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                      >
+                        回档
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
             <div className="mt-4 flex items-center justify-end gap-2">
               <button

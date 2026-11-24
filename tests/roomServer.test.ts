@@ -431,3 +431,23 @@ test('roomServer: verifyToken 拒绝无凭证连接并放行 Sec-WebSocket-Proto
     ws.once('error', reject);
   });
 });
+
+test('roomServer: 支持 WebRTC 信令定向中继 (rtc_offer / rtc_answer / peers)', async (t) => {
+  const { port, close } = await startRoomServer();
+  t.after(close);
+
+  const a = await connect(port, 'rtc-room', 'cid-a');
+  const b = await connect(port, 'rtc-room', 'cid-b');
+  t.after(() => {
+    a.close();
+    b.close();
+  });
+
+  const peersMsg = await b.waitFor((m: any) => m.t === 'peers');
+  assert.deepEqual(peersMsg.peers, ['cid-a']);
+
+  b.send({ t: 'rtc_offer', to: 'cid-a', sdp: { type: 'offer', sdp: 'mock-sdp' } });
+  const offer = await a.waitFor((m: any) => m.t === 'rtc_offer');
+  assert.equal(offer.from, 'cid-b');
+  assert.equal(offer.sdp.sdp, 'mock-sdp');
+});

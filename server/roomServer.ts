@@ -14,7 +14,7 @@
 import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { loadRoomSnapshotFile, saveRoomSnapshotFile } from './fileStore';
+import type { RoomBlueprintStore } from './fileStore';
 import { extractRoomPathFromWsPathname } from '../src/core/roomPath';
 import { mergeRecordFieldsLWW } from '../src/core/crdt';
 import { extractWsSubprotocolToken, parseCookieValue } from './authSession';
@@ -37,6 +37,7 @@ export type RpcRequestFrame = {
   body?: string;
   rawBody?: Uint8Array;
   bodyEncoding?: 'text' | 'base64' | 'binary';
+  clientIp?: string;
 };
 
 export type RpcResponseFrame = {
@@ -59,6 +60,9 @@ type WireMessage =
   | { t: 'delete_ann'; id: string }
   | { t: 'upsert_edge'; edge: VersionedRecord }
   | { t: 'delete_edge'; id: string }
+  | { t: 'rtc_offer'; from?: string; to: string; sdp: unknown }
+  | { t: 'rtc_answer'; from?: string; to: string; sdp: unknown }
+  | { t: 'rtc_ice'; from?: string; to: string; candidate: unknown }
   | RpcRequestFrame;
 
 interface VersionedRecord {
@@ -150,6 +154,17 @@ class RoomState {
     return this.data[kind].delete(id);
   }
 
+  replaceSnapshot(bp: Record<string, unknown>): void {
+    for (const kind of COLLECTIONS) {
+      this.data[kind].clear();
+      const col = bp[kind];
+      if (!col || typeof col !== 'object') continue;
+      for (const rec of Object.values(col as Record<string, unknown>)) {
+        if (isVersionedRecord(rec)) this.upsert(kind, rec);
+      }
+    }
+  }
+
   snapshot(): Record<Collection, Record<string, VersionedRecord>> {
     const out = { nodes: {}, annotations: {}, edges: {} } as Record<
       Collection,
@@ -169,6 +184,7 @@ class RoomState {
 export interface RoomServerHandle {
   close: () => Promise<void>;
   stats: () => { rooms: number; members: number };
+  syncPublishedBlueprint: (roomName: string, blueprint: unknown) => void;
 }
 
 /**
@@ -189,8 +205,9 @@ export function attachRoomServer(
   httpServer: HttpServer,
   wsPath = '/ws',
   rpcHandler?: RpcHandler,
-  persistDir?: string,
-  verifyToken?: (token: string) => boolean
+  _persistDir?: string,
+  verifyToken?: (token: string) => boolean,
+  getRoomStore?: (roomName: string) => RoomBlueprintStore
 ): RoomServerHandle {
   const rooms = new Map<string, Room>();
   const states = new Map<string, RoomState>();
@@ -236,14 +253,19 @@ export function attachRoomServer(
   const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   const schedulePersistRoom = (roomName: string) => {
-    if (!persistDir || roomName === '__rpc__') return;
+    if (!getRoomStore || roomName === '__rpc__') return;
     const prev = persistTimers.get(roomName);
     if (prev) clearTimeout(prev);
     const timer = setTimeout(() => {
       persistTimers.delete(roomName);
       const st = states.get(roomName);
       if (st) {
-        void saveRoomSnapshotFile(persistDir, roomName, st.snapshot()).catch(() => {});
+        const snap = st.snapshot();
+        const store = getRoomStore(roomName);
+        void store
+          .writeBlueprint(snap)
+          .then(() => store.recordHistory('collab', { summary: '协同增量自动保存', blueprint: snap }))
+          .catch(() => {});
       }
     }, 600);
     timer.unref?.();
@@ -264,7 +286,7 @@ export function attachRoomServer(
       if (rooms.size >= MAX_ROOMS) return null;
       room = { name: roomName, members: new Map() };
       rooms.set(roomName, room);
-      states.set(roomName, new RoomState());
+      if (!states.has(roomName)) states.set(roomName, new RoomState());
     }
     if (room.members.size >= MAX_MEMBERS_PER_ROOM) return null;
     room.members.set(socket, { socket, cid, alive: true });
@@ -423,6 +445,20 @@ export function attachRoomServer(
           });
         return;
       }
+      case 'rtc_offer':
+      case 'rtc_answer':
+      case 'rtc_ice': {
+        const senderCid = room.members.get(socket)?.cid || '';
+        const toCid = typeof msg.to === 'string' ? msg.to.trim() : '';
+        if (!senderCid || !toCid || toCid === senderCid) return;
+        for (const member of room.members.values()) {
+          if (member.cid === toCid) {
+            send(member.socket, { ...msg, from: senderCid });
+            break;
+          }
+        }
+        return;
+      }
       default:
         send(socket, { t: 'error', error: `未知消息类型：${(msg as { t: string }).t}` });
     }
@@ -472,6 +508,8 @@ export function attachRoomServer(
       return;
     }
 
+    const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    const clientIp = fwd || req.socket.remoteAddress || 'unknown';
     wss.handleUpgrade(req, socket, head, (ws) => {
       const room = join(roomName, ws, cid);
       if (!room) {
@@ -488,13 +526,15 @@ export function attachRoomServer(
       // 新成员立刻拿到全量快照，补齐入房前错过的一切。
       if (state && state.size > 0) {
         send(ws, { t: 'state', blueprint: state.snapshot() });
-      } else if (persistDir && roomName !== '__rpc__' && !hydratedRooms.has(roomName)) {
+      } else if (roomName !== '__rpc__' && !hydratedRooms.has(roomName)) {
         hydratedRooms.add(roomName);
-        void loadRoomSnapshotFile(persistDir, roomName).then((saved) => {
-          if (!saved || !state) return;
+        void (async () => {
+          const initialBp = getRoomStore ? await getRoomStore(roomName).readBlueprint().catch(() => null) : null;
+          if (!initialBp || typeof initialBp !== 'object' || !state) return;
+          const bpObj = initialBp as Record<string, unknown>;
           let restored = false;
           for (const kind of COLLECTIONS) {
-            const col = saved[kind];
+            const col = bpObj[kind];
             if (!col || typeof col !== 'object') continue;
             for (const rec of Object.values(col as Record<string, unknown>)) {
               if (isVersionedRecord(rec) && state.upsert(kind, rec)) restored = true;
@@ -506,7 +546,15 @@ export function attachRoomServer(
               send(m.socket, snapMsg);
             }
           }
-        });
+        })();
+      }
+      if (room.name !== '__rpc__') {
+        const existingPeers = [...room.members.values()]
+          .map((m) => m.cid)
+          .filter((c) => c !== cid);
+        if (existingPeers.length > 0) {
+          send(ws, { t: 'peers', peers: existingPeers });
+        }
       }
       broadcast(room, { t: 'peer_joined', cid }, ws);
 
@@ -626,6 +674,20 @@ export function attachRoomServer(
       rooms: rooms.size,
       members: [...rooms.values()].reduce((sum, r) => sum + r.members.size, 0),
     }),
+    syncPublishedBlueprint(roomName: string, blueprint: unknown) {
+      if (!roomName || roomName === '__rpc__' || !blueprint || typeof blueprint !== 'object') return;
+      let st = states.get(roomName);
+      if (!st) {
+        st = new RoomState();
+        states.set(roomName, st);
+      }
+      st.replaceSnapshot(blueprint as Record<string, unknown>);
+      hydratedRooms.add(roomName);
+      const room = rooms.get(roomName);
+      if (room) {
+        broadcast(room, { t: 'state', blueprint: st.snapshot(), replace: true });
+      }
+    },
     close: () =>
       new Promise<void>((resolve) => {
         clearInterval(heartbeat);
@@ -633,8 +695,8 @@ export function attachRoomServer(
         for (const [rName, t] of persistTimers.entries()) {
           clearTimeout(t);
           const st = states.get(rName);
-          if (persistDir && st) {
-            flushTasks.push(saveRoomSnapshotFile(persistDir, rName, st.snapshot()).catch(() => {}));
+          if (getRoomStore && st) {
+            flushTasks.push(getRoomStore(rName).writeBlueprint(st.snapshot()).then(() => {}).catch(() => {}));
           }
         }
         persistTimers.clear();

@@ -45,13 +45,60 @@ export function normalizeRoomPath(raw: string | null | undefined): string {
   return joined || DEFAULT_ROOM_PATH;
 }
 
-/** 从浏览器 `window.location.pathname` 解析当前房间路径。 */
-export function extractRoomPathFromBrowserLocation(pathname: string): string {
-  const clean = String(pathname || '/').trim();
+/**
+ * 从浏览器地址解析当前房间路径：
+ * - 若部署在子路径（如 GitHub Pages `/<repo>/`），优先读取 `?room=<path>`，并自动剥离 `basePath` 前缀避免把仓库名当成房间名；
+ * - 根路径 `/` 或 `/index.html` 统一返回 `atlas-main`。
+ */
+export function extractRoomPathFromBrowserLocation(
+  pathname: string,
+  basePath = '/',
+  search = ''
+): string {
+  if (search) {
+    try {
+      const q = new URLSearchParams(search).get('room');
+      if (q && q.trim()) return normalizeRoomPath(q);
+    } catch {
+      // ignore invalid search
+    }
+  }
+  let clean = String(pathname || '/').trim() || '/';
+  const normBase = ('/' + String(basePath || '/').replace(/^\/+|\/+$/g, '') + '/').replace(/\/+/g, '/');
+  if (normBase !== '/') {
+    const baseNoTrail = normBase.slice(0, -1);
+    if (clean === baseNoTrail || clean === normBase || clean === `${normBase}index.html`) {
+      return DEFAULT_ROOM_PATH;
+    }
+    if (clean.startsWith(normBase)) {
+      clean = '/' + clean.slice(normBase.length);
+    }
+  }
   if (!clean || clean === '/' || clean === '/index.html') return DEFAULT_ROOM_PATH;
-  // 兼容可选前缀 /r/<path> 或 /room/<path>
   const stripped = clean.replace(/^\/(?:r|room)(?=\/)/i, '');
   return normalizeRoomPath(stripped);
+}
+
+/** 构造同步浏览器地址栏的 URL（子路径部署用 `?room=` 保底避免刷新 404，根部署直出 `/<roomPath>`）。 */
+export function buildBrowserRoomUrl(
+  roomPath: string,
+  basePath = '/',
+  search = '',
+  hash = ''
+): string {
+  const normalized = normalizeRoomPath(roomPath);
+  const normBase = ('/' + String(basePath || '/').replace(/^\/+|\/+$/g, '') + '/').replace(/\/+/g, '/');
+  const params = new URLSearchParams(search);
+  if (normBase !== '/') {
+    if (normalized === DEFAULT_ROOM_PATH) params.delete('room');
+    else params.set('room', normalized);
+    const qs = params.toString();
+    return `${normBase}${qs ? `?${qs}` : ''}${hash}`;
+  }
+  params.delete('room');
+  const qs = params.toString();
+  const targetPath = normalized === DEFAULT_ROOM_PATH ? '/' : `/${encodeRoomPathForUrl(normalized)}`;
+  return `${targetPath}${qs ? `?${qs}` : ''}${hash}`;
 }
 
 /**
@@ -121,4 +168,12 @@ export function buildRoomBlueprintUrl(roomPath: string): string {
 
 export function buildRoomBlueprintPublishUrl(roomPath: string): string {
   return `/api/rooms/${encodeRoomPathForUrl(roomPath)}/blueprint/publish`;
+}
+
+export function buildRoomHistoryUrl(roomPath: string): string {
+  return `/api/rooms/${encodeRoomPathForUrl(roomPath)}/history`;
+}
+
+export function buildRoomRollbackUrl(roomPath: string): string {
+  return `/api/rooms/${encodeRoomPathForUrl(roomPath)}/rollback`;
 }

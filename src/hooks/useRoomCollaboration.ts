@@ -109,10 +109,24 @@ export function useRoomCollaboration({
           if (msg.t === 'state' && msg.blueprint) {
             const entries = auditBlueprintScripts(msg.blueprint);
             mergeTrustEntries(`协同房间 ${roomNameRef.current}`, entries);
+            if (msg.replace) {
+              maxSyncedMetaRef.current.clear();
+            }
             for (const n of Object.values(msg.blueprint.nodes ?? {})) recordSyncedMeta('node', n);
             for (const a of Object.values(msg.blueprint.annotations ?? {})) recordSyncedMeta('ann', a);
             for (const e of Object.values(msg.blueprint.edges ?? {})) recordSyncedMeta('edge', e);
             setBase((prev) => {
+              if (msg.replace) {
+                const replaced: BaseBlueprint = {
+                  version: (prev.version || 0) + 1,
+                  chunkSize: msg.blueprint.chunkSize ?? prev.chunkSize,
+                  nodes: msg.blueprint.nodes ?? {},
+                  annotations: msg.blueprint.annotations ?? {},
+                  edges: msg.blueprint.edges ?? {},
+                };
+                prevSyncedBaseRef.current = replaced;
+                return replaced;
+              }
               const merged = mergeRemoteBlueprintCRDT(prev, msg.blueprint);
               if (prevSyncedBaseRef.current) {
                 prevSyncedBaseRef.current = mergeRemoteBlueprintCRDT(prevSyncedBaseRef.current, msg.blueprint);

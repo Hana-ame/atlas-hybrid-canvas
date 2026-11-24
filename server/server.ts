@@ -53,6 +53,8 @@ const sharedStore = roomBlueprintRegistry.getStore();
 let roomServer: RoomServerHandle | null = null;
 
 /** 这些响应头没必要回传给浏览器，传了反而可能干扰。 */
+const INTERNAL_RPC_SECRET = crypto.randomBytes(24).toString('hex');
+
 const RPC_DROP_RES_HEADERS = new Set([
   'connection',
   'keep-alive',
@@ -111,6 +113,8 @@ function makeRpcHandler(port: number): RpcHandler {
       }
       // 标记来源，方便服务端日志区分"浏览器直连"与"经 WS 转发"。
       headers['x-atlas-rpc'] = '1';
+      headers['x-atlas-rpc-secret'] = INTERNAL_RPC_SECRET;
+      if (frame.clientIp) headers['x-atlas-rpc-ip'] = frame.clientIp;
       if (bodyBuf.length > 0) headers['content-length'] = bodyBuf.length;
 
       let settled = false;
@@ -228,6 +232,41 @@ function recordRpcStatus(_status: number): void {
 
 async function startServer() {
   const app = express();
+  const corsAllowedOrigins = new Set(
+    String(process.env.CORS_ALLOWED_ORIGINS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+  );
+
+  app.use((req, res, next) => {
+    const origin = String(req.header('origin') || '').trim();
+    if (origin && corsAllowedOrigins.has(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, X-Proxy-Token, X-Blueprint-Save-Key, X-Room-Path'
+      );
+      res.setHeader('Vary', 'Origin');
+      if (req.method === 'OPTIONS') {
+        res.status(204).end();
+        return;
+      }
+    }
+    next();
+  });
+
+  const getRealClientIp = (req: express.Request): string => {
+    const remote = req.socket.remoteAddress || '';
+    const isLoopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+    if (isLoopback && req.header('x-atlas-rpc-secret') === INTERNAL_RPC_SECRET) {
+      const rpcIp = String(req.header('x-atlas-rpc-ip') || '').trim();
+      if (rpcIp) return rpcIp;
+    }
+    return req.ip || remote || 'unknown';
+  };
   app.disable('x-powered-by');
   // PDF 上传改成直接传二进制（Content-Type: application/pdf），不再走 base64 JSON。
   // 原来的 base64 会把 15MB 膨胀成 20.00MB，正好撞上 express.json 的 limit，
@@ -247,28 +286,15 @@ async function startServer() {
   const upstreamBaseUrl = (process.env.PROXY_UPSTREAM_BASE_URL || '').trim();
   const allowedHosts = parseAllowedHosts(process.env.PROXY_ALLOWED_HOSTS);
   const proxyApiKey = (process.env.PROXY_API_KEY || '').trim();
-  const proxyClientToken = (process.env.PROXY_CLIENT_TOKEN || '').trim();
+  // 防自动化会话签名密钥（仅留 Node 侧读取，前端零静态密钥）
   const authSessionSecret = (process.env.AUTH_SESSION_SECRET || '').trim();
   const proxyRateLimitPerMin = Math.max(1, Number(process.env.PROXY_RATE_LIMIT_PER_MIN || 30));
   const proxyRateHits = new Map<string, number[]>();
 
-  const verifyStaticClientToken = (provided: string): boolean => {
-    if (!proxyClientToken) return !authSessionSecret;
-    if (!provided) return false;
-    const a = Buffer.from(provided, 'utf8');
-    const b = Buffer.from(proxyClientToken, 'utf8');
-    if (a.length !== b.length) return false;
-    return crypto.timingSafeEqual(a, b);
-  };
-
   const verifyProxyClientToken = (provided: string): boolean => {
-    if (!proxyClientToken && !authSessionSecret) return true;
+    if (!authSessionSecret) return true;
     if (!provided) return false;
-    const signingSecret = authSessionSecret || proxyClientToken;
-    if (signingSecret && verifySignedSessionToken(signingSecret, provided).valid) {
-      return true;
-    }
-    return Boolean(proxyClientToken) && verifyStaticClientToken(provided);
+    return verifySignedSessionToken(authSessionSecret, provided).valid;
   };
 
   // 服务健康检查探针（供 Docker/K8s/反向代理做存活与就绪检测）
@@ -277,7 +303,7 @@ async function startServer() {
       ok: true,
       status: 'up',
       uptimeSec: Math.round(process.uptime()),
-      authMode: authSessionSecret ? 'signed' : proxyClientToken ? 'static+signed' : 'open',
+      authMode: authSessionSecret ? 'session' : 'open',
     });
   });
 
@@ -290,39 +316,39 @@ async function startServer() {
     return '';
   };
 
-  // 签发短时效 HMAC-SHA256 会话令牌，并下发 HttpOnly Cookie 供同源 <img> 与 /ws 使用
+  // 签发短时效 HMAC-SHA256 会话令牌，并下发 HttpOnly Cookie 供 <img> 与 /ws 使用
   app.post('/api/auth/session', (req, res) => {
-    const provided = String(
-      req.header('x-proxy-token') || (req.body as { clientToken?: unknown } | undefined)?.clientToken || ''
-    ).trim();
-    // 安全兜底：只要启用了任意鉴权（PROXY_CLIENT_TOKEN 或 AUTH_SESSION_SECRET），
-    // 必须同时配置并校验通过静态引导凭证 PROXY_CLIENT_TOKEN，杜绝单配 AUTH_SESSION_SECRET 时无凭证白嫖令牌。
-    if (proxyClientToken || authSessionSecret) {
-      if (!proxyClientToken || !verifyStaticClientToken(provided)) {
-        res.status(401).json({
-          ok: false,
-          error: '凭证校验失败，无法签发会话令牌（启用鉴权时需配置并校验 PROXY_CLIENT_TOKEN）',
-        });
-        return;
-      }
+    const rl = checkProxyRateLimit(getRealClientIp(req));
+    if (!rl.ok) {
+      res.setHeader('Retry-After', String(rl.retryAfterSec ?? 10));
+      res.status(429).json({ ok: false, error: `会话签发过于频繁，请 ${rl.retryAfterSec} 秒后重试` });
+      return;
     }
-    const secret = authSessionSecret || proxyClientToken;
-    if (!secret) {
+    if (!authSessionSecret) {
       res.json({ ok: true, token: '', expiresInSec: 0, mode: 'open' });
       return;
     }
-    const sub = String((req.body as { cid?: unknown } | undefined)?.cid || req.ip || 'atlas-client');
+    const origin = String(req.header('origin') || '').trim();
+    const host = String(req.header('host') || '').trim();
+    const isSameOrigin = Boolean(origin && host && (origin === `http://${host}` || origin === `https://${host}`));
+    const isAllowedCorsOrigin = Boolean(origin && corsAllowedOrigins.has(origin));
+    if (origin && !isSameOrigin && !isAllowedCorsOrigin) {
+      res.status(403).json({ ok: false, error: '非法 Origin，拒绝签发会话令牌' });
+      return;
+    }
+    const sub = String((req.body as { cid?: unknown } | undefined)?.cid || getRealClientIp(req) || 'atlas-client');
     const ttlSec = 3600;
-    const token = issueSignedSessionToken(secret, sub, ttlSec);
+    const token = issueSignedSessionToken(authSessionSecret, sub, ttlSec);
     const isHttps = req.secure || String(req.header('x-forwarded-proto') || '').toLowerCase() === 'https';
+    const sameSite = isAllowedCorsOrigin && isHttps ? 'SameSite=None' : 'SameSite=Strict';
     const cookieParts = [
       `atlas_session=${encodeURIComponent(token)}`,
       'HttpOnly',
-      'SameSite=Strict',
+      sameSite,
       'Path=/',
       `Max-Age=${ttlSec}`,
     ];
-    if (isHttps) cookieParts.push('Secure');
+    if (isHttps || sameSite === 'SameSite=None') cookieParts.push('Secure');
     res.setHeader('Set-Cookie', cookieParts.join('; '));
     res.json({ ok: true, token, expiresInSec: ttlSec, mode: 'signed' });
   });
@@ -574,7 +600,7 @@ async function startServer() {
       path: req.originalUrl || req.url,
       headers,
       body,
-      clientId: req.ip || req.socket.remoteAddress || 'unknown',
+      clientId: getRealClientIp(req),
     };
   };
 
@@ -667,7 +693,71 @@ async function startServer() {
       res.status(404).json({ ok: false, error: '未实现的蓝图发布接口' });
       return;
     }
+    if (result.status === 200) {
+      const bp = (req.body as { blueprint?: unknown } | undefined)?.blueprint;
+      if (bp) {
+        await roomBlueprintRegistry.getStore(roomPath).recordHistory('publish', {
+          actor: getRealClientIp(req),
+          summary: '管理员发布蓝图',
+          blueprint: bp,
+        });
+        roomServer?.syncPublishedBlueprint(roomPath, bp);
+      }
+    }
     writeApiResult(res, result);
+  });
+
+  const verifySaveKey = (providedKey: string): boolean => {
+    if (!blueprintSaveKey || !providedKey) return false;
+    const a = Buffer.from(providedKey, 'utf8');
+    const b = Buffer.from(blueprintSaveKey, 'utf8');
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  };
+
+  app.get(/^\/api\/rooms\/(.+)\/history$/, requireClientAuth, async (req, res) => {
+    const roomPath = normalizeRoomPath(req.params[0]);
+    const entries = await roomBlueprintRegistry.getStore(roomPath).listHistory();
+    res.json({ ok: true, room: roomPath, entries });
+  });
+
+  app.get('/api/history', requireClientAuth, async (req, res) => {
+    const roomPath = normalizeRoomPath(String(req.query.room || req.header('x-room-path') || ''));
+    const entries = await roomBlueprintRegistry.getStore(roomPath).listHistory();
+    res.json({ ok: true, room: roomPath, entries });
+  });
+
+  const handleRollbackRequest = async (roomPath: string, req: express.Request, res: express.Response) => {
+    const saveKey = String(req.header('x-blueprint-save-key') || '').trim();
+    if (!blueprintSaveKey) {
+      res.status(403).json({ ok: false, error: '服务端未配置 BLUEPRINT_SAVE_KEY，禁止回档' });
+      return;
+    }
+    if (!verifySaveKey(saveKey)) {
+      res.status(401).json({ ok: false, error: '管理员保存密钥错误，拒绝回档' });
+      return;
+    }
+    const version = Number((req.body as { version?: unknown } | undefined)?.version);
+    if (!Number.isFinite(version) || version < 1) {
+      res.status(400).json({ ok: false, error: '缺少合法的目标版本号 version' });
+      return;
+    }
+    const out = await roomBlueprintRegistry.getStore(roomPath).rollbackToVersion(Math.trunc(version), getRealClientIp(req));
+    if (!out.ok) {
+      res.status(404).json({ ok: false, error: out.error || '版本不存在' });
+      return;
+    }
+    roomServer?.syncPublishedBlueprint(roomPath, out.blueprint);
+    res.json({ ok: true, room: roomPath, revision: out.revision, blueprint: out.blueprint, entry: out.entry });
+  };
+
+  app.post('/api/rollback', requireClientAuth, async (req, res) => {
+    const roomPath = normalizeRoomPath(String(req.query.room || req.header('x-room-path') || ''));
+    await handleRollbackRequest(roomPath, req, res);
+  });
+
+  app.post(/^\/api\/rooms\/(.+)\/rollback$/, requireClientAuth, async (req, res) => {
+    const roomPath = normalizeRoomPath(req.params[0]);
+    await handleRollbackRequest(roomPath, req, res);
   });
 
   for (const routePath of [
@@ -687,6 +777,18 @@ async function startServer() {
         res.status(404).json({ ok: false, error: `未实现的接口：${routePath}` });
         return;
       }
+      if (routePath === '/api/blueprint/publish' && result.status === 200) {
+        const targetRoom = normalizeRoomPath(requestedRoom);
+        const bp = (req.body as { blueprint?: unknown } | undefined)?.blueprint;
+        if (bp) {
+          await roomBlueprintRegistry.getStore(targetRoom).recordHistory('publish', {
+            actor: getRealClientIp(req),
+            summary: '管理员发布蓝图',
+            blueprint: bp,
+          });
+          roomServer?.syncPublishedBlueprint(targetRoom, bp);
+        }
+      }
       writeApiResult(res, result);
     });
   }
@@ -696,7 +798,7 @@ async function startServer() {
   const MAX_UPLOADED_PDFS = 20;
 
   app.get('/api/proxy/binary', async (req, res) => {
-    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    const clientIp = getRealClientIp(req);
     const rl = checkProxyRateLimit(clientIp);
     if (!rl.ok) {
       res.setHeader('Retry-After', String(rl.retryAfterSec ?? 10));
@@ -747,7 +849,7 @@ async function startServer() {
   });
 
   app.post('/api/pdf/upload', (req, res) => {
-    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    const clientIp = getRealClientIp(req);
     const rl = checkProxyRateLimit(clientIp);
     if (!rl.ok) {
       res.setHeader('Retry-After', String(rl.retryAfterSec ?? 10));
@@ -793,7 +895,7 @@ async function startServer() {
 
   // 解包远程 PDF URL 为逐页 PNG 图片（严格复用 SSRF/3xx/50MB 流式上限校验，且不与超时 controller 共用）
   app.post('/api/pdf/unpack', async (req, res) => {
-    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    const clientIp = getRealClientIp(req);
     const rl = checkProxyRateLimit(clientIp);
     if (!rl.ok) {
       res.setHeader('Retry-After', String(rl.retryAfterSec ?? 10));
@@ -855,7 +957,7 @@ async function startServer() {
 
   // 解包上传的本地 PDF 二进制为逐页 PNG 图片
   app.post('/api/pdf/unpack-upload', async (req, res) => {
-    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    const clientIp = getRealClientIp(req);
     const rl = checkProxyRateLimit(clientIp);
     if (!rl.ok) {
       res.setHeader('Retry-After', String(rl.retryAfterSec ?? 10));
@@ -995,7 +1097,7 @@ async function startServer() {
   });
 
   // 房间服务与 Express 共用同一个 HTTP server 与端口，靠 upgrade 事件按 /ws 分流。
-  roomServer = attachRoomServer(httpServer, '/ws', makeRpcHandler(PORT), DATA_DIR, verifyProxyClientToken);
+  roomServer = attachRoomServer(httpServer, '/ws', makeRpcHandler(PORT), DATA_DIR, verifyProxyClientToken, (rp) => roomBlueprintRegistry.getStore(rp));
 
   const shutdown = () => {
     void roomServer!.close().finally(() => {

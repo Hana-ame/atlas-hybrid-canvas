@@ -104,24 +104,38 @@ export function createFileBlueprintStore(dataDir: string): BlueprintStore {
   };
 }
 
-/** 读取协同房间持久化快照。 */
+/**
+ * 读取统一房间持久化文件中的蓝图快照（REST 与 WS 共用 `<dataDir>/rooms/<key>.json` 单一事实源）。
+ */
 export async function loadRoomSnapshotFile(
   dataDir: string,
   roomName: string
 ): Promise<Record<string, unknown> | null> {
   const filePath = path.join(dataDir, 'rooms', `${roomPathToFileKey(roomName)}.json`);
   const parsed = await safeReadJson<Record<string, unknown>>(filePath);
-  return parsed && typeof parsed === 'object' ? parsed : null;
+  if (!parsed || typeof parsed !== 'object') return null;
+  if ('blueprint' in parsed && parsed.blueprint && typeof parsed.blueprint === 'object') {
+    return parsed.blueprint as Record<string, unknown>;
+  }
+  return parsed;
 }
 
-/** 原子保存协同房间快照。 */
+/**
+ * 原子保存统一房间文件中的蓝图快照（保留既有 revision，与 REST 蓝图读写共用同一文件）。
+ */
 export async function saveRoomSnapshotFile(
   dataDir: string,
   roomName: string,
   snapshot: Record<string, unknown>
 ): Promise<void> {
   const filePath = path.join(dataDir, 'rooms', `${roomPathToFileKey(roomName)}.json`);
-  await atomicWriteJson(filePath, snapshot);
+  const existing = await safeReadJson<Partial<PersistedBlueprintFile>>(filePath);
+  const rev = existing && typeof existing.revision === 'number' && existing.revision >= 1 ? existing.revision : 1;
+  await atomicWriteJson(filePath, {
+    revision: rev,
+    blueprint: snapshot,
+    updatedAt: Date.now(),
+  } satisfies PersistedBlueprintFile);
 }
 
 
@@ -143,10 +157,42 @@ export function roomPathToFileKey(roomPath: string): string {
   return `${slug}__${hash}`;
 }
 
-function createSingleFileBlueprintStore(filePath: string): BlueprintStore {
+export type RoomHistoryAction = 'publish' | 'collab' | 'rollback';
+
+export interface RoomHistoryMeta {
+  version: number;
+  ts: number;
+  action: RoomHistoryAction;
+  actor: string;
+  summary: string;
+}
+
+export interface RoomHistoryEntry extends RoomHistoryMeta {
+  blueprint: unknown;
+}
+
+export interface RoomBlueprintStore extends BlueprintStore {
+  recordHistory: (
+    action: RoomHistoryAction,
+    opts?: { actor?: string; summary?: string; blueprint?: unknown }
+  ) => Promise<RoomHistoryMeta | null>;
+  listHistory: () => Promise<RoomHistoryMeta[]>;
+  rollbackToVersion: (
+    version: number,
+    actor?: string
+  ) => Promise<{ ok: boolean; revision: number; blueprint: unknown; entry?: RoomHistoryMeta; error?: string }>;
+}
+
+const MAX_HISTORY_ENTRIES = 50;
+
+function createSingleFileBlueprintStore(filePath: string): RoomBlueprintStore {
+  const historyPath = filePath.replace(/\.json$/i, '.history.json');
   let loaded = false;
   let revision = 1;
   let blueprint: unknown = null;
+  let historyLoaded = false;
+  let historyEntries: RoomHistoryEntry[] = [];
+  let lastBlueprintJson = '';
   let writeChain: Promise<void> = Promise.resolve();
 
   const ensureLoaded = async (): Promise<void> => {
@@ -156,11 +202,32 @@ function createSingleFileBlueprintStore(filePath: string): BlueprintStore {
     if (saved && typeof saved === 'object') {
       const r = Number(saved.revision);
       if (Number.isFinite(r) && r >= 1) revision = Math.trunc(r);
-      if (saved.blueprint !== undefined) blueprint = saved.blueprint;
+      if (saved.blueprint !== undefined) {
+        blueprint = saved.blueprint;
+        try {
+          lastBlueprintJson = JSON.stringify(blueprint);
+        } catch {
+          lastBlueprintJson = '';
+        }
+      }
     }
   };
 
-  const enqueuePersist = (): Promise<void> => {
+  const ensureHistoryLoaded = async (): Promise<void> => {
+    if (historyLoaded) return;
+    historyLoaded = true;
+    const saved = await safeReadJson<RoomHistoryEntry[]>(historyPath);
+    if (Array.isArray(saved)) {
+      historyEntries = saved.filter(
+        (e) => e && typeof e === 'object' && typeof e.version === 'number' && typeof e.ts === 'number'
+      );
+      if (historyEntries.length > MAX_HISTORY_ENTRIES) {
+        historyEntries = historyEntries.slice(-MAX_HISTORY_ENTRIES);
+      }
+    }
+  };
+
+  const enqueuePersistMain = (): Promise<void> => {
     const snap: PersistedBlueprintFile = {
       revision,
       blueprint,
@@ -168,6 +235,14 @@ function createSingleFileBlueprintStore(filePath: string): BlueprintStore {
     };
     writeChain = writeChain
       .then(() => atomicWriteJson(filePath, snap))
+      .catch(() => {});
+    return writeChain;
+  };
+
+  const enqueuePersistHistory = (): Promise<void> => {
+    const snap = historyEntries.slice(-MAX_HISTORY_ENTRIES);
+    writeChain = writeChain
+      .then(() => atomicWriteJson(historyPath, snap))
       .catch(() => {});
     return writeChain;
   };
@@ -180,7 +255,7 @@ function createSingleFileBlueprintStore(filePath: string): BlueprintStore {
     async writeRevision(rev: number) {
       await ensureLoaded();
       revision = rev;
-      await enqueuePersist();
+      await enqueuePersistMain();
     },
     async readBlueprint() {
       await ensureLoaded();
@@ -189,51 +264,176 @@ function createSingleFileBlueprintStore(filePath: string): BlueprintStore {
     async writeBlueprint(bp: unknown) {
       await ensureLoaded();
       blueprint = bp;
-      await enqueuePersist();
+      try {
+        lastBlueprintJson = JSON.stringify(bp);
+      } catch {
+        lastBlueprintJson = '';
+      }
+      await enqueuePersistMain();
       return true;
+    },
+    async recordHistory(action, opts) {
+      await ensureLoaded();
+      await ensureHistoryLoaded();
+      const targetBp = opts?.blueprint !== undefined ? opts.blueprint : blueprint;
+      if (!targetBp || typeof targetBp !== 'object') return null;
+      let serialized = '';
+      try {
+        serialized = JSON.stringify(targetBp);
+      } catch {
+        return null;
+      }
+      const latest = historyEntries[historyEntries.length - 1];
+      if (action === 'collab' && latest) {
+        try {
+          if (JSON.stringify(latest.blueprint) === serialized) return null;
+        } catch {
+          // ignore
+        }
+      }
+      const nextVersion = (latest?.version ?? 0) + 1;
+      const entry: RoomHistoryEntry = {
+        version: nextVersion,
+        ts: Date.now(),
+        action,
+        actor: String(opts?.actor || 'system').slice(0, 80),
+        summary: String(
+          opts?.summary ||
+            (action === 'publish' ? '发布蓝图' : action === 'rollback' ? '版本回档' : '协同变更')
+        ).slice(0, 120),
+        blueprint: JSON.parse(serialized),
+      };
+      historyEntries.push(entry);
+      if (historyEntries.length > MAX_HISTORY_ENTRIES) {
+        historyEntries = historyEntries.slice(-MAX_HISTORY_ENTRIES);
+      }
+      await enqueuePersistHistory();
+      return {
+        version: entry.version,
+        ts: entry.ts,
+        action: entry.action,
+        actor: entry.actor,
+        summary: entry.summary,
+      };
+    },
+    async listHistory() {
+      await ensureHistoryLoaded();
+      return historyEntries
+        .slice()
+        .reverse()
+        .map(({ version, ts, action, actor, summary }) => ({
+          version,
+          ts,
+          action,
+          actor,
+          summary,
+        }));
+    },
+    async rollbackToVersion(version, actor = 'admin') {
+      await ensureLoaded();
+      await ensureHistoryLoaded();
+      const target = historyEntries.find((e) => e.version === version);
+      if (!target) {
+        return { ok: false, revision, blueprint, error: `未找到版本 v${version}` };
+      }
+      let cloned: unknown;
+      try {
+        cloned = JSON.parse(JSON.stringify(target.blueprint));
+      } catch {
+        cloned = target.blueprint;
+      }
+      blueprint = cloned;
+      revision += 1;
+      try {
+        lastBlueprintJson = JSON.stringify(cloned);
+      } catch {
+        lastBlueprintJson = '';
+      }
+      await enqueuePersistMain();
+
+      const latest = historyEntries[historyEntries.length - 1];
+      const rollbackEntry: RoomHistoryEntry = {
+        version: (latest?.version ?? 0) + 1,
+        ts: Date.now(),
+        action: 'rollback',
+        actor: String(actor || 'admin').slice(0, 80),
+        summary: `回档至 v${version}`,
+        blueprint: JSON.parse(lastBlueprintJson || 'null'),
+      };
+      historyEntries.push(rollbackEntry);
+      if (historyEntries.length > MAX_HISTORY_ENTRIES) {
+        historyEntries = historyEntries.slice(-MAX_HISTORY_ENTRIES);
+      }
+      await enqueuePersistHistory();
+      return {
+        ok: true,
+        revision,
+        blueprint: cloned,
+        entry: {
+          version: rollbackEntry.version,
+          ts: rollbackEntry.ts,
+          action: rollbackEntry.action,
+          actor: rollbackEntry.actor,
+          summary: rollbackEntry.summary,
+        },
+      };
     },
   };
 }
 
 /**
- * 按房间路径隔离的 BlueprintStore 注册表：
- * - 默认房间（`atlas-main` / `default`）沿用 `<dataDir>/blueprint.json` 兼容既有部署；
- * - 其余路径房间各自落盘到 `<dataDir>/room-blueprints/<roomPathToFileKey>.json`。
+ * 按房间路径隔离的统一房间存储注册表（有界 LRU 缓存，REST 与 WS 共用同一实例与同一串行写队列）：
+ * - 主状态落盘到 `<dataDir>/rooms/<roomPathToFileKey>.json`；
+ * - 修改日志与回档快照落盘到 `<dataDir>/rooms/<roomPathToFileKey>.history.json`。
  */
-export function createRoomBlueprintStoreRegistry(dataDir: string): {
-  getStore: (roomPath?: string | null) => BlueprintStore;
+export function createRoomBlueprintStoreRegistry(
+  dataDir: string,
+  maxCachedStores = 100
+): {
+  getStore: (roomPath?: string | null) => RoomBlueprintStore;
+  cachedCount: () => number;
 } {
-  const stores = new Map<string, BlueprintStore>();
+  const cap = Math.max(1, Math.floor(maxCachedStores));
+  const stores = new Map<string, RoomBlueprintStore>();
   return {
-    getStore(roomPath?: string | null): BlueprintStore {
+    getStore(roomPath?: string | null): RoomBlueprintStore {
       const normalized = normalizeRoomPath(roomPath);
       const isDefault = normalized === DEFAULT_ROOM_PATH || normalized === 'default';
       const cacheKey = isDefault ? DEFAULT_ROOM_PATH : normalized;
-      let existing = stores.get(cacheKey);
-      if (!existing) {
-        const targetFile = isDefault
-          ? path.join(dataDir, 'blueprint.json')
-          : path.join(dataDir, 'room-blueprints', `${roomPathToFileKey(normalized)}.json`);
-        existing = createSingleFileBlueprintStore(targetFile);
+      const existing = stores.get(cacheKey);
+      if (existing) {
+        stores.delete(cacheKey);
         stores.set(cacheKey, existing);
+        return existing;
       }
-      return existing;
+      const targetFile = path.join(dataDir, 'rooms', `${roomPathToFileKey(cacheKey)}.json`);
+      const created = createSingleFileBlueprintStore(targetFile);
+      stores.set(cacheKey, created);
+      while (stores.size > cap) {
+        const oldest = stores.keys().next().value;
+        if (oldest === undefined) break;
+        stores.delete(oldest);
+      }
+      return created;
+    },
+    cachedCount(): number {
+      return stores.size;
     },
   };
 }
 
-/** 列出已落盘的房间快照与蓝图文件键。 */
+/** 列出已落盘的房间文件键（排除 .history.json）。 */
 export async function listPersistedRooms(dataDir: string): Promise<string[]> {
   const keys = new Set<string>();
-  for (const sub of ['rooms', 'room-blueprints']) {
-    try {
-      const entries = await fs.readdir(path.join(dataDir, sub));
-      for (const name of entries) {
-        if (name.endsWith('.json')) keys.add(name.slice(0, -5));
+  try {
+    const entries = await fs.readdir(path.join(dataDir, 'rooms'));
+    for (const name of entries) {
+      if (name.endsWith('.json') && !name.endsWith('.history.json')) {
+        keys.add(name.slice(0, -5));
       }
-    } catch {
-      // 目录尚未创建时忽略
     }
+  } catch {
+    // 目录尚未创建时忽略
   }
   return Array.from(keys).sort();
 }

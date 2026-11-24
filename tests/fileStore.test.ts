@@ -7,6 +7,7 @@ import {
   createFileBlueprintStore,
   loadRoomSnapshotFile,
   sanitizeRoomFileKey,
+  createRoomBlueprintStoreRegistry,
   saveRoomSnapshotFile,
 } from '../server/fileStore.ts';
 
@@ -51,6 +52,47 @@ test('sanitizeRoomFileKey() blocks path traversal and saves/loads room snapshots
     await saveRoomSnapshotFile(tmpDir, 'design-room-1', snap);
     const loaded = await loadRoomSnapshotFile(tmpDir, 'design-room-1');
     assert.deepEqual(loaded, snap);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('createRoomBlueprintStoreRegistry() records modification history, deduplicates identical collab saves, and rolls back cleanly', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'atlas-history-'));
+  try {
+    const reg = createRoomBlueprintStoreRegistry(tmpDir);
+    const store = reg.getStore('team/doc');
+
+    const bp1 = { nodes: { n1: { id: 'n1', title: 'v1' } }, annotations: {}, edges: {} };
+    await store.writeBlueprint(bp1);
+    const h1 = await store.recordHistory('publish', { actor: 'admin', summary: '初始发布', blueprint: bp1 });
+    assert.equal(h1?.version, 1);
+
+    const dup = await store.recordHistory('collab', { blueprint: bp1 });
+    assert.equal(dup, null);
+
+    const bp2 = { nodes: { n1: { id: 'n1', title: 'v2' }, n2: { id: 'n2', title: 'extra' } }, annotations: {}, edges: {} };
+    await store.writeBlueprint(bp2);
+    const h2 = await store.recordHistory('collab', { actor: 'ws', summary: '协同新增 n2', blueprint: bp2 });
+    assert.equal(h2?.version, 2);
+
+    const listBefore = await store.listHistory();
+    assert.deepEqual(
+      listBefore.map((e) => e.version),
+      [2, 1]
+    );
+
+    const rb = await store.rollbackToVersion(1, 'admin');
+    assert.equal(rb.ok, true);
+    assert.deepEqual(rb.blueprint, bp1);
+    assert.deepEqual(await store.readBlueprint(), bp1);
+
+    const reg2 = createRoomBlueprintStoreRegistry(tmpDir);
+    const store2 = reg2.getStore('team/doc');
+    assert.deepEqual(await store2.readBlueprint(), bp1);
+    const listAfter = await store2.listHistory();
+    assert.equal(listAfter[0].action, 'rollback');
+    assert.equal(listAfter[0].version, 3);
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }

@@ -61,11 +61,13 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Run unit tests
-        run: npm test
-
+      # tests/serverIntegration.test.ts 会 spawn `node dist-server/server.mjs` 起真后端，
+      # 所以服务端包必须先构建，再跑测试。
       - name: Build server bundle
         run: npm run build:server
+
+      - name: Run unit tests
+        run: npm test
 
       - name: Build
         env:

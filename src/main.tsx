@@ -14,9 +14,7 @@ import { CanvasErrorBoundary } from './components/CanvasErrorBoundary';
 // 会要求构建 target 提到 es2022，而 Vite 默认 es2020 会直接报
 // "Top-level await is not available in the configured target environment"。
 installMockApi();
-if (import.meta.env.VITE_BACKEND_WS_URL || import.meta.env.VITE_PROXY_CLIENT_TOKEN) {
-  void initAuthSession();
-}
+void initAuthSession();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

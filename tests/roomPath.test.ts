@@ -6,6 +6,7 @@ import path from 'node:path';
 import {
   DEFAULT_ROOM_PATH,
   buildRoomBlueprintPublishUrl,
+  buildBrowserRoomUrl,
   buildRoomBlueprintUrl,
   buildRoomWsUrl,
   extractRoomPathFromBrowserLocation,
@@ -84,6 +85,30 @@ test('createRoomBlueprintStoreRegistry() isolates blueprints and revisions acros
     assert.equal(await reg2.getStore('team/alpha').readRevision(), 5);
     assert.deepEqual(await reg2.getStore('team/beta').readBlueprint(), { nodes: { b: { id: 'b' } } });
     assert.equal(await reg2.getStore('team/beta').readRevision(), 2);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('extractRoomPathFromBrowserLocation() strips GitHub Pages basePath and uses ?room= cleanly', () => {
+  assert.equal(extractRoomPathFromBrowserLocation('/atlas-canvas/', '/atlas-canvas/', ''), DEFAULT_ROOM_PATH);
+  assert.equal(extractRoomPathFromBrowserLocation('/atlas-canvas/index.html', '/atlas-canvas/', ''), DEFAULT_ROOM_PATH);
+  assert.equal(extractRoomPathFromBrowserLocation('/atlas-canvas/', '/atlas-canvas/', '?room=team%2Fdesign'), 'team/design');
+  assert.equal(extractRoomPathFromBrowserLocation('/atlas-canvas/proj-a', '/atlas-canvas/', ''), 'proj-a');
+  assert.equal(buildBrowserRoomUrl('team/design', '/atlas-canvas/', '', ''), '/atlas-canvas/?room=team%2Fdesign');
+  assert.equal(buildBrowserRoomUrl('atlas-main', '/atlas-canvas/', '?room=team%2Fdesign', ''), '/atlas-canvas/');
+  assert.equal(buildBrowserRoomUrl('team/design', '/', '', ''), '/team/design');
+});
+
+test('createRoomBlueprintStoreRegistry() enforces bounded LRU cache size without losing disk data', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'atlas-room-lru-'));
+  try {
+    const reg = createRoomBlueprintStoreRegistry(tmpDir, 2);
+    await reg.getStore('r1').writeBlueprint({ nodes: { a: 1 } });
+    await reg.getStore('r2').writeBlueprint({ nodes: { b: 2 } });
+    await reg.getStore('r3').writeBlueprint({ nodes: { c: 3 } });
+    assert.equal(reg.cachedCount(), 2);
+    assert.deepEqual(await reg.getStore('r1').readBlueprint(), { nodes: { a: 1 } });
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }

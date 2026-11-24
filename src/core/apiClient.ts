@@ -1,14 +1,10 @@
 /**
  * @file apiClient.ts
- * @description 前端调用 /api/* 时统一补上 X-Proxy-Token 的工具，并管理 /api/auth/session 短时效签名令牌的自动换取与续期。
- *
- * 支持两种令牌来源（运行时签名会话令牌优先于构建期静态令牌）：
- * 1. 运行时从 POST /api/auth/session 换取的短时效 HMAC-SHA256 签名令牌（initAuthSession / setRuntimeProxyToken）；
- * 2. 构建期注入的 VITE_PROXY_CLIENT_TOKEN（兼容旧版静态部署）。
+ * @description 前端会话令牌管理（零硬编码静态密钥）：
+ * - 纯前端静态 mock 模式完全匿名；
+ * - 连后端模式下由 Node 侧 POST /api/auth/session 签发短时效防自动化 HMAC 会话令牌与 HttpOnly Cookie；
+ * - 管理密钥（BLUEPRINT_SAVE_KEY）与上游密钥（PROXY_API_KEY）仅留在 Node 侧，前端包内绝不包含任何静态密钥。
  */
-const STATIC_CLIENT_TOKEN = String(
-  (typeof import.meta !== 'undefined' && (import.meta as { env?: Record<string, unknown> }).env?.VITE_PROXY_CLIENT_TOKEN) || ''
-).trim();
 
 let runtimeSessionToken = '';
 let runtimeExpiresAt = 0;
@@ -16,7 +12,7 @@ let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let inflightRefresh: Promise<string> | null = null;
 let initialAuthPromise: Promise<string> | null = null;
 
-/** 注入运行时从 /api/auth/session 获取的短时效签名会话令牌。 */
+/** 注入运行时从 /api/auth/session 获取的短时效防自动化会话令牌。 */
 export function setRuntimeProxyToken(token: string, expiresInSec?: number): void {
   runtimeSessionToken = String(token || '').trim();
   runtimeExpiresAt =
@@ -29,7 +25,7 @@ export function getActiveProxyToken(): string {
   if (runtimeSessionToken && (!runtimeExpiresAt || Date.now() < runtimeExpiresAt)) {
     return runtimeSessionToken;
   }
-  return STATIC_CLIENT_TOKEN;
+  return '';
 }
 
 export function stopAuthSessionRefresh(): void {
@@ -47,8 +43,8 @@ export function getAuthSessionState(): { hasRuntimeToken: boolean; expiresAt: nu
 }
 
 /**
- * 向 POST /api/auth/session 换取短时效 HMAC-SHA256 会话令牌，并在到期前自动静默续期。
- * 并发调用会自动合并为单次请求；在纯本地 mock 或开放模式下优雅降级且不抛错。
+ * 向 POST /api/auth/session 申请短时效防自动化会话令牌与 HttpOnly Cookie，并在到期前自动续期。
+ * 并发调用自动去重；在纯静态匿名 mock 模式下返回 mode='open' 并静默降级。
  */
 export async function refreshAuthSession(options?: {
   fetchImpl?: typeof fetch;
@@ -63,11 +59,9 @@ export async function refreshAuthSession(options?: {
 
   inflightRefresh = (async () => {
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (STATIC_CLIENT_TOKEN) headers['X-Proxy-Token'] = STATIC_CLIENT_TOKEN;
       const resp = await fetchFn('/api/auth/session', {
         method: 'POST',
-        headers,
+        headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
         body: JSON.stringify({ cid: options?.cid || 'atlas-web' }),
       });
@@ -83,7 +77,6 @@ export async function refreshAuthSession(options?: {
         setRuntimeProxyToken(data.token, ttl);
         if (scheduleNext) {
           stopAuthSessionRefresh();
-          // 在 TTL 的 80% 处提前静默续期（最短 30 秒）
           const delayMs = Math.max(30_000, Math.round(ttl * 0.8 * 1000));
           refreshTimer = setTimeout(() => {
             void refreshAuthSession({ cid: options?.cid, scheduleNext: true });
@@ -102,13 +95,13 @@ export async function refreshAuthSession(options?: {
   return inflightRefresh;
 }
 
-/** 应用启动时调用一次，自动换取并维持短时效签名会话令牌。 */
+/** 应用启动时调用一次，自动申请防自动化会话令牌（纯静态模式下走本地 apiCore 直接返回 open，无网络噪音）。 */
 export function initAuthSession(cid?: string): Promise<string> {
   initialAuthPromise = refreshAuthSession({ cid, scheduleNext: true });
   return initialAuthPromise;
 }
 
-/** 等待启动期会话鉴权完成（若未启用或超时则立即放行，避免首屏请求与 Set-Cookie 竞态）。 */
+/** 等待启动期会话申请完成（超时自动放行，避免阻塞首屏）。 */
 export async function waitForAuthSessionReady(timeoutMs = 2000): Promise<void> {
   if (!initialAuthPromise) return;
   await Promise.race([
@@ -124,17 +117,14 @@ function encodeBase64Url(input: string): string {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-/**
- * 构造 WebSocket 鉴权子协议列表（`Sec-WebSocket-Protocol`）：
- * 既不在 URL 中泄露令牌，也能在跨源 WS 建连时携带有效鉴权凭证。
- */
+/** 构造 WebSocket 鉴权子协议列表（不向 URL 拼接任何令牌）。 */
 export function buildWsAuthProtocols(): string[] {
   const token = getActiveProxyToken();
   if (!token) return [];
   return ['atlas-v1', `atlas-auth.${encodeBase64Url(token)}`];
 }
 
-/** 合并业务需要的头，并在存在有效令牌时补上 X-Proxy-Token。 */
+/** 合并业务请求头，存在运行时会话令牌时补上 X-Proxy-Token。 */
 export function proxyHeaders(extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = { ...(extra ?? {}) };
   const token = getActiveProxyToken();
@@ -142,10 +132,7 @@ export function proxyHeaders(extra?: Record<string, string>): Record<string, str
   return headers;
 }
 
-/**
- * 返回安全的资源 URL：同源 <img> 与 /ws 请求依赖 /api/auth/session 下发的 HttpOnly Cookie 鉴权，
- * 不再将长期有效的签名 bearer token 拼入 URL 查询参数，避免泄露到浏览器历史、Referer 与代理访问日志。
- */
+/** 保持 URL 干净（同源 <img> 与 /ws 依赖 HttpOnly Cookie，绝不把令牌拼进查询参数）。 */
 export function appendProxyTokenQuery(url: string): string {
   return url;
 }

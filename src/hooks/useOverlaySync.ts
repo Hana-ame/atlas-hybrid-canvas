@@ -27,10 +27,20 @@ export function useOverlaySync(
   isReady: boolean,
   setOverlay: Dispatch<SetStateAction<LocalOverlayState>>,
   onRemoteNotice?: (msg: string) => void,
-  onRemoteApplied?: () => void
+  onRemoteApplied?: () => void,
+  roomPath?: string
 ) {
   const lastSyncedFingerprintRef = useRef<string>('');
   const hydratedInitRef = useRef(false);
+  const prevRoomRef = useRef<string | undefined>(roomPath);
+
+  useEffect(() => {
+    if (prevRoomRef.current !== roomPath) {
+      prevRoomRef.current = roomPath;
+      hydratedInitRef.current = false;
+      lastSyncedFingerprintRef.current = '';
+    }
+  }, [roomPath]);
 
   // 防抖落盘（300ms 合并高频输入/勾选），首次水合仅建立指纹基线，绝不向其他页签广播旧快照
   useEffect(() => {
@@ -45,8 +55,8 @@ export function useOverlaySync(
       return;
     }
     lastSyncedFingerprintRef.current = fp;
-    scheduleSaveLocalOverlay(overlay, 300);
-  }, [overlay, isReady]);
+    scheduleSaveLocalOverlay(overlay, 300, roomPath);
+  }, [overlay, isReady, roomPath]);
 
   // 关闭/隐藏页签前兜底立即刷盘
   useEffect(() => {
@@ -70,6 +80,6 @@ export function useOverlaySync(
       setOverlay(remoteOverlay);
       onRemoteApplied?.();
       onRemoteNotice?.('已自动同步同一浏览器其他标签页的本地修改');
-    });
-  }, [isReady, setOverlay, onRemoteNotice, onRemoteApplied]);
+    }, roomPath);
+  }, [isReady, setOverlay, onRemoteNotice, onRemoteApplied, roomPath]);
 }
