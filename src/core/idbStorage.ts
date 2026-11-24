@@ -154,22 +154,43 @@ export async function idbCacheGet<T>(key: string): Promise<T | null> {
   });
 }
 
-/** 写入冷缓存条目，并在超出 maxEntries 时自动按 LRU 淘汰最久未访问条目。 */
+function resolveCacheNamespace(key: string, explicitPrefix?: string): string {
+  if (explicitPrefix !== undefined) return explicitPrefix;
+  const colonIdx = key.indexOf(':');
+  return colonIdx > 0 ? key.slice(0, colonIdx + 1) : '';
+}
+
+function belongsToNamespace(key: string, ns: string): boolean {
+  if (ns) return key.startsWith(ns);
+  return !key.includes(':');
+}
+
+/**
+ * 写入冷缓存条目，并按命名空间前缀（默认取首个 `:` 前缀，如 `pdf:`、`hist:`）独立执行 LRU 淘汰，
+ * 防止不同子系统的冷缓存互相挤出（串味）。
+ */
 export async function idbCacheSet<T>(
   key: string,
   value: T,
-  maxEntries = DEFAULT_CACHE_MAX_ENTRIES
+  maxEntries = DEFAULT_CACHE_MAX_ENTRIES,
+  namespacePrefix?: string
 ): Promise<boolean> {
   const cap = Math.max(1, Math.floor(maxEntries));
+  const ns = resolveCacheNamespace(key, namespacePrefix);
   const now = Date.now();
   const db = await openDB();
   if (!db) {
     memoryCacheFallback.delete(key);
     memoryCacheFallback.set(key, { key, value, touchedAt: now });
-    while (memoryCacheFallback.size > cap) {
-      const oldestKey = memoryCacheFallback.keys().next().value;
-      if (oldestKey === undefined) break;
-      memoryCacheFallback.delete(oldestKey);
+    const scopedKeys: string[] = [];
+    for (const k of memoryCacheFallback.keys()) {
+      if (belongsToNamespace(k, ns)) scopedKeys.push(k);
+    }
+    let excess = scopedKeys.length - cap;
+    for (const k of scopedKeys) {
+      if (excess <= 0) break;
+      memoryCacheFallback.delete(k);
+      excess -= 1;
     }
     return true;
   }
@@ -179,20 +200,21 @@ export async function idbCacheSet<T>(
       const store = tx.objectStore(CACHE_STORE_NAME);
       store.put({ key, value, touchedAt: now } satisfies CacheRecord<T>);
 
-      const countReq = store.count();
-      countReq.onsuccess = () => {
-        const excess = countReq.result - cap;
-        if (excess <= 0) return;
-        let removed = 0;
-        const idx = store.index('by_touchedAt');
-        const cursorReq = idx.openCursor();
-        cursorReq.onsuccess = () => {
-          const cursor = cursorReq.result;
-          if (!cursor || removed >= excess) return;
-          cursor.delete();
-          removed += 1;
+      const idx = store.index('by_touchedAt');
+      const matchedKeys: IDBValidKey[] = [];
+      const scanReq = idx.openCursor();
+      scanReq.onsuccess = () => {
+        const cursor = scanReq.result;
+        if (cursor) {
+          const pk = String(cursor.primaryKey ?? '');
+          if (belongsToNamespace(pk, ns)) matchedKeys.push(cursor.primaryKey);
           cursor.continue();
-        };
+          return;
+        }
+        const excess = matchedKeys.length - cap;
+        for (let i = 0; i < excess; i++) {
+          store.delete(matchedKeys[i]);
+        }
       };
 
       tx.oncomplete = () => resolve(true);

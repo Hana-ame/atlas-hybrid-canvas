@@ -9,6 +9,7 @@
  * 5. 提供左侧所见即所得拖放模板库、右侧属性脚本编辑器及带 X-Blueprint-Save-Key 鉴权的保存弹窗。
  */
 
+import { DEFAULT_ROOM_PATH, buildRoomBlueprintPublishUrl, buildRoomBlueprintUrl, encodeRoomPathForUrl, extractRoomPathFromBrowserLocation, normalizeRoomPath } from './core/roomPath';
 import {
   Suspense,
   lazy,
@@ -93,7 +94,7 @@ import {
 } from './core/scriptSandbox';
 import { useBlueprintHistory } from './hooks/useBlueprintHistory';
 import { useOverlaySync } from './hooks/useOverlaySync';
-import { proxyHeaders } from './core/apiClient';
+import { proxyHeaders, waitForAuthSessionReady } from './core/apiClient';
 import { defaultRoomWsUrl, hasBackend } from './core/runtimeConfig';
 import { createSeedBlueprint, spawnStressChunks } from './core/seedBlueprint';
 import {
@@ -183,9 +184,33 @@ function HybridCanvasWorkspace() {
   // 4) 多人实时协同房间（WebSocket + CRDT）
   const [roomModalOpen, setRoomModalOpen] = useState(false);
   const [roomWsUrl, setRoomWsUrl] = useState(() => defaultRoomWsUrl());
-  const [roomName, setRoomName] = useState('atlas-main');
+  const [roomName, setRoomName] = useState(() =>
+    typeof window !== 'undefined' ? extractRoomPathFromBrowserLocation(window.location.pathname) : DEFAULT_ROOM_PATH
+  );
   const roomNameRef = useRef(roomName);
   roomNameRef.current = roomName;
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const normalized = normalizeRoomPath(roomName);
+    const targetPath = normalized === DEFAULT_ROOM_PATH ? '/' : `/${encodeRoomPathForUrl(normalized)}`;
+    if (window.location.pathname !== targetPath) {
+      try {
+        window.history.replaceState(null, '', `${targetPath}${window.location.search}${window.location.hash}`);
+      } catch {
+        // 某些嵌入式沙箱不允许 replaceState 时静默忽略
+      }
+    }
+  }, [roomName]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onPopState = () => {
+      setRoomName(extractRoomPathFromBrowserLocation(window.location.pathname));
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
   const [roomStatus, setRoomStatus] = useState<RoomStatus>('disconnected');
   const [statusLog, setStatusLog] = useState<string>('');
   const [scriptLogsByNode, setScriptLogsByNode] = useState<Record<string, ScriptConsoleEntry[]>>({});
@@ -409,7 +434,7 @@ function HybridCanvasWorkspace() {
     tileCacheRef.current.clear();
   }, [annotationEditMode]);
 
-  // 启动时从 IndexedDB 恢复本地叠加层、自定义模板与已发布底座
+  // 启动时从 IndexedDB 恢复本地叠加层与自定义模板
   useEffect(() => {
     let active = true;
     void (async () => {
@@ -417,19 +442,6 @@ function HybridCanvasWorkspace() {
         loadLocalOverlay(),
         loadCustomTemplates(),
       ]);
-      if (!active) return;
-      try {
-        const resp = await fetch('/api/blueprint');
-        if (resp.ok) {
-          const data = (await resp.json()) as { ok?: boolean; blueprint?: BaseBlueprint | null };
-          if (active && data.ok && data.blueprint && data.blueprint.nodes) {
-            renderedScriptsRef.current.clear();
-            setBase(data.blueprint);
-          }
-        }
-      } catch {
-        // 离线或无后端时继续使用种子蓝图
-      }
       if (!active) return;
       overlayHydratedRef.current = true;
       setOverlayHydrated(true);
@@ -441,6 +453,42 @@ function HybridCanvasWorkspace() {
       active = false;
     };
   }, []);
+
+  // 按当前房间路径加载独立蓝图（首次加载及切换房间 / 浏览器前进后退均自动重新拉取）
+  const initialRoomLoadRef = useRef(true);
+  useEffect(() => {
+    let active = true;
+    const isInitial = initialRoomLoadRef.current;
+    initialRoomLoadRef.current = false;
+    void (async () => {
+      await waitForAuthSessionReady();
+      if (!active) return;
+      try {
+        const resp = await fetch(buildRoomBlueprintUrl(roomName), {
+          headers: proxyHeaders(),
+          credentials: 'same-origin',
+        });
+        if (resp.ok) {
+          const data = (await resp.json()) as { ok?: boolean; blueprint?: BaseBlueprint | null };
+          if (!active) return;
+          if (data.ok && data.blueprint && data.blueprint.nodes) {
+            renderedScriptsRef.current.clear();
+            setBase(data.blueprint);
+            setChunkSyncTick((t) => t + 1);
+          } else if (!isInitial) {
+            renderedScriptsRef.current.clear();
+            setBase(createSeedBlueprint());
+            setChunkSyncTick((t) => t + 1);
+          }
+        }
+      } catch {
+        // 离线或无后端时保留当前/种子蓝图
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [roomName]);
 
   // 本地叠加层 300ms 防抖写盘 + beforeunload 刷盘 + BroadcastChannel 跨页签防回环同步
   const handleRemoteOverlayApplied = useCallback(() => setChunkSyncTick((t) => t + 1), []);
@@ -646,12 +694,10 @@ function HybridCanvasWorkspace() {
             )
           );
         }
-        const downstreamIds = Array.from(
-          new Set(
-            Object.values(edgesRef.current)
-              .filter((e) => e.source === nodeId && e.target !== nodeId && !notifiedIds.has(e.target))
-              .map((e) => e.target)
-          )
+        const downstreamIds = getReactiveTargetNodeIds(
+          edgesRef.current,
+          nodeId,
+          notifiedIds
         ).filter((dstId) => Boolean(effectiveNodesRef.current[dstId]?.script));
         for (const dstId of downstreamIds) {
           fanoutTasks.push(
@@ -1040,12 +1086,10 @@ function HybridCanvasWorkspace() {
 
       // 4) 若本次交互修改了自身状态，并发同时刷新所有通过连线接在下游的脚本控件（扇出同步生效）
       if (trigger.kind !== 'render') {
-        const downstreamIds = Array.from(
-          new Set(
-            Object.values(createdEdges)
-              .filter((e) => e.source === nodeId && e.target !== nodeId && !notifiedIds.has(e.target))
-              .map((e) => e.target)
-          )
+        const downstreamIds = getReactiveTargetNodeIds(
+          createdEdges,
+          nodeId,
+          notifiedIds
         ).filter((dstId) => Boolean(effectiveNodesRef.current[dstId]?.script));
         if (downstreamIds.length > 0) {
           await Promise.all(
@@ -1236,12 +1280,9 @@ function HybridCanvasWorkspace() {
         void executeUnifiedWidgetScript(nodeId, { kind: 'click', buttonId }, nextVars);
       }
       if (toggle) {
-        const downstreamIds = Array.from(
-          new Set(
-            Object.values(edgesRef.current)
-              .filter((e) => e.source === nodeId && e.target !== nodeId)
-              .map((e) => e.target)
-          )
+        const downstreamIds = getReactiveTargetNodeIds(
+          edgesRef.current,
+          nodeId
         ).filter((dstId) => Boolean(effectiveNodesRef.current[dstId]?.script));
         for (const dstId of downstreamIds) {
           void executeUnifiedWidgetScript(dstId, { kind: 'render' }, undefined, 1, {
@@ -1331,12 +1372,9 @@ function HybridCanvasWorkspace() {
     renderedScriptsRef.current.delete(nodeId);
     setChunkSyncTick((t) => t + 1);
     const baseNode = baseRef.current.nodes[nodeId];
-    const downstreamIds = Array.from(
-      new Set(
-        Object.values(edgesRef.current)
-          .filter((e) => e.source === nodeId && e.target !== nodeId)
-          .map((e) => e.target)
-      )
+    const downstreamIds = getReactiveTargetNodeIds(
+      edgesRef.current,
+      nodeId
     ).filter((dstId) => Boolean(effectiveNodesRef.current[dstId]?.script));
     if (baseNode && downstreamIds.length > 0) {
       void Promise.all(
@@ -1423,13 +1461,7 @@ function HybridCanvasWorkspace() {
   const handleEditBody = useCallback(
     (nodeId: string, nextBody: string) => {
       handlePatchNode(nodeId, { body: nextBody });
-      const downstreamIds = Array.from(
-        new Set(
-          Object.values(edgesRef.current)
-            .filter((e) => e.source === nodeId && e.target !== nodeId)
-            .map((e) => e.target)
-        )
-      );
+      const downstreamIds = getReactiveTargetNodeIds(edgesRef.current, nodeId);
       for (const dstId of downstreamIds) {
         if (effectiveNodesRef.current[dstId]?.script) {
           void executeUnifiedWidgetScript(dstId, { kind: 'render' }, undefined, 1, {
@@ -1630,6 +1662,8 @@ function HybridCanvasWorkspace() {
     for (const [eid, edge] of Object.entries(edgesRef.current)) {
       if (edge.source === nodeId && edge.target !== nodeId) {
         affectedTargets.add(edge.target);
+      } else if (edge.bidirectional && edge.target === nodeId && edge.source !== nodeId) {
+        affectedTargets.add(edge.source);
       }
       if (edge.source !== nodeId && edge.target !== nodeId) {
         nextEdgesSnap[eid] = edge;
@@ -2114,12 +2148,14 @@ function HybridCanvasWorkspace() {
     setSaveKeyError(null);
     const merged = applyOverlayToBase(base, overlay, SELF_CID);
     try {
-      const res = await fetch('/api/blueprint/publish', {
+      const publishUrl = buildRoomBlueprintPublishUrl(roomNameRef.current);
+      const res = await fetch(publishUrl, {
         method: 'POST',
-        headers: {
+        headers: proxyHeaders({
           'Content-Type': 'application/json',
           'X-Blueprint-Save-Key': key,
-        },
+        }),
+        credentials: 'same-origin',
         body: JSON.stringify({ blueprint: merged }),
       });
       const json = (await res.json()) as { ok: boolean; serverRevision?: number; error?: string };

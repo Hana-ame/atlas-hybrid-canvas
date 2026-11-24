@@ -14,6 +14,7 @@ let runtimeSessionToken = '';
 let runtimeExpiresAt = 0;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let inflightRefresh: Promise<string> | null = null;
+let initialAuthPromise: Promise<string> | null = null;
 
 /** 注入运行时从 /api/auth/session 获取的短时效签名会话令牌。 */
 export function setRuntimeProxyToken(token: string, expiresInSec?: number): void {
@@ -67,6 +68,7 @@ export async function refreshAuthSession(options?: {
       const resp = await fetchFn('/api/auth/session', {
         method: 'POST',
         headers,
+        credentials: 'same-origin',
         body: JSON.stringify({ cid: options?.cid || 'atlas-web' }),
       });
       if (!resp.ok) return getActiveProxyToken();
@@ -102,7 +104,34 @@ export async function refreshAuthSession(options?: {
 
 /** 应用启动时调用一次，自动换取并维持短时效签名会话令牌。 */
 export function initAuthSession(cid?: string): Promise<string> {
-  return refreshAuthSession({ cid, scheduleNext: true });
+  initialAuthPromise = refreshAuthSession({ cid, scheduleNext: true });
+  return initialAuthPromise;
+}
+
+/** 等待启动期会话鉴权完成（若未启用或超时则立即放行，避免首屏请求与 Set-Cookie 竞态）。 */
+export async function waitForAuthSessionReady(timeoutMs = 2000): Promise<void> {
+  if (!initialAuthPromise) return;
+  await Promise.race([
+    initialAuthPromise.then(() => undefined, () => undefined),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
+function encodeBase64Url(input: string): string {
+  const bytes = new TextEncoder().encode(input);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/**
+ * 构造 WebSocket 鉴权子协议列表（`Sec-WebSocket-Protocol`）：
+ * 既不在 URL 中泄露令牌，也能在跨源 WS 建连时携带有效鉴权凭证。
+ */
+export function buildWsAuthProtocols(): string[] {
+  const token = getActiveProxyToken();
+  if (!token) return [];
+  return ['atlas-v1', `atlas-auth.${encodeBase64Url(token)}`];
 }
 
 /** 合并业务需要的头，并在存在有效令牌时补上 X-Proxy-Token。 */
@@ -113,10 +142,10 @@ export function proxyHeaders(extra?: Record<string, string>): Record<string, str
   return headers;
 }
 
-/** 为无法附带自定义请求头的 <img> 资源 URL（如 /api/pdf/:id/page/:page）在存在令牌时追加 token 查询参数。 */
+/**
+ * 返回安全的资源 URL：同源 <img> 与 /ws 请求依赖 /api/auth/session 下发的 HttpOnly Cookie 鉴权，
+ * 不再将长期有效的签名 bearer token 拼入 URL 查询参数，避免泄露到浏览器历史、Referer 与代理访问日志。
+ */
 export function appendProxyTokenQuery(url: string): string {
-  const token = getActiveProxyToken();
-  if (!token || !url) return url;
-  const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}token=${encodeURIComponent(token)}`;
+  return url;
 }

@@ -15,6 +15,9 @@ import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { loadRoomSnapshotFile, saveRoomSnapshotFile } from './fileStore';
+import { extractRoomPathFromWsPathname } from '../src/core/roomPath';
+import { mergeRecordFieldsLWW } from '../src/core/crdt';
+import { extractWsSubprotocolToken, parseCookieValue } from './authSession';
 import { decodeBinaryRpcFrame, encodeBinaryRpcFrame } from '../src/core/rpcBinaryFrame';
 
 /**
@@ -133,39 +136,10 @@ class RoomState {
       bucket.set(id, rec);
       return true;
     }
-    const curFields = (existing as { fieldRevs?: Record<string, { rev: number; cid: string }> }).fieldRevs;
-    const incFields = (rec as { fieldRevs?: Record<string, { rev: number; cid: string }> }).fieldRevs;
-    if (!curFields && !incFields) {
-      if (!beats(rec, existing)) return false;
-      bucket.set(id, rec);
-      return true;
-    }
-    const merged: Record<string, unknown> = { ...existing };
-    const nextFieldRevs: Record<string, { rev: number; cid: string }> = { ...(curFields ?? {}) };
-    const curFallback = { rev: Number(existing.rev) || 0, cid: String(existing.cid || '') };
-    const incFallback = { rev: Number(rec.rev) || 0, cid: String(rec.cid || '') };
-    let changed = false;
-    for (const k of new Set([...Object.keys(existing), ...Object.keys(rec)])) {
-      if (k === 'id' || k === 'rev' || k === 'cid' || k === 'fieldRevs') continue;
-      const cs = curFields?.[k] ?? curFallback;
-      const is = incFields?.[k] ?? incFallback;
-      if (k in rec && beats(is, cs)) {
-        merged[k] = rec[k];
-        nextFieldRevs[k] = is;
-        changed = true;
-      } else if (!(k in rec) && (k in existing) && beats(incFallback, cs)) {
-        delete merged[k];
-        nextFieldRevs[k] = incFallback;
-        changed = true;
-      }
-    }
-    if (!changed && !beats(rec, existing)) return false;
-    const win = beats(rec, existing) ? rec : existing;
-    merged.id = existing.id;
-    merged.rev = Math.max(Number(existing.rev) || 0, Number(rec.rev) || 0);
-    merged.cid = win.cid;
-    merged.fieldRevs = nextFieldRevs;
-    bucket.set(id, merged as VersionedRecord);
+    // 直接复用客户端同源的 mergeRecordFieldsLWW，彻底消除两端字段级 CRDT 裁决分歧
+    const res = mergeRecordFieldsLWW(existing as unknown as { id: string; rev: number; cid: string; fieldRevs?: Record<string, { rev: number; cid: string }> }, rec as unknown as { id: string; rev: number; cid: string; fieldRevs?: Record<string, { rev: number; cid: string }> });
+    if (!res.changed) return false;
+    bucket.set(id, res.merged as VersionedRecord);
     return true;
   }
 
@@ -220,7 +194,11 @@ export function attachRoomServer(
 ): RoomServerHandle {
   const rooms = new Map<string, Room>();
   const states = new Map<string, RoomState>();
-  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_RPC_WS_PAYLOAD_BYTES });
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_RPC_WS_PAYLOAD_BYTES,
+    handleProtocols: (protocols) => (protocols.has('atlas-v1') ? 'atlas-v1' : false),
+  });
 
   function send(socket: WebSocket, msg: unknown): boolean {
     if (socket.readyState !== socket.OPEN) return false;
@@ -458,11 +436,9 @@ export function attachRoomServer(
       socket.destroy();
       return;
     }
-    if (url.pathname !== wsPath) {
-      // 不归房间服务处理。但不能直接 return：那样这个 socket 既没人接管、也不会被
-      // 关闭，客户端永远等不到 open 或 error，会一直挂着（半开连接泄漏）。
-      // 只有在确实存在其他 upgrade 监听器时才让位——此时由别人决定怎么处理；
-      // 否则明确回 404 并关掉，让客户端立刻拿到确定结果。
+    const parsedRoom = extractRoomPathFromWsPathname(url.pathname, wsPath, url.searchParams.get('room'));
+    if (!parsedRoom.matched) {
+      // 不归房间服务处理。只有在确实存在其他 upgrade 监听器时才让位；否则明确回 404 并关掉。
       if (httpServer.listenerCount('upgrade') > 1) return;
       socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
       socket.destroy();
@@ -473,7 +449,9 @@ export function attachRoomServer(
       const headerToken = Array.isArray(req.headers['x-proxy-token'])
         ? req.headers['x-proxy-token'][0]
         : req.headers['x-proxy-token'];
-      const providedToken = String(url.searchParams.get('token') || headerToken || '').trim();
+      const cookieToken = parseCookieValue(req.headers.cookie, 'atlas_session');
+      const subprotocolToken = extractWsSubprotocolToken(req.headers['sec-websocket-protocol']);
+      const providedToken = String(headerToken || cookieToken || subprotocolToken || '').trim();
       if (!verifyToken(providedToken)) {
         socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
         socket.destroy();
@@ -481,7 +459,7 @@ export function attachRoomServer(
       }
     }
 
-    const roomName = (url.searchParams.get('room') || '').trim();
+    const roomName = (parsedRoom.roomPath || '').trim();
     const cid = (url.searchParams.get('cid') || '').trim();
     if (!roomName || roomName.length > 100) {
       socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
@@ -636,6 +614,7 @@ export function attachRoomServer(
       if (idleAt !== undefined && room.members.size === 0 && now - idleAt > ROOM_IDLE_TTL_MS) {
         rooms.delete(room.name);
         states.delete(room.name);
+        hydratedRooms.delete(room.name);
         idleSince.delete(room.name);
       }
     }

@@ -77,3 +77,45 @@ export function verifySignedSessionToken(
     return { valid: false };
   }
 }
+
+/** 从 HTTP Cookie 请求头中提取指定名称的 Cookie 值（供 HttpOnly 会话鉴权使用）。 */
+export function parseCookieValue(cookieHeader: string | undefined, name: string): string {
+  if (!cookieHeader || !name) return '';
+  const pairs = cookieHeader.split(';');
+  for (const pair of pairs) {
+    const eq = pair.indexOf('=');
+    if (eq <= 0) continue;
+    const k = pair.slice(0, eq).trim();
+    if (k === name) {
+      const rawVal = pair.slice(eq + 1).trim();
+      try {
+        return decodeURIComponent(rawVal);
+      } catch {
+        return rawVal;
+      }
+    }
+  }
+  return '';
+}
+
+/**
+ * 从 WebSocket 握手头 `Sec-WebSocket-Protocol` 中提取 `atlas-auth.<base64url(token)>` 令牌。
+ * 相比 URL 查询参数，子协议头不会进入浏览器历史、Referer 或 URL 访问日志，且支持跨源 WS 建连。
+ */
+export function extractWsSubprotocolToken(protocolHeader: string | string[] | undefined): string {
+  const raw = Array.isArray(protocolHeader) ? protocolHeader.join(',') : String(protocolHeader || '');
+  if (!raw) return '';
+  for (const part of raw.split(',')) {
+    const trimmed = part.trim();
+    if (!trimmed.startsWith('atlas-auth.')) continue;
+    const b64url = trimmed.slice('atlas-auth.'.length);
+    if (!b64url) continue;
+    try {
+      const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (b64url.length % 4)) % 4);
+      return Buffer.from(b64, 'base64').toString('utf8').trim();
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}

@@ -203,3 +203,29 @@ test('apiCore: 同一份实现下 browser 与 server 模式返回同构结果', 
   assert.equal(b.mock, true);
   assert.equal(s.mock, false);
 });
+
+test('apiCore: /api/rooms/<roomPath>/blueprint 与 publish 按房间路径隔离读写', async () => {
+  const stores = new Map<string, ReturnType<typeof createMemoryStore>>();
+  const getRoomStore = (rp: string) => {
+    if (!stores.has(rp)) stores.set(rp, createMemoryStore());
+    return stores.get(rp)!;
+  };
+  const deps = makeDeps({ getRoomStore });
+
+  const pub = await handleApiRequest(
+    deps,
+    makeReq('POST', '/api/rooms/team/design/blueprint/publish', {
+      headers: { 'x-blueprint-save-key': 'secret-key' },
+      body: { blueprint: { nodes: { n1: { id: 'n1' } } } },
+    })
+  );
+  assert.equal(pub?.status, 200);
+
+  const gotA = await handleApiRequest(deps, makeReq('GET', '/api/rooms/team/design/blueprint'));
+  assert.equal(gotA?.status, 200);
+  assert.deepEqual(parse(gotA!).blueprint, { nodes: { n1: { id: 'n1' } } });
+
+  const gotB = await handleApiRequest(deps, makeReq('GET', '/api/rooms/team/other/blueprint'));
+  assert.equal(gotB?.status, 200);
+  assert.equal(parse(gotB!).blueprint, null);
+});

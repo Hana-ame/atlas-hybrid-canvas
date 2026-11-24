@@ -1,4 +1,5 @@
-import { appendProxyTokenQuery } from './apiClient';
+import { appendProxyTokenQuery, buildWsAuthProtocols } from './apiClient';
+import { buildRoomWsUrl, normalizeRoomPath } from './roomPath';
 /**
  * @file roomClient.ts
  * @description 多人实时协同房间客户端（WebSocket + 字段级 (rev, cid) CRDT + 指数退避自动重连 + 离线缓冲队列）。
@@ -25,6 +26,7 @@ const MAX_OFFLINE_QUEUE = 200;
 const INITIAL_RECONNECT_MS = 500;
 const MAX_RECONNECT_MS = 15_000;
 const MAX_RECONNECT_ATTEMPTS = 8;
+const STABLE_CONNECTION_MS = 5_000;
 
 export class CollaborativeRoomClient {
   private ws: WebSocket | null = null;
@@ -37,6 +39,7 @@ export class CollaborativeRoomClient {
   private reconnectAttempts = 0;
   private reconnectDelay = INITIAL_RECONNECT_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private stabilityTimer: ReturnType<typeof setTimeout> | null = null;
   private offlineQueue: RoomWireMessage[] = [];
 
   constructor(
@@ -64,6 +67,10 @@ export class CollaborativeRoomClient {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    if (this.stabilityTimer) {
+      clearTimeout(this.stabilityTimer);
+      this.stabilityTimer = null;
     }
   }
 
@@ -93,17 +100,24 @@ export class CollaborativeRoomClient {
     );
 
     try {
-      const sep = trimmed.includes('?') ? '&' : '?';
-      const fullUrl = `${trimmed}${sep}room=${encodeURIComponent(roomName)}&cid=${encodeURIComponent(this.cid)}`;
-      const ws = new WebSocket(appendProxyTokenQuery(fullUrl));
+      const normalizedRoom = normalizeRoomPath(roomName);
+      const fullUrl = buildRoomWsUrl(trimmed, normalizedRoom, this.cid);
+      const protocols = buildWsAuthProtocols();
+      const ws = protocols.length > 0 ? new WebSocket(appendProxyTokenQuery(fullUrl), protocols) : new WebSocket(appendProxyTokenQuery(fullUrl));
       this.ws = ws;
 
       ws.onopen = () => {
         if (this.ws !== ws) return;
-        this.reconnectAttempts = 0;
-        this.reconnectDelay = INITIAL_RECONNECT_MS;
-        this.onStatus('connected', `已加入房间 ${roomName}`);
-        this.sendImmediate(ws, { t: 'hello', room: roomName, cid: this.cid });
+        // 仅当连接稳定存活满 STABLE_CONNECTION_MS 后才归零重连计数，防止「连上即断」形成无限快速热循环
+        if (this.stabilityTimer) clearTimeout(this.stabilityTimer);
+        this.stabilityTimer = setTimeout(() => {
+          if (this.ws === ws && ws.readyState === WebSocket.OPEN) {
+            this.reconnectAttempts = 0;
+            this.reconnectDelay = INITIAL_RECONNECT_MS;
+          }
+        }, STABLE_CONNECTION_MS);
+        this.onStatus('connected', `已加入房间 ${normalizedRoom}`);
+        this.sendImmediate(ws, { t: 'hello', room: normalizedRoom, cid: this.cid });
         this.flushOfflineQueue(ws);
       };
 
@@ -126,6 +140,10 @@ export class CollaborativeRoomClient {
 
       ws.onclose = () => {
         if (this.ws !== ws) return;
+        if (this.stabilityTimer) {
+          clearTimeout(this.stabilityTimer);
+          this.stabilityTimer = null;
+        }
         this.ws = null;
         if (this.manualDisconnect) {
           this.onStatus('disconnected', '已断开房间连接');

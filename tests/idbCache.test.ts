@@ -42,3 +42,22 @@ test('idbCacheClearPrefix removes only keys matching the prefix', async () => {
   assert.equal(await idbCacheGet('pdf-page:doc2:1@1700'), 'png3');
   await idbCacheClearPrefix('pdf-page:doc2:');
 });
+
+test('idbCacheSet isolates LRU eviction across namespaces (pdf: vs hist:)', async () => {
+  await idbCacheClearPrefix('pdf:');
+  await idbCacheClearPrefix('hist:');
+
+  await idbCacheSet('pdf:doc1:1', 'page-1', 2);
+  await idbCacheSet('pdf:doc1:2', 'page-2', 2);
+  await idbCacheSet('hist:s1:1', 'snap-1', 2);
+  await idbCacheSet('hist:s1:2', 'snap-2', 2);
+  await idbCacheSet('hist:s1:3', 'snap-3', 2);
+
+  assert.equal(await idbCacheGet('pdf:doc1:1'), 'page-1');
+  assert.equal(await idbCacheGet('pdf:doc1:2'), 'page-2');
+  assert.equal(await idbCacheGet('hist:s1:1'), null);
+  assert.equal(await idbCacheGet('hist:s1:3'), 'snap-3');
+
+  await idbCacheClearPrefix('pdf:');
+  await idbCacheClearPrefix('hist:');
+});

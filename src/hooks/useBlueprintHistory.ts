@@ -37,6 +37,11 @@ export function useBlueprintHistory(
   const seqRef = useRef(0);
   const pastHotRef = useRef<HistorySnapshot[]>([]);
   const pastColdKeysRef = useRef<string[]>([]);
+  const idbQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const enqueueIdb = useCallback((task: () => Promise<void>) => {
+    idbQueueRef.current = idbQueueRef.current.then(task, task).catch(() => {});
+    return idbQueueRef.current;
+  }, []);
   const futureRef = useRef<HistorySnapshot[]>([]);
   const [historyMeta, setHistoryMeta] = useState({ canUndo: false, canRedo: false });
 
@@ -72,7 +77,7 @@ export function useBlueprintHistory(
         seqRef.current += 1;
         const key = `${sessionPrefixRef.current}${seqRef.current}`;
         pastColdKeysRef.current.push(key);
-        void idbCacheSet(key, spill, MAX_HISTORY_STEPS + 20);
+        void enqueueIdb(() => idbCacheSet(key, spill, MAX_HISTORY_STEPS + 20, sessionPrefixRef.current).then(() => {}));
       }
     }
 
@@ -80,7 +85,7 @@ export function useBlueprintHistory(
     while (pastHotRef.current.length + pastColdKeysRef.current.length > MAX_HISTORY_STEPS) {
       const dropKey = pastColdKeysRef.current.shift();
       if (dropKey) {
-        void idbCacheDelete(dropKey);
+        void enqueueIdb(() => idbCacheDelete(dropKey));
       } else {
         pastHotRef.current.shift();
       }
@@ -88,7 +93,7 @@ export function useBlueprintHistory(
 
     futureRef.current = [];
     syncMeta();
-  }, [baseRef, overlayRef, syncMeta]);
+  }, [baseRef, overlayRef, syncMeta, enqueueIdb]);
 
   const applySnapshot = useCallback(
     (snap: HistorySnapshot, statusMsg: string) => {
@@ -120,8 +125,9 @@ export function useBlueprintHistory(
     const coldKey = pastColdKeysRef.current.pop();
     if (!coldKey) return;
     syncMeta();
-    void idbCacheGet<HistorySnapshot>(coldKey).then((coldPrev) => {
-      void idbCacheDelete(coldKey);
+    void enqueueIdb(async () => {
+      const coldPrev = await idbCacheGet<HistorySnapshot>(coldKey);
+      await idbCacheDelete(coldKey);
       if (!coldPrev) {
         syncMeta();
         return;
@@ -135,7 +141,7 @@ export function useBlueprintHistory(
       }
       applySnapshot(coldPrev, '已从 IndexedDB 历史缓存撤销上一步');
     });
-  }, [baseRef, overlayRef, applySnapshot, syncMeta]);
+  }, [baseRef, overlayRef, applySnapshot, syncMeta, enqueueIdb]);
 
   const handleRedo = useCallback(() => {
     const next = futureRef.current.pop();
@@ -150,11 +156,11 @@ export function useBlueprintHistory(
         seqRef.current += 1;
         const key = `${sessionPrefixRef.current}${seqRef.current}`;
         pastColdKeysRef.current.push(key);
-        void idbCacheSet(key, spill, MAX_HISTORY_STEPS + 20);
+        void enqueueIdb(() => idbCacheSet(key, spill, MAX_HISTORY_STEPS + 20, sessionPrefixRef.current).then(() => {}));
       }
     }
     applySnapshot(next, '已重做操作');
-  }, [baseRef, overlayRef, applySnapshot]);
+  }, [baseRef, overlayRef, applySnapshot, enqueueIdb]);
 
   return {
     pushHistory,

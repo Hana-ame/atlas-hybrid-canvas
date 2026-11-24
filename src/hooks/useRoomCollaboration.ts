@@ -128,7 +128,7 @@ export function useRoomCollaboration({
             const curLocal = baseRef.current.nodes[remoteNode.id];
             const probe = mergeRecordFieldsLWW(curLocal, remoteNode);
             if (probe.changed || beatsLocalAndSynced('node', remoteNode, curLocal)) {
-              recordSyncedMeta('node', probe.merged);
+              recordSyncedMeta('node', remoteNode);
               const singleBp: BaseBlueprint = {
                 version: baseRef.current.version,
                 chunkSize: baseRef.current.chunkSize,
@@ -210,7 +210,7 @@ export function useRoomCollaboration({
             const remoteAnn = msg.annotation;
             const probe = mergeRecordFieldsLWW(baseRef.current.annotations[remoteAnn.id], remoteAnn);
             if (!probe.changed && !beatsLocalAndSynced('ann', remoteAnn, baseRef.current.annotations[remoteAnn.id])) return;
-            recordSyncedMeta('ann', probe.merged);
+            recordSyncedMeta('ann', remoteAnn);
             setBase((prev) => {
               const cur = prev.annotations[remoteAnn.id];
               const res = mergeRecordFieldsLWW(cur, remoteAnn);
@@ -248,7 +248,7 @@ export function useRoomCollaboration({
             const remoteEdge = msg.edge;
             const probe = mergeRecordFieldsLWW(baseRef.current.edges[remoteEdge.id], remoteEdge);
             if (!probe.changed && !beatsLocalAndSynced('edge', remoteEdge, baseRef.current.edges[remoteEdge.id])) return;
-            recordSyncedMeta('edge', probe.merged);
+            recordSyncedMeta('edge', remoteEdge);
             setBase((prev) => {
               const cur = prev.edges[remoteEdge.id];
               const res = mergeRecordFieldsLWW(cur, remoteEdge);

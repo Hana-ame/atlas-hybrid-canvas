@@ -72,3 +72,61 @@ test('mergeRecordFieldsLWW(): preserves concurrent non-overlapping field edits f
   assert.equal(step2.merged.title, 'A改的标题');
   assert.equal(step2.merged.color, '#DC2626');
 });
+
+test('mergeRecordFieldsLWW(): handles one-sided fields and field deletion deterministically', () => {
+  const cur = {
+    id: 'n1',
+    rev: 2,
+    cid: 'client-a',
+    title: 'A',
+    extra: 'old',
+    fieldRevs: {
+      title: { rev: 2, cid: 'client-a' },
+      extra: { rev: 1, cid: 'client-a' },
+    },
+  };
+  const inc = {
+    id: 'n1',
+    rev: 2,
+    cid: 'client-b',
+    title: 'A',
+    added: 'new-val',
+    fieldRevs: {
+      added: { rev: 2, cid: 'client-b' },
+    },
+  };
+  const res = mergeRecordFieldsLWW(cur as any, inc as any);
+  assert.equal(res.changed, true);
+  assert.equal((res.merged as any).added, 'new-val');
+  assert.equal('extra' in res.merged, false);
+});
+
+test('mergeRecordFieldsLWW(): preserves lower-cid non-conflicting new field on equal-rev tie while respecting deletion tombstones', () => {
+  const cur = {
+    id: 'n1',
+    rev: 2,
+    cid: 'client-b',
+    title: 'B',
+    fieldRevs: {
+      title: { rev: 2, cid: 'client-b' },
+      deletedField: { rev: 2, cid: 'client-b' },
+    },
+  };
+  const inc = {
+    id: 'n1',
+    rev: 2,
+    cid: 'client-a',
+    title: 'A',
+    note: 'new-from-a',
+    deletedField: 'stale-readd',
+    fieldRevs: {
+      note: { rev: 2, cid: 'client-a' },
+      deletedField: { rev: 1, cid: 'client-a' },
+    },
+  };
+  const res = mergeRecordFieldsLWW(cur as any, inc as any);
+  assert.equal(res.changed, true);
+  assert.equal((res.merged as any).note, 'new-from-a');
+  assert.equal((res.merged as any).title, 'B');
+  assert.equal('deletedField' in res.merged, false);
+});

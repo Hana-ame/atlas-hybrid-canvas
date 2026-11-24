@@ -80,6 +80,8 @@ export interface HttpFetcher {
 
 export interface ApiDeps {
   store: BlueprintStore;
+  /** 可选：按路径分房间的蓝图存储解析器（缺省退回 store）。 */
+  getRoomStore?: (roomPath: string) => BlueprintStore;
   proxy: ProxyConfig;
   rateLimiter: RateLimiter;
   fetcher: HttpFetcher;
@@ -371,7 +373,33 @@ export async function handleApiRequest(
   const requireMethod = (want: string): ApiResult | null =>
     method === want ? null : jsonResult({ ok: false, error: 'Method Not Allowed' }, 405);
 
+  // 按路径分房间蓝图接口：/api/rooms/<roomPath>/blueprint 与 /api/rooms/<roomPath>/blueprint/publish
+  const roomBpMatch = pathname.match(/^\/api\/rooms\/(.+)\/blueprint(\/publish)?$/);
+  if (roomBpMatch) {
+    const rawRoom = roomBpMatch[1];
+    const isPublish = Boolean(roomBpMatch[2]);
+    const roomStore = deps.getRoomStore ? deps.getRoomStore(rawRoom) : deps.store;
+    return handleApiRequest(
+      { ...deps, store: roomStore },
+      { ...req, path: isPublish ? '/api/blueprint/publish' : '/api/blueprint' }
+    );
+  }
+
   switch (pathname) {
+    case '/api/auth/session': {
+      if (method !== 'POST') {
+        return {
+          status: 405,
+          headers: { 'content-type': 'application/json; charset=utf-8', allow: 'POST' },
+          body: new TextEncoder().encode(JSON.stringify({ ok: false, error: 'Method Not Allowed' })),
+        };
+      }
+      return {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+        body: new TextEncoder().encode(JSON.stringify({ ok: true, token: '', expiresInSec: 0, mode: 'open' })),
+      };
+    }
     case '/api/blueprint': {
       const bad = requireMethod('GET');
       return bad ?? handleBlueprintGet(deps);

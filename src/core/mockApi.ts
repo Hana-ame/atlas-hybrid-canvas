@@ -20,6 +20,7 @@
 
 import { idbGet, idbSet } from './idbStorage';
 import { RpcClient, frameToResponse } from './rpcClient';
+import { DEFAULT_ROOM_PATH, normalizeRoomPath } from './roomPath';
 import { normalizeWsUrl } from './runtimeConfig';
 import {
   createWindowRateLimiter,
@@ -245,6 +246,22 @@ export function installMockApi(): void {
       ...(reqBody !== undefined ? { body: reqBody } : {}),
     };
     const syntheticReq = new Request(url.toString(), merged);
+
+    // 0) /api/auth/session 在连后端模式下直接走 HTTP（不经 WS RPC，避免 WS 握手等 Cookie 的死锁）
+    if (hasRemote && url.pathname === '/api/auth/session' && RPC_WS_URL) {
+      try {
+        const wsU = new URL(RPC_WS_URL);
+        const httpOrigin = `${wsU.protocol === 'wss:' ? 'https:' : 'http:'}//${wsU.host}`;
+        return await originalFetch(`${httpOrigin}/api/auth/session`, {
+          method,
+          headers: merged.headers,
+          body: reqBody,
+          credentials: 'include',
+        });
+      } catch {
+        // 回退到本地 apiCore open 模式
+      }
+    }
 
     // 1) 有后端就先交给它：那边有完整的安全边界。
     if (hasRemote) {

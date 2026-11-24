@@ -1,4 +1,4 @@
-import { appendProxyTokenQuery } from './apiClient';
+import { appendProxyTokenQuery, buildWsAuthProtocols } from './apiClient';
 /**
  * @file rpcClient.ts
  * @description 把浏览器的 /api/* 请求经 WebSocket 转发到服务端处理。
@@ -80,7 +80,8 @@ export class RpcClient {
 
       let ws: WebSocket;
       try {
-        ws = new WebSocket(appendProxyTokenQuery(this.wsUrl));
+        const protocols = buildWsAuthProtocols();
+        ws = protocols.length > 0 ? new WebSocket(appendProxyTokenQuery(this.wsUrl), protocols) : new WebSocket(appendProxyTokenQuery(this.wsUrl));
         ws.binaryType = 'arraybuffer';
       } catch (err) {
         fail(`无法创建 RPC WebSocket：${err instanceof Error ? err.message : String(err)}`);

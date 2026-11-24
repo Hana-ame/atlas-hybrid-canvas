@@ -74,7 +74,8 @@ export function mergeRecordFieldsLWW<T extends VersionedRecord>(
     const curExists = key in (current as Record<string, unknown>);
 
     if (incExists && !curExists) {
-      if (beats(incStamp, curFallback) || !curRevs) {
+      const curKeyStamp = curRevs?.[key];
+      if (!curKeyStamp || beats(incStamp, curKeyStamp)) {
         nextObj[key] = incVal;
         nextFieldRevs[key] = incStamp;
         changed = true;

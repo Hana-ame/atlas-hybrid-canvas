@@ -20,8 +20,9 @@ import {
   unpackPdfBufferToPages,
 } from './pdfUnpack';
 import { attachRoomServer, type RoomServerHandle, type RpcHandler } from './roomServer';
-import { createFileBlueprintStore } from './fileStore';
-import { issueSignedSessionToken, verifySignedSessionToken } from './authSession';
+import { createRoomBlueprintStoreRegistry, listPersistedRooms } from './fileStore';
+import { normalizeRoomPath } from '../src/core/roomPath';
+import { issueSignedSessionToken, parseCookieValue, verifySignedSessionToken } from './authSession';
 import {
   handleApiRequest,
   type ApiDeps,
@@ -44,7 +45,8 @@ const PDF_UPLOAD_MAX_LABEL = '50MB';
 
 // 权威底座与协同房间持久化目录（默认 .atlas-data/，可通过 ATLAS_DATA_DIR 覆盖）。
 const DATA_DIR = path.resolve(process.env.ATLAS_DATA_DIR || path.join(__dirname, '../.atlas-data'));
-const sharedStore = createFileBlueprintStore(DATA_DIR);
+const roomBlueprintRegistry = createRoomBlueprintStoreRegistry(DATA_DIR);
+const sharedStore = roomBlueprintRegistry.getStore();
 
 // 房间服务实例。必须在 httpServer 建好之后才能 attach，而 stats 路由又要注册在
 // SPA fallback 之前，所以用模块级变量在注册时先捕获引用、attach 后再赋值。
@@ -239,13 +241,7 @@ async function startServer() {
   // 协同房间在线统计。必须注册在 Vite / SPA fallback 之前，否则会被 `app.get('*')`
   // 的兜底先吃掉、返回首页 HTML。房间服务实例要等 httpServer 建好才能 attach，
   // 所以这里通过闭包读模块级变量，等 listen 之后再赋值。
-  app.get('/api/room/stats', (_req, res) => {
-    if (!roomServer) {
-      res.status(503).json({ ok: false, error: '房间服务尚未就绪' });
-      return;
-    }
-    res.json({ ok: true, ...roomServer.stats(), rpcForwarded });
-  });
+
 
   const blueprintSaveKey = (process.env.BLUEPRINT_SAVE_KEY || '').trim();
   const upstreamBaseUrl = (process.env.PROXY_UPSTREAM_BASE_URL || '').trim();
@@ -285,14 +281,30 @@ async function startServer() {
     });
   });
 
-  // 签发短时效 HMAC-SHA256 会话令牌，用于替代构建期静态 VITE_PROXY_CLIENT_TOKEN
+  // 从请求头或 HttpOnly Cookie 提取会话/代理令牌（不再依赖 URL 查询参数透传长期 bearer token）
+  const extractRequestProxyToken = (req: express.Request): string => {
+    const fromHeader = String(req.header('x-proxy-token') || '').trim();
+    if (fromHeader) return fromHeader;
+    const fromCookie = parseCookieValue(req.header('cookie'), 'atlas_session').trim();
+    if (fromCookie) return fromCookie;
+    return '';
+  };
+
+  // 签发短时效 HMAC-SHA256 会话令牌，并下发 HttpOnly Cookie 供同源 <img> 与 /ws 使用
   app.post('/api/auth/session', (req, res) => {
     const provided = String(
       req.header('x-proxy-token') || (req.body as { clientToken?: unknown } | undefined)?.clientToken || ''
     ).trim();
-    if (proxyClientToken && !verifyStaticClientToken(provided)) {
-      res.status(401).json({ ok: false, error: '凭证校验失败，无法签发会话令牌' });
-      return;
+    // 安全兜底：只要启用了任意鉴权（PROXY_CLIENT_TOKEN 或 AUTH_SESSION_SECRET），
+    // 必须同时配置并校验通过静态引导凭证 PROXY_CLIENT_TOKEN，杜绝单配 AUTH_SESSION_SECRET 时无凭证白嫖令牌。
+    if (proxyClientToken || authSessionSecret) {
+      if (!proxyClientToken || !verifyStaticClientToken(provided)) {
+        res.status(401).json({
+          ok: false,
+          error: '凭证校验失败，无法签发会话令牌（启用鉴权时需配置并校验 PROXY_CLIENT_TOKEN）',
+        });
+        return;
+      }
     }
     const secret = authSessionSecret || proxyClientToken;
     if (!secret) {
@@ -302,6 +314,16 @@ async function startServer() {
     const sub = String((req.body as { cid?: unknown } | undefined)?.cid || req.ip || 'atlas-client');
     const ttlSec = 3600;
     const token = issueSignedSessionToken(secret, sub, ttlSec);
+    const isHttps = req.secure || String(req.header('x-forwarded-proto') || '').toLowerCase() === 'https';
+    const cookieParts = [
+      `atlas_session=${encodeURIComponent(token)}`,
+      'HttpOnly',
+      'SameSite=Strict',
+      'Path=/',
+      `Max-Age=${ttlSec}`,
+    ];
+    if (isHttps) cookieParts.push('Secure');
+    res.setHeader('Set-Cookie', cookieParts.join('; '));
     res.json({ ok: true, token, expiresInSec: ttlSec, mode: 'signed' });
   });
 
@@ -570,7 +592,7 @@ async function startServer() {
    */
   app.use('/api/proxy', (req, res, next) => {
     const isBinaryRoute = req.path === '/binary';
-    const provided = String(req.header('x-proxy-token') || (isBinaryRoute ? req.query.token || '' : '')).trim();
+    const provided = extractRequestProxyToken(req);
     if (!verifyProxyClientToken(provided)) {
       res.status(401).json({
         ok: false,
@@ -585,16 +607,84 @@ async function startServer() {
    * 统一挂载：路径列表与 apiCore 的 switch 一一对应。
    * 加新接口只需在 apiCore 里加一个 case，这里加一行路径。
    */
-  for (const path of [
+  const resolveRoomApiDeps = (roomPath?: string | null) => {
+    const normalized = normalizeRoomPath(roomPath);
+    return {
+      ...apiDeps,
+      store: roomBlueprintRegistry.getStore(normalized),
+    };
+  };
+
+  const requireClientAuth: express.RequestHandler = (req, res, next) => {
+    const provided = extractRequestProxyToken(req);
+    if (!verifyProxyClientToken(provided)) {
+      res.status(401).json({ ok: false, error: '未授权访问：缺少或无效的会话凭证' });
+      return;
+    }
+    next();
+  };
+
+  app.get('/api/room/stats', requireClientAuth, (_req, res) => {
+    if (!roomServer) {
+      res.status(503).json({ ok: false, error: '房间服务尚未就绪' });
+      return;
+    }
+    res.json({ ok: true, ...roomServer.stats(), rpcForwarded });
+  });
+
+  // 按 path 分房间的蓝图读取与发布接口（启用鉴权时统一受 requireClientAuth 保护）：
+  app.get('/api/rooms', requireClientAuth, async (_req, res) => {
+    const persisted = await listPersistedRooms(DATA_DIR);
+    res.json({
+      ok: true,
+      active: roomServer ? roomServer.stats() : { rooms: 0, clients: 0 },
+      persisted,
+    });
+  });
+
+  app.get(/^\/api\/rooms\/(.+)\/blueprint$/, requireClientAuth, async (req, res) => {
+    const roomPath = normalizeRoomPath(req.params[0]);
+    const apiReq = toApiRequest(req);
+    const result = await handleApiRequest(resolveRoomApiDeps(roomPath), {
+      ...apiReq,
+      path: '/api/blueprint',
+    });
+    if (!result) {
+      res.status(404).json({ ok: false, error: '未实现的蓝图读取接口' });
+      return;
+    }
+    writeApiResult(res, result);
+  });
+
+  app.post(/^\/api\/rooms\/(.+)\/blueprint\/publish$/, requireClientAuth, async (req, res) => {
+    const roomPath = normalizeRoomPath(req.params[0]);
+    const apiReq = toApiRequest(req);
+    const result = await handleApiRequest(resolveRoomApiDeps(roomPath), {
+      ...apiReq,
+      path: '/api/blueprint/publish',
+    });
+    if (!result) {
+      res.status(404).json({ ok: false, error: '未实现的蓝图发布接口' });
+      return;
+    }
+    writeApiResult(res, result);
+  });
+
+  for (const routePath of [
     '/api/blueprint',
     '/api/blueprint/publish',
     '/api/proxy/status',
     '/api/proxy',
   ]) {
-    app.all(path, async (req, res) => {
-      const result = await handleApiRequest(apiDeps, toApiRequest(req));
+    app.all(routePath, requireClientAuth, async (req, res) => {
+      const requestedRoom = String(req.query.room || req.header('x-room-path') || '').trim();
+      const deps =
+        (routePath === '/api/blueprint' || routePath === '/api/blueprint/publish') && requestedRoom
+          ? resolveRoomApiDeps(requestedRoom)
+          : apiDeps;
+      const result = await handleApiRequest(deps, toApiRequest(req));
       if (!result) {
-        res.status(404).json({ ok: false, error: `未实现的接口：${path}` });
+        res.status(404).json({ ok: false, error: `未实现的接口：${routePath}` });
         return;
       }
       writeApiResult(res, result);
@@ -613,7 +703,7 @@ async function startServer() {
       res.status(429).json({ ok: false, error: `代理请求过于频繁，请 ${rl.retryAfterSec} 秒后重试` });
       return;
     }
-    const providedProxyToken = String(req.header('x-proxy-token') || req.query.token || '').trim();
+    const providedProxyToken = extractRequestProxyToken(req);
     if (!verifyProxyClientToken(providedProxyToken)) {
       res.status(401).json({ ok: false, error: '代理调用未授权' });
       return;
@@ -664,7 +754,7 @@ async function startServer() {
       res.status(429).json({ ok: false, error: '上传过于频繁，请稍后重试' });
       return;
     }
-    const providedProxyToken = String(req.header('x-proxy-token') || '').trim();
+    const providedProxyToken = extractRequestProxyToken(req);
     if (!verifyProxyClientToken(providedProxyToken)) {
       res.status(401).json({ ok: false, error: '未授权上传' });
       return;
@@ -710,7 +800,7 @@ async function startServer() {
       res.status(429).json({ ok: false, error: `请求过于频繁，请 ${rl.retryAfterSec} 秒后重试` });
       return;
     }
-    const providedProxyToken = String(req.header('x-proxy-token') || '').trim();
+    const providedProxyToken = extractRequestProxyToken(req);
     if (!verifyProxyClientToken(providedProxyToken)) {
       res.status(401).json({ ok: false, error: '未授权解包请求' });
       return;
@@ -772,7 +862,7 @@ async function startServer() {
       res.status(429).json({ ok: false, error: '上传过于频繁，请稍后重试' });
       return;
     }
-    const providedProxyToken = String(req.header('x-proxy-token') || '').trim();
+    const providedProxyToken = extractRequestProxyToken(req);
     if (!verifyProxyClientToken(providedProxyToken)) {
       res.status(401).json({ ok: false, error: '未授权上传' });
       return;
@@ -800,7 +890,7 @@ async function startServer() {
   });
 
   app.get('/api/pdf/:id/meta', (req, res) => {
-    const providedProxyToken = String(req.header('x-proxy-token') || req.query.token || '').trim();
+    const providedProxyToken = extractRequestProxyToken(req);
     if (!verifyProxyClientToken(providedProxyToken)) {
       res.status(401).json({ ok: false, error: '未授权访问 PDF 元数据' });
       return;
@@ -814,7 +904,7 @@ async function startServer() {
   });
 
   app.get('/api/pdf/:id/page/:page', async (req, res) => {
-    const providedProxyToken = String(req.header('x-proxy-token') || req.query.token || '').trim();
+    const providedProxyToken = extractRequestProxyToken(req);
     if (!verifyProxyClientToken(providedProxyToken)) {
       res.status(401).json({ ok: false, error: '未授权访问 PDF 页面' });
       return;
@@ -837,7 +927,7 @@ async function startServer() {
   });
 
   app.get('/api/pdf/:id', (req, res) => {
-    const providedProxyToken = String(req.header('x-proxy-token') || req.query.token || '').trim();
+    const providedProxyToken = extractRequestProxyToken(req);
     if (!verifyProxyClientToken(providedProxyToken)) {
       res.status(401).json({ ok: false, error: '未授权访问 PDF 文件' });
       return;
