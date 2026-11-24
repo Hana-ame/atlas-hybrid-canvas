@@ -297,3 +297,236 @@ test('E2E security regressions (P0-1 empty Origin, P1-1 XFF rate-limit spoofing,
   }
   assert.equal(hit429, true, 'spoofed X-Forwarded-For must not bypass PROXY_RATE_LIMIT_PER_MIN');
 });
+
+test('E2E Agent Ops: GET /api/agent/schema, authenticated POST /api/rooms/*/ops, live WS sync & history audit', async (t) => {
+  const tmpDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'atlas-e2e-agent-'));
+  const port = 20700 + Math.floor(Math.random() * 1000);
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const serverEntry = path.resolve('dist-server/server.mjs');
+
+  const child = spawn(process.execPath, [serverEntry], {
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      PORT: String(port),
+      ATLAS_DATA_DIR: tmpDataDir,
+      AUTH_SESSION_SECRET: 'e2e-agent-session-secret',
+      BLUEPRINT_SAVE_KEY: 'e2e-agent-admin-key',
+      AGENT_API_KEY: 'e2e-dedicated-agent-key',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  t.after(async () => {
+    child.kill('SIGTERM');
+    await new Promise((r) => setTimeout(r, 150));
+    await fs.rm(tmpDataDir, { recursive: true, force: true });
+  });
+
+  await waitForHealth(baseUrl);
+
+  const schemaRes = await fetch(`${baseUrl}/api/agent/schema`);
+  assert.equal(schemaRes.status, 200);
+  const schemaJson = (await schemaRes.json()) as { ok: boolean; tools: Array<{ name: string }> };
+  assert.equal(schemaJson.ok, true);
+  assert.ok(schemaJson.tools.some((t) => t.name === 'atlas_canvas_ops') && schemaJson.tools.some((t) => t.name === 'atlas_inspect_room'));
+
+  const unauthOps = await fetch(`${baseUrl}/api/rooms/team/agent/ops`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ops: [{ op: 'create_widget', title: 'No Auth' }] }),
+  });
+  assert.equal(unauthOps.status, 401);
+
+  const sessRes = await fetch(`${baseUrl}/api/auth/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: baseUrl },
+    body: JSON.stringify({ cid: 'human-viewer' }),
+  });
+  const sessJson = (await sessRes.json()) as { token: string };
+  const b64url = Buffer.from(sessJson.token, 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/team/agent?cid=human-viewer`, [
+    'atlas-v1',
+    `atlas-auth.${b64url}`,
+  ]);
+  const frames: any[] = [];
+  ws.on('message', (d) => {
+    try { frames.push(JSON.parse(String(d))); } catch { /* ignore */ }
+  });
+  await new Promise<void>((resolve, reject) => {
+    ws.once('open', () => resolve());
+    ws.once('error', reject);
+  });
+  t.after(() => ws.close());
+
+  const opsRes = await fetch(`${baseUrl}/api/rooms/team/agent/ops`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Agent-Api-Key': 'e2e-dedicated-agent-key',
+    },
+    body: JSON.stringify({
+      actor: 'claude-planner',
+      summary: '创建监控区背景与两个联动控件',
+      ops: [
+        { op: 'create_annotation', id: 'bg-1', kind: 'text', text: '监控分区', bgColor: '#FEF3C7', x: 20, y: 20, width: 760, height: 420 },
+        { op: 'create_widget', id: 'w-1', title: 'CPU 指标', defaultVars: { usage: 42 } },
+        { op: 'create_widget', id: 'w-2', title: '告警卡片' },
+        { op: 'connect_edge', id: 'e-1', source: 'w-1', target: 'w-2', label: '阈值触发' },
+      ],
+    }),
+  });
+  assert.equal(opsRes.status, 200);
+  const opsJson = (await opsRes.json()) as { ok: boolean; room: string; historyVersion: number; results: any[] };
+  assert.equal(opsJson.ok, true);
+  assert.equal(opsJson.room, 'team/agent');
+  assert.equal(opsJson.results.length, 4);
+
+  await new Promise((r) => setTimeout(r, 150));
+  assert.ok(
+    frames.some((f) => f.t === 'state' && f.replace === true && f.blueprint?.nodes?.['w-1']?.title === 'CPU 指标' && f.blueprint?.annotations?.['bg-1']?.text === '监控分区'),
+    'connected WS client must receive Agent ops in real time'
+  );
+
+  const histRes = await fetch(`${baseUrl}/api/rooms/team/agent/history`, {
+    headers: { 'X-Proxy-Token': sessJson.token },
+  });
+  const histJson = (await histRes.json()) as { ok: boolean; entries: Array<{ action: string; actor: string }> };
+  assert.equal(histJson.ok, true);
+  assert.equal(histJson.entries[0].action, 'agent');
+  assert.equal(histJson.entries[0].actor, 'claude-planner');
+});
+
+test('E2E Agent v88: preserves unflushed human WS edit, supports agent/state, dryRun, expectedRevision 409, template ops & live MCP', async (t) => {
+  const { handleMcpJsonRpcRequest } = await import('../server/mcpServer.ts');
+  const tmpDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'atlas-e2e-v88-'));
+  const port = 21700 + Math.floor(Math.random() * 1000);
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const serverEntry = path.resolve('dist-server/server.mjs');
+
+  const child = spawn(process.execPath, [serverEntry], {
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      PORT: String(port),
+      ATLAS_DATA_DIR: tmpDataDir,
+      AUTH_SESSION_SECRET: 'e2e-v88-session-secret',
+      BLUEPRINT_SAVE_KEY: 'e2e-v88-admin-key',
+      AGENT_API_KEY: 'e2e-v88-agent-key',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  t.after(async () => {
+    child.kill('SIGTERM');
+    await new Promise((r) => setTimeout(r, 150));
+    await fs.rm(tmpDataDir, { recursive: true, force: true });
+  });
+
+  await waitForHealth(baseUrl);
+
+  const sessRes = await fetch(`${baseUrl}/api/auth/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: baseUrl },
+    body: JSON.stringify({ cid: 'human-live' }),
+  });
+  const sessJson = (await sessRes.json()) as { token: string };
+  const b64url = Buffer.from(sessJson.token, 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/team/live?cid=human-live`, [
+    'atlas-v1',
+    `atlas-auth.${b64url}`,
+  ]);
+  await new Promise<void>((resolve, reject) => {
+    ws.once('open', () => resolve());
+    ws.once('error', reject);
+  });
+  t.after(() => ws.close());
+
+  ws.send(JSON.stringify({
+    t: 'upsert_node',
+    node: {
+      id: 'human-node-1',
+      x: 50,
+      y: 50,
+      width: 280,
+      height: 160,
+      title: '人类刚刚拖出来的节点',
+      body: '',
+      color: '#10B981',
+      defaultVars: {},
+      rev: 1,
+      cid: 'human-live',
+    },
+  }));
+  await new Promise((r) => setTimeout(r, 80));
+
+  const stateRes = await fetch(`${baseUrl}/api/rooms/team/live/agent/state`, {
+    headers: { 'X-Agent-Api-Key': 'e2e-v88-agent-key' },
+  });
+  assert.equal(stateRes.status, 200);
+  const stateJson = (await stateRes.json()) as { ok: boolean; revision: number; summary: { nodes: Array<{ id: string }> } };
+  assert.equal(stateJson.ok, true);
+  assert.ok(
+    stateJson.summary.nodes.some((n) => n.id === 'human-node-1'),
+    'Agent state must immediately see unflushed human WS edit'
+  );
+
+  const dryRes = await fetch(`${baseUrl}/api/rooms/team/live/ops`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Agent-Api-Key': 'e2e-v88-agent-key' },
+    body: JSON.stringify({
+      dryRun: true,
+      ops: [{ op: 'create_from_template', templateId: 'tpl-slider-node', id: 'preview-slider' }],
+    }),
+  });
+  assert.equal(dryRes.status, 200);
+  const dryJson = (await dryRes.json()) as { dryRun: boolean; currentRevision: number; results: Array<{ bounds: any }> };
+  assert.equal(dryJson.dryRun, true);
+  assert.ok(dryJson.results[0].bounds, 'dryRun should return computed auto-layout bounds');
+
+  const conflictRes = await fetch(`${baseUrl}/api/rooms/team/live/ops`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Agent-Api-Key': 'e2e-v88-agent-key' },
+    body: JSON.stringify({
+      expectedRevision: stateJson.revision + 99,
+      ops: [{ op: 'create_widget', title: 'Should Conflict' }],
+    }),
+  });
+  assert.equal(conflictRes.status, 409);
+
+  const mcpCfg = { baseUrl, apiKey: 'e2e-v88-agent-key', defaultRoom: 'team/live' };
+  const mcpOps = await handleMcpJsonRpcRequest(
+    {
+      jsonrpc: '2.0',
+      id: 10,
+      method: 'tools/call',
+      params: {
+        name: 'atlas_apply_ops',
+        arguments: {
+          room: 'team/live',
+          expectedRevision: stateJson.revision,
+          ops: [{ op: 'create_from_template', templateId: 'tpl-slider-node', id: 'agent-slider-1', title: 'Agent 模板滑块' }],
+        },
+      },
+    },
+    mcpCfg
+  );
+  const mcpOpsData = JSON.parse((mcpOps?.result as any).content[0].text);
+  assert.equal(mcpOpsData.ok, true);
+
+  const afterState = await handleMcpJsonRpcRequest(
+    { jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name: 'atlas_inspect_room', arguments: { room: 'team/live' } } },
+    mcpCfg
+  );
+  const afterData = JSON.parse((afterState?.result as any).content[0].text);
+  assert.ok(afterData.summary.nodes.some((n: any) => n.id === 'human-node-1'), 'human WS node must be preserved');
+  assert.ok(afterData.summary.nodes.some((n: any) => n.id === 'agent-slider-1'), 'Agent template node must exist');
+});

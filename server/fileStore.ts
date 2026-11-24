@@ -55,7 +55,7 @@ export function roomPathToFileKey(roomPath: string): string {
   return `${slug}__${hash}`;
 }
 
-export type RoomHistoryAction = 'publish' | 'collab' | 'rollback';
+export type RoomHistoryAction = 'publish' | 'collab' | 'rollback' | 'agent';
 
 export interface RoomHistoryMeta {
   version: number;

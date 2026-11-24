@@ -21,7 +21,8 @@ import {
 } from './pdfUnpack';
 import { attachRoomServer, type RoomServerHandle, type RpcHandler } from './roomServer';
 import { createRoomBlueprintStoreRegistry, listPersistedRooms } from './fileStore';
-import { normalizeRoomPath } from '../src/core/roomPath';
+import { DEFAULT_ROOM_PATH, normalizeRoomPath } from '../src/core/roomPath';
+import { applyAgentOperations, getAgentToolSchema, listAgentTemplates, summarizeBlueprintForAgent } from '../src/core/agentOps';
 import { issueSignedSessionToken, parseCookieValue, verifySignedSessionToken } from './authSession';
 import {
   handleApiRequest,
@@ -253,7 +254,7 @@ async function startServer() {
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
       res.setHeader(
         'Access-Control-Allow-Headers',
-        'Content-Type, X-Proxy-Token, X-Proxy-Access-Key, X-Blueprint-Save-Key, X-Room-Path'
+        'Content-Type, X-Proxy-Token, X-Proxy-Access-Key, X-Agent-Api-Key, X-Blueprint-Save-Key, X-Room-Path'
       );
       res.setHeader('Vary', 'Origin');
       if (req.method === 'OPTIONS') {
@@ -289,6 +290,8 @@ async function startServer() {
 
 
   const blueprintSaveKey = (process.env.BLUEPRINT_SAVE_KEY || '').trim();
+  // 外部 AI Agent 操作接口专用密钥（留空时回退到 BLUEPRINT_SAVE_KEY；两者均空则禁止 Agent 写入）
+  const agentApiKey = (process.env.AGENT_API_KEY || '').trim();
   const upstreamBaseUrl = (process.env.PROXY_UPSTREAM_BASE_URL || '').trim();
   const allowedHosts = parseAllowedHosts(process.env.PROXY_ALLOWED_HOSTS);
   const proxyApiKey = (process.env.PROXY_API_KEY || '').trim();
@@ -778,14 +781,190 @@ async function startServer() {
     res.json({ ok: true, room: roomPath, entries });
   });
 
+  // 按房间串行化 Agent 写入，避免并发请求互相覆盖
+  const agentRoomQueues = new Map<string, Promise<void>>();
+  const runSerializedForRoom = async <T>(roomKey: string, task: () => Promise<T>): Promise<T> => {
+    const prev = agentRoomQueues.get(roomKey) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const nextChain = prev.then(() => gate);
+    agentRoomQueues.set(roomKey, nextChain);
+    await prev;
+    try {
+      return await task();
+    } finally {
+      release();
+      if (agentRoomQueues.get(roomKey) === nextChain) {
+        agentRoomQueues.delete(roomKey);
+      }
+    }
+  };
+
+  const verifyAgentRequestAuth = (req: express.Request, res: express.Response): boolean => {
+    const clientIp = getRealClientIp(req);
+    const rl = checkProxyRateLimit(clientIp);
+    if (!rl.ok) {
+      res.setHeader('Retry-After', String(rl.retryAfterSec ?? 10));
+      res.status(429).json({ ok: false, error: `Agent 请求过于频繁，请 ${rl.retryAfterSec} 秒后重试` });
+      return false;
+    }
+    const expectedKey = agentApiKey || blueprintSaveKey;
+    if (!expectedKey) {
+      res.status(403).json({ ok: false, error: '服务端未配置 AGENT_API_KEY 或 BLUEPRINT_SAVE_KEY，禁止 Agent 访问' });
+      return false;
+    }
+    const provided = String(
+      req.header('x-agent-api-key') || req.header('x-blueprint-save-key') || ''
+    ).trim();
+    if (!verifyTimingSafeKey(expectedKey, provided)) {
+      res.status(401).json({ ok: false, error: 'Agent 鉴权失败：缺少或错误的 X-Agent-Api-Key' });
+      return false;
+    }
+    return true;
+  };
+
+  // 面向外部 AI Agent 的工具 Schema 自描述接口（OpenAI / Gemini / MCP 可直接注册）
+  app.get('/api/agent/schema', (_req, res) => {
+    res.json({
+      ok: true,
+      inspectEndpoint: '/api/rooms/<roomPath>/agent/state',
+      opsEndpoint: '/api/rooms/<roomPath>/ops',
+      defaultOpsEndpoint: '/api/ops',
+      authHeader: 'X-Agent-Api-Key',
+      fallbackAuthHeader: 'X-Blueprint-Save-Key',
+      templates: listAgentTemplates(),
+      tools: getAgentToolSchema(),
+    });
+  });
+
+  // 面向外部 AI Agent 的只读状态摘要接口（仅需 X-Agent-Api-Key，先 flush WS 实时内存态再读取）
+  const handleAgentStateRequest = async (roomPath: string, req: express.Request, res: express.Response) => {
+    if (!verifyAgentRequestAuth(req, res)) return;
+    const normalizedRoom = normalizeRoomPath(roomPath);
+    const store = roomBlueprintRegistry.getStore(normalizedRoom);
+    const liveSnap = await roomServer?.flushRoomSnapshot(normalizedRoom);
+    const currentBlueprint = liveSnap ?? (await store.readBlueprint());
+    const revision = await store.readRevision();
+    const includeFull = String(req.query.full || '') === '1' || String(req.query.full || '') === 'true';
+    res.json({
+      ok: true,
+      room: normalizedRoom,
+      revision,
+      summary: summarizeBlueprintForAgent(currentBlueprint),
+      templates: listAgentTemplates(),
+      ...(includeFull ? { blueprint: currentBlueprint } : {}),
+    });
+  };
+
+  app.get('/api/agent/state', async (req, res) => {
+    const requestedRoom = String(req.query.room || req.header('x-room-path') || DEFAULT_ROOM_PATH).trim();
+    await handleAgentStateRequest(requestedRoom, req, res);
+  });
+
+  app.get(/^\/api\/rooms\/(.+)\/agent\/state$/, async (req, res) => {
+    const raw = (req.params as Record<string, string>)[0] || DEFAULT_ROOM_PATH;
+    const roomPath = normalizeRoomPath(decodeURIComponent(raw));
+    await handleAgentStateRequest(roomPath, req, res);
+  });
+
+  const handleAgentOpsRequest = async (roomPath: string, req: express.Request, res: express.Response) => {
+    if (!verifyAgentRequestAuth(req, res)) return;
+    const clientIp = getRealClientIp(req);
+    const body = (req.body || {}) as {
+      ops?: unknown;
+      actor?: unknown;
+      summary?: unknown;
+      expectedRevision?: unknown;
+      dryRun?: unknown;
+    };
+    const normalizedRoom = normalizeRoomPath(roomPath);
+    const isDryRun = body.dryRun === true;
+
+    await runSerializedForRoom(normalizedRoom, async () => {
+      const store = roomBlueprintRegistry.getStore(normalizedRoom);
+      // 先将 WS 房间内存中尚未落盘的协同编辑刷入并取最新快照，绝不覆盖人类实时编辑
+      const liveSnap = await roomServer?.flushRoomSnapshot(normalizedRoom);
+      const currentBlueprint = liveSnap ?? (await store.readBlueprint());
+      const currentRev = await store.readRevision();
+
+      if (body.expectedRevision !== undefined && body.expectedRevision !== null) {
+        const expected = Number(body.expectedRevision);
+        if (!Number.isFinite(expected) || Math.trunc(expected) !== currentRev) {
+          res.status(409).json({
+            ok: false,
+            error: `版本冲突：期望 revision=${String(body.expectedRevision)}，当前最新 revision=${currentRev}`,
+            currentRevision: currentRev,
+          });
+          return;
+        }
+      }
+
+      const actor = typeof body.actor === 'string' && body.actor.trim() ? body.actor.trim() : `agent:${clientIp}`;
+      const applied = applyAgentOperations(currentBlueprint, body.ops, { actor });
+      if (!applied.ok) {
+        res.status(400).json({ ok: false, error: applied.error, failedIndex: applied.failedIndex });
+        return;
+      }
+
+      if (isDryRun) {
+        res.json({
+          ok: true,
+          dryRun: true,
+          room: normalizedRoom,
+          currentRevision: currentRev,
+          results: applied.results,
+          summary: applied.summary,
+          preview: summarizeBlueprintForAgent(applied.blueprint),
+        });
+        return;
+      }
+
+      const nextRev = currentRev + 1;
+      await store.writeBlueprint(applied.blueprint);
+      await store.writeRevision(nextRev);
+      const historyEntry = await store.recordHistory('agent', {
+        actor,
+        summary: typeof body.summary === 'string' && body.summary.trim() ? body.summary.trim().slice(0, 140) : applied.summary,
+        blueprint: applied.blueprint,
+      });
+      roomServer?.syncPublishedBlueprint(normalizedRoom, applied.blueprint);
+
+      res.json({
+        ok: true,
+        dryRun: false,
+        room: normalizedRoom,
+        revision: nextRev,
+        results: applied.results,
+        summary: applied.summary,
+        historyVersion: historyEntry?.version ?? null,
+      });
+    });
+  };
+
+  app.post('/api/ops', async (req, res) => {
+    const requestedRoom = String(req.query.room || req.header('x-room-path') || DEFAULT_ROOM_PATH).trim();
+    await handleAgentOpsRequest(requestedRoom, req, res);
+  });
+
+  app.post(/^\/api\/rooms\/(.+)\/ops$/, async (req, res) => {
+    const raw = (req.params as Record<string, string>)[0] || DEFAULT_ROOM_PATH;
+    const roomPath = normalizeRoomPath(decodeURIComponent(raw));
+    await handleAgentOpsRequest(roomPath, req, res);
+  });
+
   const handleRollbackRequest = async (roomPath: string, req: express.Request, res: express.Response) => {
     const saveKey = String(req.header('x-blueprint-save-key') || '').trim();
-    if (!blueprintSaveKey) {
-      res.status(403).json({ ok: false, error: '服务端未配置 BLUEPRINT_SAVE_KEY，禁止回档' });
+    const agentKeyHeader = String(req.header('x-agent-api-key') || '').trim();
+    if (!blueprintSaveKey && !agentApiKey) {
+      res.status(403).json({ ok: false, error: '服务端未配置 BLUEPRINT_SAVE_KEY 或 AGENT_API_KEY，禁止回档' });
       return;
     }
-    if (!verifySaveKey(saveKey)) {
-      res.status(401).json({ ok: false, error: '管理员保存密钥错误，拒绝回档' });
+    const okSave = Boolean(blueprintSaveKey && verifySaveKey(saveKey));
+    const okAgent = Boolean((agentApiKey || blueprintSaveKey) && verifyTimingSafeKey(agentApiKey || blueprintSaveKey, agentKeyHeader));
+    if (!okSave && !okAgent) {
+      res.status(401).json({ ok: false, error: '管理员或 Agent 密钥错误，拒绝回档' });
       return;
     }
     const version = Number((req.body as { version?: unknown } | undefined)?.version);
@@ -802,12 +981,21 @@ async function startServer() {
     res.json({ ok: true, room: roomPath, revision: out.revision, blueprint: out.blueprint, entry: out.entry });
   };
 
-  app.post('/api/rollback', requireClientAuth, async (req, res) => {
+  const requireSessionOrAgentKey: express.RequestHandler = (req, res, next) => {
+    const providedAgentKey = String(req.header('x-agent-api-key') || '').trim();
+    if (providedAgentKey && verifyTimingSafeKey(agentApiKey || blueprintSaveKey, providedAgentKey)) {
+      next();
+      return;
+    }
+    requireClientAuth(req, res, next);
+  };
+
+  app.post('/api/rollback', requireSessionOrAgentKey, async (req, res) => {
     const roomPath = normalizeRoomPath(String(req.query.room || req.header('x-room-path') || ''));
     await handleRollbackRequest(roomPath, req, res);
   });
 
-  app.post(/^\/api\/rooms\/(.+)\/rollback$/, requireClientAuth, async (req, res) => {
+  app.post(/^\/api\/rooms\/(.+)\/rollback$/, requireSessionOrAgentKey, async (req, res) => {
     const roomPath = normalizeRoomPath(req.params[0]);
     await handleRollbackRequest(roomPath, req, res);
   });

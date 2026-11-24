@@ -185,6 +185,7 @@ export interface RoomServerHandle {
   close: () => Promise<void>;
   stats: () => { rooms: number; members: number };
   syncPublishedBlueprint: (roomName: string, blueprint: unknown) => void;
+  flushRoomSnapshot: (roomName: string) => Promise<Record<string, unknown> | null>;
 }
 
 /**
@@ -679,6 +680,25 @@ export function attachRoomServer(
       rooms: rooms.size,
       members: [...rooms.values()].reduce((sum, r) => sum + r.members.size, 0),
     }),
+    async flushRoomSnapshot(roomName: string): Promise<Record<string, unknown> | null> {
+      if (!roomName || roomName === '__rpc__') return null;
+      const st = states.get(roomName);
+      if (!st) return null;
+      const timer = persistTimers.get(roomName);
+      if (timer) {
+        clearTimeout(timer);
+        persistTimers.delete(roomName);
+      }
+      const snap = st.snapshot();
+      if (getRoomStore && timer) {
+        try {
+          await getRoomStore(roomName).writeBlueprint(snap);
+        } catch {
+          // 落盘失败时仍返回内存最新快照，确保调用方不读到旧盘数据
+        }
+      }
+      return snap;
+    },
     syncPublishedBlueprint(roomName: string, blueprint: unknown) {
       if (!roomName || roomName === '__rpc__' || !blueprint || typeof blueprint !== 'object') return;
       let st = states.get(roomName);
