@@ -44,6 +44,11 @@ jobs:
           fi
           echo "Resolved base: $(grep path= "$GITHUB_OUTPUT" | tail -1)"
 
+      # server/pdfUnpack.ts 渲染 PDF 页依赖 pdftoppm（poppler-utils）或 mutool（mupdf-tools），
+      # runner 镜像两者都没有，不装的话 tests/pdfUnpack.test.ts 会 spawn ENOENT。
+      - name: Install PDF tooling
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
+
       # 有 lockfile 时用 npm ci：可复现且更快；缺失时退回 npm install
       - name: Install dependencies
         run: |
