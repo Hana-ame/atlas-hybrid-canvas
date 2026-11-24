@@ -288,3 +288,146 @@ test('roomServer: 非 /ws 路径的 upgrade 不归房间服务处理', async (t)
     '非 /ws 路径应连不上'
   );
 });
+
+test('roomServer: 支持按路径 /ws/<roomPath> 分房间且不同路径状态完全隔离', async (t) => {
+  const { port, close } = await startRoomServer();
+  t.after(close);
+
+  const wsA = new WebSocket(`ws://127.0.0.1:${port}/ws/team/design?cid=cid-a`);
+  const a = new Client(wsA);
+  await new Promise<void>((resolve, reject) => {
+    wsA.once('open', () => resolve());
+    wsA.once('error', reject);
+  });
+  t.after(() => a.close());
+
+  a.send({ t: 'upsert_node', node: { id: 'n-design', rev: 1, cid: 'cid-a', title: 'Design Node' } });
+  await new Promise((r) => setTimeout(r, 60));
+
+  const wsB = new WebSocket(`ws://127.0.0.1:${port}/ws/team/other?cid=cid-b`);
+  const b = new Client(wsB);
+  await new Promise<void>((resolve, reject) => {
+    wsB.once('open', () => resolve());
+    wsB.once('error', reject);
+  });
+  t.after(() => b.close());
+
+  const frames = await b.collect(120);
+  assert.equal(
+    frames.some((m) => m.t === 'state' && m.blueprint?.nodes?.['n-design']),
+    false,
+    '不同路径房间不应收到 team/design 的节点快照'
+  );
+});
+
+test('roomServer: 服务端 RoomState.upsert 按 fieldRevs 合并并发非冲突字段', async (t) => {
+  const { port, close } = await startRoomServer();
+  t.after(close);
+
+  const a = await connect(port, 'field-crdt', 'cid-a');
+  const b = await connect(port, 'field-crdt', 'cid-b');
+  t.after(() => {
+    a.close();
+    b.close();
+  });
+
+  a.send({
+    t: 'upsert_node',
+    node: {
+      id: 'n1',
+      rev: 1,
+      cid: 'cid-a',
+      title: 'Title-A',
+      color: '#111111',
+      fieldRevs: {
+        title: { rev: 1, cid: 'cid-a' },
+        color: { rev: 1, cid: 'cid-a' },
+      },
+    },
+  });
+  await b.waitFor((m: any) => m.t === 'upsert_node');
+
+  // cid-a 改 title (rev=2), cid-b 同 rev=2 改 color -> 两者均应保留
+  a.send({
+    t: 'upsert_node',
+    node: {
+      id: 'n1',
+      rev: 2,
+      cid: 'cid-a',
+      title: 'Title-A2',
+      color: '#111111',
+      fieldRevs: {
+        title: { rev: 2, cid: 'cid-a' },
+        color: { rev: 1, cid: 'cid-a' },
+      },
+    },
+  });
+  await new Promise((r) => setTimeout(r, 50));
+
+  b.send({
+    t: 'upsert_node',
+    node: {
+      id: 'n1',
+      rev: 2,
+      cid: 'cid-b',
+      title: 'Title-A',
+      color: '#222222',
+      fieldRevs: {
+        title: { rev: 1, cid: 'cid-a' },
+        color: { rev: 2, cid: 'cid-b' },
+      },
+    },
+  });
+  await new Promise((r) => setTimeout(r, 60));
+
+  const c = await connect(port, 'field-crdt', 'cid-c');
+  t.after(() => c.close());
+  const snap = await c.waitFor((m: any) => m.t === 'state');
+  assert.equal(snap.blueprint.nodes.n1.title, 'Title-A2');
+  assert.equal(snap.blueprint.nodes.n1.color, '#222222');
+});
+
+test('roomServer: verifyToken 拒绝无凭证连接并放行 Sec-WebSocket-Protocol 子协议令牌', async (t) => {
+  const { extractWsSubprotocolToken } = await import('../server/authSession.ts');
+  const server = http.createServer((_req, res) => res.end('ok'));
+  const handle = attachRoomServer(server, '/ws', undefined, undefined, (tok) => tok === 'valid-ws-secret');
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const addr = server.address();
+  const port = typeof addr === 'object' && addr ? addr.port : 0;
+  t.after(async () => {
+    await handle.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  await assert.rejects(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/secure-room?cid=c1`);
+        ws.once('open', () => {
+          ws.close();
+          resolve();
+        });
+        ws.once('error', reject);
+      })
+  );
+
+  const b64url = Buffer.from('valid-ws-secret', 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+  assert.equal(extractWsSubprotocolToken(`atlas-v1, atlas-auth.${b64url}`), 'valid-ws-secret');
+
+  await new Promise<void>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/secure-room?cid=c2`, [
+      'atlas-v1',
+      `atlas-auth.${b64url}`,
+    ]);
+    ws.once('open', () => {
+      assert.equal(ws.protocol, 'atlas-v1');
+      ws.close();
+      resolve();
+    });
+    ws.once('error', reject);
+  });
+});
