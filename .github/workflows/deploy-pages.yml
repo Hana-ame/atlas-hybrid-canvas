@@ -86,6 +86,18 @@ jobs:
             echo "未找到 tutorial/ 目录，跳过"
           fi
 
+      # docs/ 同理：架构手册与文档不参与 vite 构建，直接镜像到 dist/docs/
+      - name: Copy docs into dist
+        run: |
+          if [ -d docs ]; then
+            mkdir -p dist/docs
+            cp -r docs/. dist/docs/
+            echo "已拷贝 docs/ 到 dist/docs/："
+            ls -1 dist/docs
+          else
+            echo "未找到 docs/ 目录，跳过"
+          fi
+
       # Pages 默认会跑 Jekyll，下划线开头的资源会被吞掉；.nojekyll 关掉它
       - name: Add .nojekyll
         run: touch dist/.nojekyll
