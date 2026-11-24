@@ -259,7 +259,7 @@ export async function runInIsolatedWorker(
     const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
     const _post = self.postMessage.bind(self);
     const _proto = Object.getPrototypeOf(self);
-    for (const api of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'BroadcastChannel', 'importScripts', 'indexedDB', 'caches', 'setTimeout', 'setInterval', 'postMessage']) {
+    for (const api of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'BroadcastChannel', 'importScripts', 'indexedDB', 'caches', 'setTimeout', 'setInterval', 'postMessage', 'Worker', 'SharedWorker', 'Blob', 'URL', 'WebTransport', 'WebAssembly']) {
       try { Object.defineProperty(self, api, { value: undefined, writable: false, configurable: false }); } catch {}
       if (_proto) { try { Object.defineProperty(_proto, api, { value: undefined, writable: false, configurable: false }); } catch {} }
     }

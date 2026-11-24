@@ -13,6 +13,7 @@ export function normalizePdfPage(raw: unknown): number {
 }
 
 export function isSafePdfUrl(rawUrl: string): boolean {
+  if (typeof rawUrl !== 'string') return false;
   const trimmed = rawUrl.trim();
   if (!trimmed) return false;
   if (
@@ -32,6 +33,7 @@ export function isSafePdfUrl(rawUrl: string): boolean {
 }
 
 export function isUnpackedPdfTemplate(rawUrl: string): boolean {
+  if (typeof rawUrl !== 'string') return false;
   return /^\/api\/pdf\/[a-zA-Z0-9_-]+\/page\/\{page\}$/.test(rawUrl.trim());
 }
 
@@ -43,6 +45,7 @@ export function pickPdfRenderDpi(targetPixelWidth: number): 150 | 220 | 300 | 40
 }
 
 export function buildPdfPageImageUrl(rawUrl: string, page: number, dpi?: number): string | null {
+  if (typeof rawUrl !== 'string') return null;
   const trimmed = rawUrl.trim();
   if (!trimmed) return null;
   const safePage = normalizePdfPage(page);

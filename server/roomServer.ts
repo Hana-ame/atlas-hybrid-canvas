@@ -508,7 +508,12 @@ export function attachRoomServer(
       return;
     }
 
-    const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    const trustProxy =
+      String(process.env.TRUST_PROXY || '').trim().toLowerCase() === 'true' ||
+      process.env.TRUST_PROXY === '1';
+    const fwd = trustProxy
+      ? String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()
+      : '';
     const clientIp = fwd || req.socket.remoteAddress || 'unknown';
     wss.handleUpgrade(req, socket, head, (ws) => {
       const room = join(roomName, ws, cid);

@@ -13,6 +13,7 @@ import type { BlueprintStore } from '../src/core/apiCore';
 import { DEFAULT_ROOM_PATH, normalizeRoomPath } from '../src/core/roomPath';
 
 interface PersistedBlueprintFile {
+  roomPath?: string;
   revision: number;
   blueprint: unknown;
   updatedAt: number;
@@ -35,109 +36,6 @@ async function safeReadJson<T>(filePath: string): Promise<T | null> {
     return null;
   }
 }
-
-/** 将房间名消毒为安全文件名，防止路径遍历。 */
-export function sanitizeRoomFileKey(roomName: string): string {
-  const cleaned = String(roomName || 'default')
-    .trim()
-    .replace(/[^a-zA-Z0-9_-]/g, '_')
-    .slice(0, 80);
-  return cleaned || 'default';
-}
-
-/**
- * 持久化版 BlueprintStore（与 apiCore.ts 的 createMemoryStore 接口完全一致）。
- * 启动时惰性从磁盘水合一次，之后读走内存、写走串行原子落盘。
- */
-export function createFileBlueprintStore(dataDir: string): BlueprintStore {
-  const filePath = path.join(dataDir, 'blueprint.json');
-  let loaded = false;
-  let revision = 1;
-  let blueprint: unknown = null;
-  let writeChain: Promise<void> = Promise.resolve();
-
-  const ensureLoaded = async (): Promise<void> => {
-    if (loaded) return;
-    loaded = true;
-    const saved = await safeReadJson<Partial<PersistedBlueprintFile>>(filePath);
-    if (saved && typeof saved === 'object') {
-      const r = Number(saved.revision);
-      if (Number.isFinite(r) && r >= 1) revision = Math.trunc(r);
-      if (saved.blueprint !== undefined) blueprint = saved.blueprint;
-    }
-  };
-
-  const enqueuePersist = (): Promise<void> => {
-    const snap: PersistedBlueprintFile = {
-      revision,
-      blueprint,
-      updatedAt: Date.now(),
-    };
-    writeChain = writeChain
-      .then(() => atomicWriteJson(filePath, snap))
-      .catch(() => {
-        // 落盘失败时不阻断后续内存写入队列
-      });
-    return writeChain;
-  };
-
-  return {
-    async readRevision() {
-      await ensureLoaded();
-      return revision;
-    },
-    async writeRevision(rev: number) {
-      await ensureLoaded();
-      revision = rev;
-      await enqueuePersist();
-    },
-    async readBlueprint() {
-      await ensureLoaded();
-      return blueprint;
-    },
-    async writeBlueprint(bp: unknown) {
-      await ensureLoaded();
-      blueprint = bp;
-      await enqueuePersist();
-      return true;
-    },
-  };
-}
-
-/**
- * 读取统一房间持久化文件中的蓝图快照（REST 与 WS 共用 `<dataDir>/rooms/<key>.json` 单一事实源）。
- */
-export async function loadRoomSnapshotFile(
-  dataDir: string,
-  roomName: string
-): Promise<Record<string, unknown> | null> {
-  const filePath = path.join(dataDir, 'rooms', `${roomPathToFileKey(roomName)}.json`);
-  const parsed = await safeReadJson<Record<string, unknown>>(filePath);
-  if (!parsed || typeof parsed !== 'object') return null;
-  if ('blueprint' in parsed && parsed.blueprint && typeof parsed.blueprint === 'object') {
-    return parsed.blueprint as Record<string, unknown>;
-  }
-  return parsed;
-}
-
-/**
- * 原子保存统一房间文件中的蓝图快照（保留既有 revision，与 REST 蓝图读写共用同一文件）。
- */
-export async function saveRoomSnapshotFile(
-  dataDir: string,
-  roomName: string,
-  snapshot: Record<string, unknown>
-): Promise<void> {
-  const filePath = path.join(dataDir, 'rooms', `${roomPathToFileKey(roomName)}.json`);
-  const existing = await safeReadJson<Partial<PersistedBlueprintFile>>(filePath);
-  const rev = existing && typeof existing.revision === 'number' && existing.revision >= 1 ? existing.revision : 1;
-  await atomicWriteJson(filePath, {
-    revision: rev,
-    blueprint: snapshot,
-    updatedAt: Date.now(),
-  } satisfies PersistedBlueprintFile);
-}
-
 
 /**
  * 将房间路径（支持多级 `/`）映射为防碰撞的安全文件名：
@@ -185,7 +83,7 @@ export interface RoomBlueprintStore extends BlueprintStore {
 
 const MAX_HISTORY_ENTRIES = 50;
 
-function createSingleFileBlueprintStore(filePath: string): RoomBlueprintStore {
+function createSingleFileBlueprintStore(filePath: string, roomPath: string): RoomBlueprintStore {
   const historyPath = filePath.replace(/\.json$/i, '.history.json');
   let loaded = false;
   let revision = 1;
@@ -229,6 +127,7 @@ function createSingleFileBlueprintStore(filePath: string): RoomBlueprintStore {
 
   const enqueuePersistMain = (): Promise<void> => {
     const snap: PersistedBlueprintFile = {
+      roomPath,
       revision,
       blueprint,
       updatedAt: Date.now(),
@@ -407,7 +306,7 @@ export function createRoomBlueprintStoreRegistry(
         return existing;
       }
       const targetFile = path.join(dataDir, 'rooms', `${roomPathToFileKey(cacheKey)}.json`);
-      const created = createSingleFileBlueprintStore(targetFile);
+      const created = createSingleFileBlueprintStore(targetFile, normalized);
       stores.set(cacheKey, created);
       while (stores.size > cap) {
         const oldest = stores.keys().next().value;
@@ -422,18 +321,23 @@ export function createRoomBlueprintStoreRegistry(
   };
 }
 
-/** 列出已落盘的房间文件键（排除 .history.json）。 */
+/** 列出已落盘的房间逻辑路径（优先读取文件内 roomPath，兼容老文件回退为文件键，排除 .history.json）。 */
 export async function listPersistedRooms(dataDir: string): Promise<string[]> {
-  const keys = new Set<string>();
+  const rooms = new Set<string>();
+  const roomsDir = path.join(dataDir, 'rooms');
   try {
-    const entries = await fs.readdir(path.join(dataDir, 'rooms'));
+    const entries = await fs.readdir(roomsDir);
     for (const name of entries) {
       if (name.endsWith('.json') && !name.endsWith('.history.json')) {
-        keys.add(name.slice(0, -5));
+        const parsed = await safeReadJson<Partial<PersistedBlueprintFile>>(path.join(roomsDir, name));
+        const logical = typeof parsed?.roomPath === 'string' && parsed.roomPath.trim()
+          ? parsed.roomPath.trim()
+          : name.slice(0, -5);
+        rooms.add(logical);
       }
     }
   } catch {
     // 目录尚未创建时忽略
   }
-  return Array.from(keys).sort();
+  return Array.from(rooms).sort();
 }

@@ -230,9 +230,12 @@ export class CollaborativeRoomClient {
     this.recentFrames.set(raw, now);
     if (this.recentFrames.size > 256) {
       for (const [k, ts] of this.recentFrames) {
-        if (now - ts >= 2000 || this.recentFrames.size > 256) {
-          this.recentFrames.delete(k);
-        }
+        if (now - ts >= 2000) this.recentFrames.delete(k);
+      }
+      while (this.recentFrames.size > 256) {
+        const oldest = this.recentFrames.keys().next().value;
+        if (oldest === undefined) break;
+        this.recentFrames.delete(oldest);
       }
     }
     return false;

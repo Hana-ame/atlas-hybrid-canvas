@@ -4,25 +4,25 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  createFileBlueprintStore,
-  loadRoomSnapshotFile,
-  sanitizeRoomFileKey,
   createRoomBlueprintStoreRegistry,
-  saveRoomSnapshotFile,
+  listPersistedRooms,
+  roomPathToFileKey,
 } from '../server/fileStore.ts';
 
-test('createFileBlueprintStore() persists blueprint & revision atomically across restarts', async () => {
+test('createRoomBlueprintStoreRegistry() persists blueprint & revision atomically across restarts', async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'atlas-filestore-'));
   try {
-    const store1 = createFileBlueprintStore(tmpDir);
+    const reg1 = createRoomBlueprintStoreRegistry(tmpDir);
+    const store1 = reg1.getStore('atlas-main');
     assert.equal(await store1.readRevision(), 1);
     assert.equal(await store1.readBlueprint(), null);
 
     await store1.writeBlueprint({ version: 2, nodes: { n1: { title: '持久化节点' } } });
     await store1.writeRevision(5);
 
-    // 模拟进程重启：重新实例化 store 读取同一目录
-    const store2 = createFileBlueprintStore(tmpDir);
+    // 模拟进程重启：重新实例化 registry 读取同一目录
+    const reg2 = createRoomBlueprintStoreRegistry(tmpDir);
+    const store2 = reg2.getStore('atlas-main');
     assert.equal(await store2.readRevision(), 5);
     assert.deepEqual(await store2.readBlueprint(), { version: 2, nodes: { n1: { title: '持久化节点' } } });
   } finally {
@@ -30,11 +30,16 @@ test('createFileBlueprintStore() persists blueprint & revision atomically across
   }
 });
 
-test('createFileBlueprintStore() recovers gracefully from corrupted JSON on disk', async () => {
+test('createRoomBlueprintStoreRegistry() recovers gracefully from corrupted JSON on disk', async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'atlas-filestore-corrupt-'));
   try {
-    await fs.writeFile(path.join(tmpDir, 'blueprint.json'), '{broken json!!!', 'utf8');
-    const store = createFileBlueprintStore(tmpDir);
+    const roomsDir = path.join(tmpDir, 'rooms');
+    await fs.mkdir(roomsDir, { recursive: true });
+    const key = roomPathToFileKey('atlas-main');
+    await fs.writeFile(path.join(roomsDir, `${key}.json`), '{broken json!!!', 'utf8');
+
+    const reg = createRoomBlueprintStoreRegistry(tmpDir);
+    const store = reg.getStore('atlas-main');
     assert.equal(await store.readRevision(), 1);
     assert.equal(await store.readBlueprint(), null);
   } finally {
@@ -42,16 +47,15 @@ test('createFileBlueprintStore() recovers gracefully from corrupted JSON on disk
   }
 });
 
-test('sanitizeRoomFileKey() blocks path traversal and saves/loads room snapshots', async () => {
-  assert.equal(sanitizeRoomFileKey('../../etc/passwd'), '______etc_passwd');
-  assert.equal(sanitizeRoomFileKey('   '), 'default');
-
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'atlas-roomstore-'));
+test('listPersistedRooms() returns logical roomPath instead of hashed file keys', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'atlas-roomlist-'));
   try {
-    const snap = { nodes: { a: { id: 'a', rev: 2, cid: 'c1' } }, annotations: {}, edges: {} };
-    await saveRoomSnapshotFile(tmpDir, 'design-room-1', snap);
-    const loaded = await loadRoomSnapshotFile(tmpDir, 'design-room-1');
-    assert.deepEqual(loaded, snap);
+    const reg = createRoomBlueprintStoreRegistry(tmpDir);
+    await reg.getStore('team/design').writeBlueprint({ nodes: {} });
+    await reg.getStore('team_design').writeBlueprint({ nodes: {} });
+
+    const listed = await listPersistedRooms(tmpDir);
+    assert.deepEqual(listed, ['team/design', 'team_design']);
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }

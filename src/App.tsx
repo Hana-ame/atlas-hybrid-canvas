@@ -168,25 +168,30 @@ function HybridCanvasWorkspace() {
     Array<{ version: number; ts: number; action: string; actor: string; summary: string }>
   >([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const historyReqSeqRef = useRef(0);
 
   const loadRoomHistory = useCallback(async () => {
+    const seq = ++historyReqSeqRef.current;
     setHistoryLoading(true);
     try {
       const resp = await fetch(buildRoomHistoryUrl(roomNameRef.current), {
         headers: proxyHeaders(),
         credentials: 'same-origin',
       });
+      if (seq !== historyReqSeqRef.current) return;
       if (resp.ok) {
         const json = (await resp.json()) as {
           ok?: boolean;
           entries?: Array<{ version: number; ts: number; action: string; actor: string; summary: string }>;
         };
-        if (json.ok && Array.isArray(json.entries)) setRoomHistory(json.entries);
+        if (seq === historyReqSeqRef.current && json.ok && Array.isArray(json.entries)) {
+          setRoomHistory(json.entries);
+        }
       }
     } catch {
       // 静态模式下忽略
     } finally {
-      setHistoryLoading(false);
+      if (seq === historyReqSeqRef.current) setHistoryLoading(false);
     }
   }, []);
 
@@ -377,6 +382,8 @@ function HybridCanvasWorkspace() {
   const overlayRef = useRef(overlay);
   overlayRef.current = overlay;
 
+  const renderedScriptsRef = useRef<Set<string>>(new Set());
+
   const bumpChunkSyncTick = useCallback(() => {
     renderedScriptsRef.current.clear();
     setChunkSyncTick((t) => t + 1);
@@ -411,8 +418,6 @@ function HybridCanvasWorkspace() {
     }, 120);
     return () => window.clearTimeout(timer);
   }, [rf]);
-
-  const renderedScriptsRef = useRef<Set<string>>(new Set());
 
   const { handleCopyChunkLink, handleExportJSON, handleImportJSONFile } = useBlueprintIO({
     selfCid: SELF_CID,
@@ -793,7 +798,15 @@ function HybridCanvasWorkspace() {
           headers: proxyHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ url: btn.proxyUrl, method: btn.proxyMethod || 'GET' }),
         });
-        const data = (await resp.json()) as { ok: boolean; status?: number; error?: string };
+        let data: { ok: boolean; status?: number; error?: string };
+        try {
+          data = (await resp.json()) as { ok: boolean; status?: number; error?: string };
+        } catch {
+          data = { ok: false, status: resp.status, error: `HTTP ${resp.status}（响应非 JSON）` };
+        }
+        if (!resp.ok && data.ok !== false) {
+          data = { ok: false, status: resp.status, error: data.error || `HTTP ${resp.status}` };
+        }
         setOverlay((prev) => ({
           ...prev,
           runtimeVars: {

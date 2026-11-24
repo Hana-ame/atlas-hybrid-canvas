@@ -108,6 +108,11 @@ function PdfViewerBlockInner({
       ? url.slice('client-pdf://'.length)
       : null;
   const [clientDocId, setClientDocId] = useState<string | null>(restoredClientId);
+  useEffect(() => {
+    return () => {
+      if (clientDocId) disposeClientPdfDoc(clientDocId);
+    };
+  }, [clientDocId]);
   const [clientPageImg, setClientPageImg] = useState<string | null>(null);
   const [displayedServerSrc, setDisplayedServerSrc] = useState<string | null>(null);
 

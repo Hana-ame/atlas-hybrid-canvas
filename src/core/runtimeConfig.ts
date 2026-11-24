@@ -15,13 +15,16 @@
  * 会回落到本机 8787，让开箱即用。
  */
 
-const RAW_BACKEND_WS_URL = String(import.meta.env.VITE_BACKEND_WS_URL ?? '').trim();
+const RAW_BACKEND_WS_URL = String((import.meta.env ?? {} as Record<string, string | undefined>).VITE_BACKEND_WS_URL ?? '').trim();
 
 /** 把用户填的地址规整成合法的 ws:// 或 wss:// URL；不合法返回 null。 */
 export function normalizeWsUrl(raw: string): string | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
   // 允许只填域名，自动补 wss://，减少填错概率
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed) && !/^wss?:\/\//i.test(trimmed)) {
+    return null;
+  }
   const withScheme = /^wss?:\/\//i.test(trimmed) ? trimmed : `wss://${trimmed}`;
   try {
     const url = new URL(withScheme);
@@ -49,7 +52,7 @@ export function hasBackend(): boolean {
 export function defaultRoomWsUrl(): string {
   const configured = normalizeWsUrl(RAW_BACKEND_WS_URL);
   if (configured) return configured;
-  if (import.meta.env.DEV) {
+  if ((import.meta.env ?? {} as Record<string, string | undefined>).DEV) {
     const { protocol, hostname } = window.location;
     // dev 端口默认 8787；若 Vite 被配到别的端口，这里仍按 8787 回退，
     // 因为 server/server.ts 的 PORT 默认值就是 8787，两边对齐。

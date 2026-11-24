@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Atlas Hybrid Canvas 架构逻辑、模块链接、接口与典型用法指南（v86）</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
+  <style>
+    /* Utilitarian · Technical Architecture Reference · Answer-first hero with emphasis numeral · Architecture -> Module Linkages -> Interfaces -> Security Band -> Usage Playbooks · Space Grotesk + IBM Plex Sans/Noto Sans SC + IBM Plex Mono · Crisp Gallery White (#FFFFFF) + Cobalt (#1D4ED8/#1E3A8A) + Teal (#0F766E/#115E59) · 0px radius · Single emphasis numeral (57 modules / 145 tests) · Full-bleed dark-slate security band · 2 inline SVG diagrams (architecture flow + module bar chart) + 3 open tables */
+    :root {
+      --paper: #FFFFFF;
+      --ink: #0F172A;
+      --ink2: #334155;
+      --mute: #475569;
+      --hair: #CBD5E1;
+      --accent: #1D4ED8;
+      --accent-text: #1E3A8A;
+      --accent-2: #0F766E;
+      --accent-2-text: #115E59;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      font-size: 16px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: 'IBM Plex Sans', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 16px;
+      line-height: 1.68;
+      padding: 68px clamp(24px, 10.4vw, 112px) 92px;
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      column-gap: 24px;
+    }
+
+    .span-12 { grid-column: 1 / -1; }
+    .span-8 { grid-column: 1 / span 8; }
+    .span-4 { grid-column: 1 / span 4; }
+    .col-5-12 { grid-column: 5 / -1; }
+    .col-2-11 { grid-column: 2 / span 10; }
+
+    .measure {
+      max-width: 68ch;
+    }
+
+    h1 {
+      font-family: 'Space Grotesk', 'Noto Sans SC', sans-serif;
+      font-size: clamp(36px, 4.4vw, 54px);
+      font-weight: 700;
+      line-height: 1.12;
+      letter-spacing: -0.025em;
+      text-wrap: balance;
+      margin: 0 0 18px 0;
+      color: var(--ink);
+    }
+
+    .deck {
+      font-size: 18px;
+      line-height: 1.6;
+      color: var(--ink2);
+      max-width: 66ch;
+      margin: 0;
+    }
+
+    .hero-split {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      column-gap: 24px;
+      align-items: end;
+      padding-bottom: 36px;
+      border-bottom: 1px solid var(--hair);
+    }
+
+    .hero-left {
+      grid-column: 1 / span 8;
+    }
+
+    .hero-right {
+      grid-column: 9 / -1;
+      border-left: 1px solid var(--hair);
+      padding-left: 24px;
+    }
+
+    .emphasis-num {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: clamp(48px, 5.2vw, 68px);
+      font-weight: 700;
+      line-height: 1.02;
+      letter-spacing: -0.03em;
+      color: var(--accent-text);
+      margin: 0 0 6px 0;
+      white-space: nowrap;
+    }
+
+    .emphasis-caption {
+      font-size: 14px;
+      line-height: 1.5;
+      color: var(--mute);
+      margin: 0;
+    }
+
+    .sec {
+      margin-top: 68px;
+      padding-top: 32px;
+      border-top: 1px solid var(--hair);
+    }
+
+    .sec-first {
+      margin-top: 44px;
+      padding-top: 0;
+      border-top: none;
+    }
+
+    h2 {
+      font-family: 'Space Grotesk', 'Noto Sans SC', sans-serif;
+      font-size: clamp(24px, 2.5vw, 32px);
+      font-weight: 700;
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+      text-wrap: balance;
+      margin: 0 0 16px 0;
+      color: var(--ink);
+    }
+
+    h3 {
+      font-family: 'Space Grotesk', 'Noto Sans SC', sans-serif;
+      font-size: 19px;
+      font-weight: 600;
+      line-height: 1.3;
+      margin: 0 0 8px 0;
+      color: var(--ink);
+    }
+
+    p {
+      margin: 0 0 16px 0;
+      color: var(--ink2);
+    }
+
+    p:last-child {
+      margin-bottom: 0;
+    }
+
+    code {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 13.5px;
+      color: var(--accent-text);
+      background: #F1F5F9;
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+
+    pre {
+      margin: 14px 0 20px 0;
+      padding: 16px 18px;
+      border-left: 3px solid var(--accent);
+      background: #F8FAFC;
+      overflow-x: auto;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--ink);
+    }
+
+    pre code {
+      background: transparent;
+      padding: 0;
+      color: inherit;
+      font-size: inherit;
+    }
+
+    ul, ol {
+      margin: 0 0 16px 0;
+      padding-left: 20px;
+      color: var(--ink2);
+    }
+
+    li {
+      margin-bottom: 8px;
+    }
+
+    li strong {
+      color: var(--ink);
+    }
+
+    .split-row {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      column-gap: 24px;
+      align-items: start;
+    }
+
+    .split-head {
+      grid-column: 1 / span 4;
+    }
+
+    .split-body {
+      grid-column: 5 / -1;
+    }
+
+    .cols-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      column-gap: 28px;
+      row-gap: 24px;
+      margin-top: 20px;
+    }
+
+    .cols-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      column-gap: 32px;
+      row-gap: 24px;
+      margin-top: 20px;
+    }
+
+    .strip-item {
+      border-top: 1px solid var(--hair);
+      padding-top: 16px;
+    }
+
+    figure {
+      margin: 28px 0 12px 0;
+      padding: 0;
+    }
+
+    .fig-title {
+      font-family: 'Space Grotesk', 'Noto Sans SC', sans-serif;
+      font-size: 18px;
+      font-weight: 600;
+      line-height: 1.35;
+      color: var(--ink);
+      margin: 0 0 12px 0;
+    }
+
+    figcaption {
+      font-family: 'IBM Plex Mono', 'Noto Sans SC', monospace;
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--mute);
+      margin-top: 10px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0 8px 0;
+      font-size: 14.5px;
+      line-height: 1.55;
+    }
+
+    th {
+      font-family: 'IBM Plex Mono', 'Noto Sans SC', monospace;
+      font-size: 12.5px;
+      font-weight: 600;
+      text-align: left;
+      color: var(--ink);
+      padding: 10px 12px 10px 0;
+      border-bottom: 2px solid var(--ink);
+      white-space: nowrap;
+    }
+
+    td {
+      padding: 11px 12px 11px 0;
+      border-bottom: 1px solid var(--hair);
+      vertical-align: top;
+      color: var(--ink2);
+    }
+
+    td:first-child {
+      color: var(--ink);
+      font-weight: 500;
+    }
+
+    .mono-nowrap {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 13px;
+      white-space: nowrap;
+      color: var(--accent-text);
+    }
+
+    .band-dark {
+      grid-column: 1 / -1;
+      margin-top: 68px;
+      margin-left: calc(-1 * clamp(24px, 10.4vw, 112px));
+      margin-right: calc(-1 * clamp(24px, 10.4vw, 112px));
+      padding: 56px clamp(24px, 10.4vw, 112px);
+      background: #0F172A;
+      color: #F8FAFC;
+    }
+
+    .band-dark h2,
+    .band-dark h3,
+    .band-dark strong {
+      color: #FFFFFF;
+    }
+
+    .band-dark p,
+    .band-dark li {
+      color: #CBD5E1;
+    }
+
+    .band-dark code {
+      background: #1E293B;
+      color: #93C5FD;
+    }
+
+    .band-dark .strip-item {
+      border-top-color: #334155;
+    }
+
+    blockquote {
+      margin: 48px 0 0 0;
+      padding: 0 0 0 24px;
+      border-left: 3px solid var(--accent-2);
+      font-family: 'Space Grotesk', 'Noto Sans SC', sans-serif;
+      font-size: clamp(20px, 2.2vw, 26px);
+      font-weight: 600;
+      line-height: 1.4;
+      color: var(--ink);
+      max-width: 52ch;
+    }
+
+    @media (max-width: 900px) {
+      .hero-left,
+      .hero-right,
+      .split-head,
+      .split-body,
+      .span-8,
+      .span-4,
+      .col-5-12,
+      .col-2-11 {
+        grid-column: 1 / -1;
+      }
+      .hero-right {
+        border-left: none;
+        border-top: 1px solid var(--hair);
+        padding-left: 0;
+        padding-top: 20px;
+        margin-top: 24px;
+      }
+      .cols-3,
+      .cols-2 {
+        grid-template-columns: 1fr;
+      }
+      table {
+        display: block;
+        overflow-x: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <!-- Answer-First Hero -->
+    <header class="span-12 hero-split">
+      <div class="hero-left">
+        <h1>Atlas Hybrid Canvas：从双层状态到三通道协同的完整工程手册</h1>
+        <p class="deck">一份覆盖 v86 全仓 57 个源码模块、前后端同构 API 路由、WebSocket/WebRTC 协同协议、脚本沙箱安全边界与典型部署用法的静态技术文档。</p>
+      </div>
+      <div class="hero-right">
+        <p class="emphasis-num">57 / 145</p>
+        <p class="emphasis-caption">57 个源码模块（前端 51 + 服务端 6）由 145 项自动化测试锁死，零静态密钥下发前端，单文件房间存储统一服务 REST 与 WS。</p>
+      </div>
+    </header>
+
+    <!-- Section 1: Core Architecture & Data Flow -->
+    <section class="span-12 sec-first">
+      <div class="split-row">
+        <div class="split-head">
+          <h2>双层状态叠加与双模式同构是整个系统的骨架</h2>
+        </div>
+        <div class="split-body measure">
+          <p>Atlas Hybrid Canvas 将画布状态拆分为<strong>共享蓝图底座（<code>base</code>）</strong>与<strong>本地叠加层（<code>overlay</code>）</strong>两层。共享蓝图通过字段级 LWW-CRDT（<code>src/core/crdt.ts</code>）在多端实时收敛，而用户的未发布草稿、脚本临时变量（<code>runtimeVars</code>）和标注微调先落在浏览器 IndexedDB 中（<code>src/core/layeredStore.ts</code>），渲染时由 <code>resolveEffectiveNodes()</code> 实时合成为最终视图，既保证协同不互相覆盖未提交编辑，又支持管理员一键发布回写底座。</p>
+          <p>在运行模式上，项目通过 <code>src/core/apiCore.ts</code> 实现<strong>前后端同构路由</strong>：未配置 <code>VITE_BACKEND_WS_URL</code> 时进入纯静态演示模式，<code>src/core/mockApi.ts</code> 拦截 <code>/api/*</code> 并在浏览器内按房间路径隔离写入 IndexedDB；配置后端或同源托管时，请求经 Express HTTP 或二进制 WebSocket RPC（<code>/ws</code>）直达 Node 后端，落盘到 <code>&lt;dataDir&gt;/rooms/&lt;key&gt;.json</code> 及其修改日志 <code>.history.json</code>。</p>
+        </div>
+      </div>
+
+      <figure class="span-12">
+        <p class="fig-title">REST、WebSocket 与 WebRTC 三通道收敛到单一房间存储引擎</p>
+        <svg viewBox="0 0 720 400" width="100%" role="img" aria-label="Atlas Hybrid Canvas 系统架构与数据流图">
+          <defs>
+            <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 5 L 0 9 z" fill="#1D4ED8" />
+            </marker>
+            <marker id="arrowTeal" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 5 L 0 9 z" fill="#0F766E" />
+            </marker>
+            <marker id="arrowSlate" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 5 L 0 9 z" fill="#475569" />
+            </marker>
+          </defs>
+
+          <!-- Layer 1: Browser UI -->
+          <rect x="20" y="18" width="680" height="72" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.2" />
+          <text x="36" y="42" font-family="Space Grotesk, Noto Sans SC, sans-serif" font-size="14" font-weight="700" fill="#0F172A">浏览器界面与渲染层（src/App.tsx · src/canvas/* · src/components/*）</text>
+          <text x="36" y="68" font-family="IBM Plex Mono, Noto Sans SC, monospace" font-size="12.5" fill="#475569">React Flow 节点 + ChunkUnderlayCanvas 512px 分块底图 + 三环视口裁剪 + Web Worker 脚本沙箱</text>
+
+          <!-- Layer 2: Hooks & Core State -->
+          <rect x="20" y="118" width="324" height="82" fill="#FFFFFF" stroke="#1D4ED8" stroke-width="1.5" />
+          <text x="36" y="143" font-family="Space Grotesk, Noto Sans SC, sans-serif" font-size="14" font-weight="700" fill="#1E3A8A">双层状态与 CRDT 内核</text>
+          <text x="36" y="166" font-family="IBM Plex Mono, Noto Sans SC, monospace" font-size="12.5" fill="#334155">crdt.ts · layeredStore.ts</text>
+          <text x="36" y="186" font-family="IBM Plex Mono, Noto Sans SC, monospace" font-size="12.5" fill="#475569">useBlueprintHistory · useOverlaySync</text>
+
+          <rect x="376" y="118" width="324" height="82" fill="#FFFFFF" stroke="#0F766E" stroke-width="1.5" />
+          <text x="392" y="143" font-family="Space Grotesk, Noto Sans SC, sans-serif" font-size="14" font-weight="700" fill="#115E59">客户端通信与静态兜底层</text>
+          <text x="392" y="166" font-family="IBM Plex Mono, Noto Sans SC, monospace" font-size="12.5" fill="#334155">roomClient.ts · webrtcMesh.ts · rpcClient.ts</text>
+          <text x="392" y="186" font-family="IBM Plex Mono, Noto Sans SC, monospace" font-size="12.5" fill="#475569">apiClient.ts · mockApi.ts（静态分房 IDB）</text>
+
+          <!-- Layer 3: Three Transports -->
+          <rect x="20" y="232" width="208" height="54" fill="#EFF6FF" stroke="#1D4ED8" stroke-width="1.2" />
+          <text x="34" y="255" font-family="Space Grotesk, Noto Sans SC, sans-serif" font-size="13.5" font-weight="700" fill="#1E3A8A">HTTP REST 通道</text>
+          <text x="34" y="274" font-family="IBM Plex Mono, monospace" font-size="12" fill="#334155">/api/rooms/* · /api/proxy</text>
+
+          <rect x="256" y="232" width="208" height="54" fill="#EFF6FF" stroke="#1D4ED8" stroke-width="1.2" />
+          <text x="270" y="255" font-family="Space Grotesk, Noto Sans SC, sans-serif" font-size="13.5" font-weight="700" fill="#1E3A8A">WebSocket 协同与 RPC</text>
+          <text x="270" y="274" font-family="IBM Plex Mono, monospace" font-size="12" fill="#334155">/ws/&lt;roomPath&gt; · 二进制帧</text>
+
+          <rect x="492" y="232" width="208" height="54" fill="#F0FDFA" stroke="#0F766E" stroke-width="1.2" />
+          <text x="506" y="255" font-family="Space Grotesk, Noto Sans SC, sans-serif" font-size="13.5" font-weight="700" fill="#115E59">WebRTC P2P 加速层</text>
+          <text x="506" y="274" font-family="IBM Plex Mono, monospace" font-size="12" fill="#334155">DataChannel · WS 信令中继</text>
+
+          <!-- Layer 4: Unified Node Backend & Disk -->
+          <rect x="20" y="318" width="430" height="66" fill="#0F172A" />
+          <text x="36" y="343" font-family="Space Grotesk, Noto Sans SC, sans-serif" font-size="14" font-weight="700" fill="#FFFFFF">Node 服务端（server/server.ts · roomServer.ts · apiCore.ts）</text>
+          <text x="36" y="366" font-family="IBM Plex Mono, Noto Sans SC, monospace" font-size="12" fill="#CBD5E1">authSession.ts · proxySecurity.ts（SSRF 钉 IP）· pdfUnpack.ts</text>
+
+          <rect x="474" y="318" width="226" height="66" fill="#F8FAFC" stroke="#0F172A" stroke-width="1.5" />
+          <text x="488" y="343" font-family="Space Grotesk, Noto Sans SC, sans-serif" font-size="14" font-weight="700" fill="#0F172A">单一房间持久化源</text>
+          <text x="488" y="366" font-family="IBM Plex Mono, monospace" font-size="12" fill="#334155">rooms/&lt;key&gt;.json + .history</text>
+
+          <!-- Arrows -->
+          <line x1="182" y1="90" x2="182" y2="114" stroke="#475569" stroke-width="1.5" marker-end="url(#arrowSlate)" />
+          <line x1="538" y1="90" x2="538" y2="114" stroke="#475569" stroke-width="1.5" marker-end="url(#arrowSlate)" />
+          <line x1="344" y1="159" x2="372" y2="159" stroke="#1D4ED8" stroke-width="1.5" marker-end="url(#arrowBlue)" />
+          <line x1="124" y1="200" x2="124" y2="228" stroke="#1D4ED8" stroke-width="1.5" marker-end="url(#arrowBlue)" />
+          <line x1="440" y1="200" x2="360" y2="228" stroke="#1D4ED8" stroke-width="1.5" marker-end="url(#arrowBlue)" />
+          <line x1="596" y1="200" x2="596" y2="228" stroke="#0F766E" stroke-width="1.5" marker-end="url(#arrowTeal)" />
+          <line x1="124" y1="286" x2="124" y2="314" stroke="#1D4ED8" stroke-width="1.5" marker-end="url(#arrowBlue)" />
+          <line x1="360" y1="286" x2="360" y2="314" stroke="#1D4ED8" stroke-width="1.5" marker-end="url(#arrowBlue)" />
+          <line x1="492" y1="259" x2="468" y2="259" stroke="#0F766E" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrowTeal)" />
+          <line x1="450" y1="351" x2="470" y2="351" stroke="#0F172A" stroke-width="1.8" marker-end="url(#arrowSlate)" />
+        </svg>
+        <figcaption>数据流说明：客户端更新同时经 WebRTC P2P（低延迟直达对端）与 WebSocket（落盘与服务端 LWW 权威收敛）双发，接收侧 2 秒 / 256 帧窗口去重；REST 与 WS 共享同一套 RoomBlueprintStore 内存缓存与串行写队列。</figcaption>
+      </figure>
+    </section>
+
+    <!-- Section 2: Module Distribution & Linkages -->
+    <section class="span-12 sec">
+      <h2>全仓 57 个源码模块的职责分层与依赖链接</h2>
+      <p class="measure">仓库采用单向依赖分层：<code>src/canvas/*</code> 与 <code>src/components/*</code> 只做受控渲染并向上回抛回调；<code>src/hooks/*</code> 编排副作用、快捷键、撤销栈与协同会话；<code>src/core/*</code> 承载全部与 React 解耦的纯逻辑（可直接在 Node 与浏览器两端复用）；<code>server/*</code> 则直接导入 <code>src/core/apiCore.ts</code>、<code>crdt.ts</code> 与 <code>roomPath.ts</code>，确保前后端算法 100% 同源。</p>
+
+      <figure class="span-12">
+        <p class="fig-title">核心逻辑与画布渲染占全仓 57 个源码模块的 68%</p>
+        <svg viewBox="0 0 700 320" width="100%" role="img" aria-label="各目录模块数量分布横条图">
+          <!-- Gridlines -->
+          <line x1="190" y1="24" x2="190" y2="274" stroke="#0F172A" stroke-width="1" />
+          <line x1="330" y1="24" x2="330" y2="274" stroke="#CBD5E1" stroke-width="1" />
+          <line x1="470" y1="24" x2="470" y2="274" stroke="#CBD5E1" stroke-width="1" />
+          <line x1="610" y1="24" x2="610" y2="274" stroke="#CBD5E1" stroke-width="1" />
+
+          <!-- X-axis ticks (scale: 14px per module, 0..30) -->
+          <text x="190" y="298" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="13" fill="#475569">0</text>
+          <text x="330" y="298" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="13" fill="#475569">10</text>
+          <text x="470" y="298" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="13" fill="#475569">20</text>
+          <text x="610" y="298" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="13" fill="#475569">30 个模块</text>
+
+          <!-- Row 1: src/core (27) -->
+          <text x="178" y="54" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="13.5" fill="#0F172A">src/core/</text>
+          <rect x="190" y="34" width="378" height="28" fill="#1D4ED8" />
+          <text x="578" y="54" font-family="IBM Plex Mono, monospace" font-size="13.5" font-weight="600" fill="#1E3A8A">27（47.4%）</text>
+
+          <!-- Row 2: src/canvas (12) -->
+          <text x="178" y="102" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="13.5" fill="#0F172A">src/canvas/</text>
+          <rect x="190" y="82" width="168" height="28" fill="#0F766E" />
+          <text x="368" y="102" font-family="IBM Plex Mono, monospace" font-size="13.5" font-weight="600" fill="#115E59">12（21.1%）</text>
+
+          <!-- Row 3: server (6) -->
+          <text x="178" y="150" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="13.5" fill="#0F172A">server/</text>
+          <rect x="190" y="130" width="84" height="28" fill="#334155" />
+          <text x="284" y="150" font-family="IBM Plex Mono, monospace" font-size="13.5" font-weight="600" fill="#0F172A">6（10.5%）</text>
+
+          <!-- Row 4: src/hooks (5) -->
+          <text x="178" y="198" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="13.5" fill="#0F172A">src/hooks/</text>
+          <rect x="190" y="178" width="70" height="28" fill="#64748B" />
+          <text x="270" y="198" font-family="IBM Plex Mono, monospace" font-size="13.5" font-weight="600" fill="#334155">5（8.8%）</text>
+
+          <!-- Row 5: src/components + 入口 (7) -->
+          <text x="178" y="246" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="13.5" fill="#0F172A">components + 入口</text>
+          <rect x="190" y="226" width="98" height="28" fill="#94A3B8" />
+          <text x="298" y="246" font-family="IBM Plex Mono, monospace" font-size="13.5" font-weight="600" fill="#334155">7（12.3%）</text>
+        </svg>
+        <figcaption>统计口径：不含 `.d.ts` 声明与 `tests/`；`components + 入口` 包含 `src/components/`（5 个）与 `src/App.tsx`、`src/main.tsx`（2 个），合计 57 个源码模块。</figcaption>
+      </figure>
+
+      <table>
+        <thead>
+          <tr>
+            <th>层级与模块</th>
+            <th>关键导出</th>
+            <th>上游调用方</th>
+            <th>下游依赖与核心职责</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>src/core/crdt.ts</code><br /><code>src/core/roomPath.ts</code></td>
+            <td><code>mergeRecordFieldsLWW</code>、<code>computeRecordDiff</code>、<code>normalizeRoomPath</code></td>
+            <td><code>roomClient.ts</code>、<code>roomServer.ts</code>、<code>mockApi.ts</code></td>
+            <td>前后端共享的字段级 LWW-CRDT 裁决与多级房间路径规范化（防路径穿越与哈希防碰撞）。</td>
+          </tr>
+          <tr>
+            <td><code>src/core/layeredStore.ts</code><br /><code>src/core/idbStorage.ts</code></td>
+            <td><code>resolveEffectiveNodes</code>、<code>applyOverlayToBase</code>、<code>idbCacheSet</code></td>
+            <td><code>App.tsx</code>、<code>useOverlaySync.ts</code>、<code>useBlueprintHistory.ts</code></td>
+            <td>管理本地叠加层防抖写盘、<code>BroadcastChannel</code> 跨页签严格隔离同步、分命名空间 LRU（<code>pdf:</code> / <code>hist:</code>）。</td>
+          </tr>
+          <tr>
+            <td><code>src/core/apiCore.ts</code><br /><code>src/core/mockApi.ts</code><br /><code>src/core/apiClient.ts</code></td>
+            <td><code>handleApiRequest</code>、<code>installMockApi</code>、<code>refreshAuthSession</code></td>
+            <td><code>main.tsx</code>、<code>server.ts</code>、<code>App.tsx</code></td>
+            <td>同构 API 路由内核；纯静态模式通过 <code>createBrowserRoomStore</code> 实现按房间隔离读写与 2MB 代理上限；连接后端时经 <code>RpcClient</code> 转发。</td>
+          </tr>
+          <tr>
+            <td><code>src/core/roomClient.ts</code><br /><code>src/core/webrtcMesh.ts</code><br /><code>src/core/rpcClient.ts</code></td>
+            <td><code>CollaborativeRoomClient</code>、<code>RoomWebRtcMesh</code>、<code>RpcClient</code></td>
+            <td><code>useRoomCollaboration.ts</code>、<code>mockApi.ts</code></td>
+            <td>WS 房间断线重连（5s 稳定窗口防热循环）、离线队列补发、2 秒 / 256 帧去重、WebRTC DataChannel 双发加速与二进制 RPC 帧编解码（<code>rpcBinaryFrame.ts</code>）。</td>
+          </tr>
+          <tr>
+            <td><code>src/core/scriptSandbox.ts</code><br /><code>src/core/scriptAudit.ts</code><br /><code>src/core/edgeGraph.ts</code></td>
+            <td><code>runWidgetScript</code>、<code>auditBlueprintScripts</code>、<code>getReactiveTargetNodeIds</code></td>
+            <td><code>App.tsx</code>、<code>NodeInspectorPanel.tsx</code></td>
+            <td>一次性 Web Worker 沙箱执行控件脚本（5s 硬超时、运行时置空 17 个高危 API），支持 <code>onChange</code>、<code>onValidateConnect</code> 与有向/双向连线广播。</td>
+          </tr>
+          <tr>
+            <td><code>src/canvas/*</code>（12 模块）<br /><code>src/core/chunkManager.ts</code></td>
+            <td><code>WidgetNode</code>、<code>ChunkUnderlayCanvas</code>、<code>renderContentBlock</code></td>
+            <td><code>App.tsx</code></td>
+            <td>512×512 分块底图缓存（<code>ChunkTileCache</code>）、三环视口裁剪（<code>viewportCulling.ts</code>）、以及 PDF / 轮询 / 滑块 / 2D 触摸板 / 图片视频等 10 类内嵌控件。</td>
+          </tr>
+          <tr>
+            <td><code>src/hooks/*</code>（5 模块）<br /><code>src/components/*</code>（5 模块）</td>
+            <td><code>useRoomCollaboration</code>、<code>useBlueprintHistory</code>、<code>CanvasErrorBoundary</code></td>
+            <td><code>App.tsx</code>、<code>main.tsx</code></td>
+            <td>集中管理协同入房与不可信脚本审计弹窗、热/冷两级撤销重做队列、JSON 导入导出、全局快捷键、属性检查器与双层错误边界。</td>
+          </tr>
+          <tr>
+            <td><code>server/server.ts</code><br /><code>server/roomServer.ts</code><br /><code>server/fileStore.ts</code></td>
+            <td><code>attachRoomServer</code>、<code>createRoomBlueprintStoreRegistry</code>、<code>listPersistedRooms</code></td>
+            <td>Node 进程入口（<code>dist-server/server.mjs</code>）</td>
+            <td>Express HTTP + WS 升级路由、统一 <code>RoomBlueprintStore</code>（LRU 内存缓存 + 串行原子落盘 + 50 版本历史回档）、SSRF 钉 IP 代理（<code>proxySecurity.ts</code>）与 PDF 解包（<code>pdfUnpack.ts</code>）。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Section 3: Complete API & Protocol Reference -->
+    <section class="span-12 sec">
+      <h2>HTTP REST、WebSocket 与 WebRTC 完整接口清单</h2>
+      <p class="measure">服务端采用统一路由面：REST 既服务于首屏水合、管理员发布、版本历史回档与出站代理，也作为 WebSocket 不可用时的降级通道；WebSocket 承担实时协同状态同步、WebRTC 信令中继与跨站二进制 RPC 转发。</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>方法与路径</th>
+            <th>鉴权与防护</th>
+            <th>处理模块</th>
+            <th>核心行为与返回</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono-nowrap">GET /api/health</td>
+            <td>公开探针</td>
+            <td><code>server.ts</code></td>
+            <td>返回服务存活状态、运行时长与 <code>authMode</code>（<code>session</code> 或 <code>open</code>），供 Docker/K8s 健康检查。</td>
+          </tr>
+          <tr>
+            <td class="mono-nowrap">POST /api/auth/session</td>
+            <td>非空同源/白名单 <code>Origin</code> + 真实 IP 限流</td>
+            <td><code>server.ts</code> + <code>authSession.ts</code></td>
+            <td>签发 1 小时 HMAC-SHA256 会话令牌，同时写入 <code>HttpOnly</code> Cookie（<code>atlas_session</code>）与 JSON 响应体。</td>
+          </tr>
+          <tr>
+            <td class="mono-nowrap">GET /api/rooms</td>
+            <td>会话令牌（启用时）</td>
+            <td><code>server.ts</code> + <code>fileStore.ts</code></td>
+            <td>返回当前活跃房间列表与磁盘已落盘的逻辑房间路径列表（如 <code>team/design</code>）。</td>
+          </tr>
+          <tr>
+            <td class="mono-nowrap">GET /api/rooms/*/blueprint</td>
+            <td>会话令牌（启用时）</td>
+            <td><code>apiCore.ts</code> + <code>fileStore.ts</code></td>
+            <td>从统一 <code>RoomBlueprintStore</code> 读取指定房间最新蓝图与 <code>revision</code>；静态模式读取独立 IndexedDB 键。</td>
+          </tr>
+          <tr>
+            <td class="mono-nowrap">POST /api/rooms/*/blueprint/publish</td>
+            <td>会话令牌 + <code>X-Blueprint-Save-Key</code></td>
+            <td><code>apiCore.ts</code> + <code>roomServer.ts</code></td>
+            <td>校验管理密钥后原子落盘、递增版本号、追加 <code>publish</code> 历史日志，并向同房间 WS 成员广播 <code>replace: true</code> 快照。</td>
+          </tr>
+          <tr>
+            <td class="mono-nowrap">GET /api/rooms/*/history<br />POST /api/rooms/*/rollback</td>
+            <td>历史：会话令牌<br />回档：+ <code>X-Blueprint-Save-Key</code></td>
+            <td><code>server.ts</code> + <code>fileStore.ts</code></td>
+            <td>查询最近 50 条修改日志（发布/协同/回档）；回档会深拷贝目标快照写盘、记录新 <code>rollback</code> 版本并推送 <code>replace: true</code> 防止已删节点复活。</td>
+          </tr>
+          <tr>
+            <td class="mono-nowrap">POST /api/proxy<br />GET /api/proxy/binary</td>
+            <td><code>X-Proxy-Access-Key</code>（配置代理密钥或 <code>PROXY_API_KEY</code> 时强制）+ SSRF + 限流</td>
+            <td><code>server.ts</code> + <code>proxySecurity.ts</code></td>
+            <td>校验域名白名单、DNS 解析后钉死公网 IP（拦截私有/回环/元数据网段）、禁止 3xx 重定向、流式 2MB/25MB 上限。</td>
+          </tr>
+          <tr>
+            <td class="mono-nowrap">POST /api/pdf/unpack<br />POST /api/pdf/unpack-upload<br />GET /api/pdf/:id/page/:page</td>
+            <td>会话令牌 + 限流 + PDF 魔数校验</td>
+            <td><code>server.ts</code> + <code>pdfUnpack.ts</code></td>
+            <td>调用 <code>pdftoppm</code> 或 <code>mutool</code> 按 150/220/300/400 DPI 渲染逐页 PNG；内部错误仅写服务端日志，客户端返回通用失败提示。</td>
+          </tr>
+          <tr>
+            <td class="mono-nowrap">WS /ws/&lt;roomPath&gt;?cid=...</td>
+            <td><code>HttpOnly</code> Cookie 或 <code>Sec-WebSocket-Protocol</code>（<code>atlas-auth.&lt;b64url&gt;</code>）</td>
+            <td><code>roomServer.ts</code></td>
+            <td>支持 <code>state</code>/<code>upsert</code>/<code>delete</code> 协同帧、<code>peers</code>/<code>rtc_offer</code>/<code>rtc_answer</code>/<code>rtc_ice</code> WebRTC 信令中继，以及 <code>rpc</code> 文本/二进制 API 转发。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="cols-3">
+        <div class="strip-item">
+          <h3>WS 协同帧协议</h3>
+          <p>客户端发 <code>upsert</code>（携带 <code>rev</code>、<code>cid</code> 与逐字段 <code>fieldRevs</code>）或 <code>delete</code>；服务端以同源 <code>mergeRecordFieldsLWW</code> 裁决后广播给同房其他成员，防抖 1.5s 写入统一存储并记录去重后的 <code>collab</code> 历史。</p>
+        </div>
+        <div class="strip-item">
+          <h3>WebRTC P2P 信令协议</h3>
+          <p>入房后服务端推送 <code>peers</code> 列表，两端按 <code>shouldInitiateRtcOffer(selfCid, peerCid)</code> 确定性选主发起 <code>rtc_offer</code>，经 WS 中继交换 <code>rtc_answer</code> 与 <code>rtc_ice</code>，建链后在 DataChannel 上广播协同帧加速同步。</p>
+        </div>
+        <div class="strip-item">
+          <h3>二进制 RPC 转发协议</h3>
+          <p>跨站纯静态前端通过 <code>rpcBinaryFrame.ts</code> 封装 4 字节大端 JSON 头长度 + UTF-8 JSON 头 + 原始二进制载荷，经 <code>/ws</code> 零 base64 膨胀直传 PDF 等大文件给后端本地回环端口。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Full-Bleed Band: Security Boundaries -->
+    <section class="band-dark">
+      <h2>五道核心安全边界与 v85 整修后的防线</h2>
+      <p class="measure">系统的安全模型严格区分「匿名协同层」与「高权限管理/代理层」：前端构建产物中永不嵌入静态密钥，所有高危能力均在 Node 服务端做强制校验。</p>
+      <div class="cols-3">
+        <div class="strip-item">
+          <h3>1. 会话签发与管理密钥解耦</h3>
+          <p><code>POST /api/auth/session</code> 拒绝空 <code>Origin</code> 与非白名单来源（403），仅作为防自动化会话层；发布（<code>publish</code>）、回档（<code>rollback</code>）和挂载上游 <code>PROXY_API_KEY</code> 的 <code>/api/proxy</code> 均强制校验独立管理密钥（<code>timingSafeEqual</code>）。</p>
+        </div>
+        <div class="strip-item">
+          <h3>2. 真实 IP 限流与 SSRF 钉死</h3>
+          <p>默认忽略客户端自填的 <code>X-Forwarded-For</code>，以 <code>req.socket.remoteAddress</code> 计数限流（仅显式 <code>TRUST_PROXY=true</code> 才信任代理头）。出站代理在 DNS 解析后拒绝全部私网/回环/元数据 IP，并将 IP 钉死到 Socket 连接。</p>
+        </div>
+        <div class="strip-item">
+          <h3>3. Web Worker 一次性脚本沙箱</h3>
+          <p>每次控件脚本执行都启动独立 Worker 并在结束后立即 <code>terminate()</code>，超时 5 秒强制终止；运行时不可逆置空 17 个高危全局 API（含 <code>Worker</code>、<code>SharedWorker</code>、<code>Blob</code>、<code>URL</code>、<code>WebTransport</code>、<code>WebAssembly</code> 与全部网络接口），阻断嵌套 Worker 逃逸。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 4: Typical Usage & Deployment Playbooks -->
+    <section class="span-12 sec">
+      <h2>典型用法与部署模式对照</h2>
+      <p class="measure">同一份代码库支持三种开箱即用的运行形态：零后端静态演示、本地全栈开发联调，以及带会话防护与版本回档的生产自托管部署。</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>部署模式</th>
+            <th>关键环境变量</th>
+            <th>数据落盘与协同能力</th>
+            <th>适用场景</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>纯静态演示（GitHub Pages）</td>
+            <td><code>VITE_BACKEND_WS_URL</code> 留空</td>
+            <td>浏览器 <code>mockApi.ts</code> 按房间路径分键存入 IndexedDB，无多人 WS 协同，支持静态兜底提示。</td>
+            <td>公开展示、个人草稿、零运维静态站点。</td>
+          </tr>
+          <tr>
+            <td>本地全栈开发</td>
+            <td><code>BLUEPRINT_SAVE_KEY=dev-key</code><br /><code>PORT=8787</code></td>
+            <td><code>npm run dev</code> 启动 Vite + Express + WS 房间服务，开放模式免令牌，支持多房间协同与历史回档。</td>
+            <td>功能开发、脚本调试、联调验证。</td>
+          </tr>
+          <tr>
+            <td>生产自托管（Docker / Node）</td>
+            <td><code>AUTH_SESSION_SECRET</code>、<code>BLUEPRINT_SAVE_KEY</code>、<code>PROXY_ACCESS_KEY</code>、<code>TRUST_PROXY</code>、<code>ATLAS_DATA_DIR</code></td>
+            <td>全量启用签名 Cookie + WS 子协议鉴权、真实 IP 限流、独立代理密钥、统一房间文件落盘与 50 版本回档。</td>
+            <td>团队内网/公网多人实时协作与生产运维。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="cols-2">
+        <div class="strip-item">
+          <h3>用法一：构建并启动生产级多房间服务</h3>
+          <p>服务端入口由 <code>esbuild</code> 打包为单文件 <code>dist-server/server.mjs</code>，配合 <code>dist/</code> 前端产物即可直接运行：</p>
+          <pre><code>npm ci
+npm run build
+npm run build:server
+
+AUTH_SESSION_SECRET="replace-with-32byte-random" \
+BLUEPRINT_SAVE_KEY="admin-publish-secret" \
+PROXY_ACCESS_KEY="proxy-admin-secret" \
+TRUST_PROXY="true" \
+ATLAS_DATA_DIR="/var/lib/atlas-data" \
+PORT=8787 \
+node dist-server/server.mjs</code></pre>
+          <p>访问 <code>https://your-host/team/design</code> 自动进入 <code>team/design</code> 房间；同一路径的成员共享实时画布、WebRTC 直连加速与独立版本历史。</p>
+        </div>
+
+        <div class="strip-item">
+          <h3>用法二：通过 API 执行版本发布、查询与回档</h3>
+          <p>前端在同源加载时自动通过 <code>POST /api/auth/session</code> 获取 <code>HttpOnly</code> 会话 Cookie；管理员脚本或运维工具可按房间路径查询历史并回档：</p>
+          <pre><code># 1. 同源签发会话 Cookie
+curl -c cookies.txt -X POST http://127.0.0.1:8787/api/auth/session \
+  -H 'Origin: http://127.0.0.1:8787' \
+  -H 'Content-Type: application/json' -d '{"cid":"ops-cli"}'
+
+# 2. 查看 team/design 房间版本历史
+curl -b cookies.txt http://127.0.0.1:8787/api/rooms/team/design/history
+
+# 3. 回档至指定版本 v1（同步推送 replace:true 给全部在线成员）
+curl -b cookies.txt -X POST http://127.0.0.1:8787/api/rooms/team/design/rollback \
+  -H 'Content-Type: application/json' \
+  -H 'X-Blueprint-Save-Key: admin-publish-secret' \
+  -d '{"version":1}'</code></pre>
+        </div>
+
+        <div class="strip-item">
+          <h3>用法三：编写带响应式联动与拓扑校验的控件脚本</h3>
+          <p>每个 Widget 节点均可挂载受沙箱隔离的统一脚本，通过 <code>vars</code> 读写状态、<code>onChange</code> 响应变量变化、<code>onValidateConnect</code> 声明连线规则：</p>
+          <pre><code>// 当滑块或上游修改 temperature 时自动推导状态并通知下游
+onChange('temperature', ({ next }) =&gt; {
+  vars.alert = Number(next) &gt; 80 ? '过热告警' : '正常';
+  widgets.emitDownstream({ temp: next, alert: vars.alert });
+});
+
+// 控件自主声明禁止形成环路（可选，默认允许自由环路）
+onValidateConnect(({ sourceId, targetId }) =&gt; {
+  const dag = widgets.checkDag(sourceId, targetId);
+  if (!dag.ok) return { allow: false, reason: '禁止闭环连接' };
+  return { allow: true };
+});</code></pre>
+        </div>
+
+        <div class="strip-item">
+          <h3>用法四：本地全量质量门禁（与 GitHub CI 严格一致）</h3>
+          <p>推送前按 CI 顺序依次执行类型检查、服务端打包、全量 145 项测试（含真实进程 E2E 与安全回归）和前端生产构建：</p>
+          <pre><code>npm run typecheck          # 零排除 tsc --noEmit
+npm run build:server       # 生成 dist-server/server.mjs（E2E 依赖）
+npm test                   # 运行全部 145 项单测、WS 与 E2E 测试
+npm run build              # 生成 dist/ 分包产物</code></pre>
+          <p>注：<code>tests/pdfUnpack.test.ts</code> 会调用真实的 <code>pdftoppm</code>（<code>poppler-utils</code>）或 <code>mutool</code>，在 Linux/CI 环境中需确保已安装其中之一。</p>
+        </div>
+      </div>
+
+      <blockquote>前端零静态密钥、双层状态隔离草稿与底座、REST 与 WS 收敛到同一份原子房间存储——这是 Atlas Hybrid Canvas 保持结构简洁与可验证性的三条底线。</blockquote>
+    </section>
+  </main>
+</body>
+</html>

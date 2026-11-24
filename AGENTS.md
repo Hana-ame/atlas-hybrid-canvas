@@ -138,7 +138,7 @@
 
 ## 代码约定
 
-- 脚本沙箱（`src/core/scriptSandbox.ts`）的 token 黑名单是安全边界，**新增内置脚本或模板脚本后必须确认不命中黑名单**，并跑 `npm test` 里的全量预检用例。
+- 脚本沙箱（`src/core/scriptSandbox.ts`）的 **Worker 运行时 API 置空列表**是主要安全边界（token 黑名单仅作快速静态反馈）；**新增内置脚本或模板脚本后必须确认不命中黑名单**，并跑 `npm test` 里的全量预检与逃逸负向用例。
 - 控件连线默认允许自由拓扑（含环路），DAG 或端口约束由控件脚本通过 `onValidateConnect()` + `widgets.checkDag()` 自主声明；引擎仅提供信息计算与递归深度（`depth <= 4`）兜底。
 - 密钥比较一律用 `crypto.timingSafeEqual` 且先比长度，不要用 `===`。
 - `import.meta.env` 的自定义变量需在 `src/vite-env.d.ts` 显式声明，不要依赖 `vite/client` 的索引签名兜底。

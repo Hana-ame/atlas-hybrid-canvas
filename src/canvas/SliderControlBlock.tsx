@@ -88,6 +88,9 @@ export function SliderControlBlock({
             onCommit?.(next);
           }}
           onKeyUp={(e) => {
+            if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) {
+              return;
+            }
             const next = clampSliderValue((e.target as HTMLInputElement).value, lo, hi, safeStep);
             onCommit?.(next);
           }}

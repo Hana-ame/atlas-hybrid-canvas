@@ -167,7 +167,7 @@ export function subscribeCrossTabOverlay(
   ) => {
     const data = ev.data;
     if (!data || data.type !== 'overlay_updated' || data.tabId === TAB_ID || !data.overlay) return;
-    if (data.storageKey && data.storageKey !== expectedKey) return;
+    if (data.storageKey !== expectedKey) return;
     onRemoteOverlay(data.overlay);
   };
   ch.addEventListener('message', handler);

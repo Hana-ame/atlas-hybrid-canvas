@@ -232,6 +232,12 @@ function recordRpcStatus(_status: number): void {
 
 async function startServer() {
   const app = express();
+  const trustProxy =
+    String(process.env.TRUST_PROXY || '').trim().toLowerCase() === 'true' ||
+    process.env.TRUST_PROXY === '1';
+  if (trustProxy) {
+    app.set('trust proxy', 1);
+  }
   const corsAllowedOrigins = new Set(
     String(process.env.CORS_ALLOWED_ORIGINS || '')
       .split(',')
@@ -247,7 +253,7 @@ async function startServer() {
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
       res.setHeader(
         'Access-Control-Allow-Headers',
-        'Content-Type, X-Proxy-Token, X-Blueprint-Save-Key, X-Room-Path'
+        'Content-Type, X-Proxy-Token, X-Proxy-Access-Key, X-Blueprint-Save-Key, X-Room-Path'
       );
       res.setHeader('Vary', 'Origin');
       if (req.method === 'OPTIONS') {
@@ -286,6 +292,8 @@ async function startServer() {
   const upstreamBaseUrl = (process.env.PROXY_UPSTREAM_BASE_URL || '').trim();
   const allowedHosts = parseAllowedHosts(process.env.PROXY_ALLOWED_HOSTS);
   const proxyApiKey = (process.env.PROXY_API_KEY || '').trim();
+  // 出站代理管理密钥（与匿名会话令牌解耦，防止匿名会话借用 PROXY_API_KEY）
+  const proxyAccessKey = (process.env.PROXY_ACCESS_KEY || '').trim();
   // 防自动化会话签名密钥（仅留 Node 侧读取，前端零静态密钥）
   const authSessionSecret = (process.env.AUTH_SESSION_SECRET || '').trim();
   const proxyRateLimitPerMin = Math.max(1, Number(process.env.PROXY_RATE_LIMIT_PER_MIN || 30));
@@ -295,6 +303,13 @@ async function startServer() {
     if (!authSessionSecret) return true;
     if (!provided) return false;
     return verifySignedSessionToken(authSessionSecret, provided).valid;
+  };
+
+  const verifyTimingSafeKey = (expected: string, provided: string): boolean => {
+    if (!expected || !provided) return false;
+    const a = Buffer.from(provided, 'utf8');
+    const b = Buffer.from(expected, 'utf8');
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
   };
 
   // 服务健康检查探针（供 Docker/K8s/反向代理做存活与就绪检测）
@@ -332,8 +347,8 @@ async function startServer() {
     const host = String(req.header('host') || '').trim();
     const isSameOrigin = Boolean(origin && host && (origin === `http://${host}` || origin === `https://${host}`));
     const isAllowedCorsOrigin = Boolean(origin && corsAllowedOrigins.has(origin));
-    if (origin && !isSameOrigin && !isAllowedCorsOrigin) {
-      res.status(403).json({ ok: false, error: '非法 Origin，拒绝签发会话令牌' });
+    if (!origin || (!isSameOrigin && !isAllowedCorsOrigin)) {
+      res.status(403).json({ ok: false, error: '缺少或非法的 Origin，拒绝签发会话令牌' });
       return;
     }
     const sub = String((req.body as { cid?: unknown } | undefined)?.cid || getRealClientIp(req) || 'atlas-client');
@@ -612,17 +627,54 @@ async function startServer() {
   };
 
   /**
-   * 部署层鉴权：配置了 PROXY_CLIENT_TOKEN 就必须带对 X-Proxy-Token。
-   * 这一步刻意不进 apiCore —— 浏览器端没有"部署层"这个概念，也没有可信的令牌
-   * 存放位置（前端 bundle 里的常量谁都能读）。所以它只在这一侧成立。
+   * 部署层出站代理鉴权（/api/proxy 与 /api/proxy/binary 统一由此中间件保护）：
+   * 1) 若配置了 PROXY_ACCESS_KEY，必须携带匹配的 X-Proxy-Access-Key；
+   * 2) 若配置了上游密钥 PROXY_API_KEY，禁止仅凭匿名会话令牌借用上游密钥，
+   *    必须提供匹配 PROXY_ACCESS_KEY 或 BLUEPRINT_SAVE_KEY 的管理密钥；
+   * 3) 否则在启用 AUTH_SESSION_SECRET 时校验签名会话令牌（X-Proxy-Token 或 HttpOnly Cookie）。
    */
   app.use('/api/proxy', (req, res, next) => {
-    const isBinaryRoute = req.path === '/binary';
+    if (req.path === '/status') {
+      next();
+      return;
+    }
+    const providedAccessKey = String(
+      req.header('x-proxy-access-key') || req.header('x-blueprint-save-key') || ''
+    ).trim();
+    if (proxyAccessKey) {
+      if (!verifyTimingSafeKey(proxyAccessKey, providedAccessKey)) {
+        res.status(401).json({
+          ok: false,
+          error: '代理调用未授权：缺少或错误的 X-Proxy-Access-Key',
+        });
+        return;
+      }
+      next();
+      return;
+    }
+    if (proxyApiKey) {
+      if (!blueprintSaveKey) {
+        res.status(403).json({
+          ok: false,
+          error: '服务端已配置 PROXY_API_KEY，但未配置 PROXY_ACCESS_KEY 或 BLUEPRINT_SAVE_KEY，已拒绝匿名代理调用',
+        });
+        return;
+      }
+      if (!verifyTimingSafeKey(blueprintSaveKey, providedAccessKey)) {
+        res.status(401).json({
+          ok: false,
+          error: '该代理挂载了上游密钥 PROXY_API_KEY，需要携带 X-Proxy-Access-Key 或 X-Blueprint-Save-Key',
+        });
+        return;
+      }
+      next();
+      return;
+    }
     const provided = extractRequestProxyToken(req);
     if (!verifyProxyClientToken(provided)) {
       res.status(401).json({
         ok: false,
-        error: '代理调用未授权：缺少或错误的 X-Proxy-Token',
+        error: '代理调用未授权：缺少或无效的会话令牌',
       });
       return;
     }
@@ -766,7 +818,9 @@ async function startServer() {
     '/api/proxy/status',
     '/api/proxy',
   ]) {
-    app.all(routePath, requireClientAuth, async (req, res) => {
+    const authMiddleware: express.RequestHandler =
+      routePath === '/api/proxy' ? (_req, _res, next) => next() : requireClientAuth;
+    app.all(routePath, authMiddleware, async (req, res) => {
       const requestedRoom = String(req.query.room || req.header('x-room-path') || '').trim();
       const deps =
         (routePath === '/api/blueprint' || routePath === '/api/blueprint/publish') && requestedRoom
@@ -803,11 +857,6 @@ async function startServer() {
     if (!rl.ok) {
       res.setHeader('Retry-After', String(rl.retryAfterSec ?? 10));
       res.status(429).json({ ok: false, error: `代理请求过于频繁，请 ${rl.retryAfterSec} 秒后重试` });
-      return;
-    }
-    const providedProxyToken = extractRequestProxyToken(req);
-    if (!verifyProxyClientToken(providedProxyToken)) {
-      res.status(401).json({ ok: false, error: '代理调用未授权' });
       return;
     }
     const rawUrl = String(req.query.url || '').trim();
@@ -951,7 +1000,8 @@ async function startServer() {
         pageUrlTemplate: `/api/pdf/${unpacked.docId}/page/{page}`,
       });
     } catch (err) {
-      res.status(502).json({ ok: false, error: err instanceof Error ? err.message : 'PDF 解包失败' });
+      console.error('[Atlas] PDF unpack error:', err);
+      res.status(502).json({ ok: false, error: 'PDF 渲染或解包失败' });
     }
   });
 
@@ -987,7 +1037,8 @@ async function startServer() {
         pageUrlTemplate: `/api/pdf/${unpacked.docId}/page/{page}`,
       });
     } catch (err) {
-      res.status(400).json({ ok: false, error: err instanceof Error ? err.message : 'PDF 解包失败' });
+      console.error('[Atlas] PDF upload unpack error:', err);
+      res.status(400).json({ ok: false, error: 'PDF 渲染或解包失败' });
     }
   });
 

@@ -189,3 +189,111 @@ test('E2E live server (dist-server/server.mjs): auth session, Origin check, room
   assert.equal(replaceFrame.blueprint.nodes.n1.title, 'Version 1');
   assert.equal('n2' in replaceFrame.blueprint.nodes, false);
 });
+
+test('E2E security regressions (P0-1 empty Origin, P1-1 XFF rate-limit spoofing, P1-2 proxy secret decoupling, P2-4 logical room list)', async (t) => {
+  const tmpDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'atlas-e2e-sec-'));
+  const port = 19700 + Math.floor(Math.random() * 1000);
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const serverEntry = path.resolve('dist-server/server.mjs');
+
+  const child = spawn(process.execPath, [serverEntry], {
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      PORT: String(port),
+      ATLAS_DATA_DIR: tmpDataDir,
+      AUTH_SESSION_SECRET: 'e2e-sec-session-secret',
+      BLUEPRINT_SAVE_KEY: 'e2e-sec-admin-key',
+      PROXY_API_KEY: 'upstream-secret-never-for-anon',
+      PROXY_ACCESS_KEY: 'e2e-proxy-access-key',
+      PROXY_RATE_LIMIT_PER_MIN: '3',
+      TRUST_PROXY: 'false',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  t.after(async () => {
+    child.kill('SIGTERM');
+    await new Promise((r) => setTimeout(r, 150));
+    await fs.rm(tmpDataDir, { recursive: true, force: true });
+  });
+
+  await waitForHealth(baseUrl);
+
+  // P0-1: Missing Origin header on /api/auth/session MUST be rejected (403)
+  const noOriginRes = await fetch(`${baseUrl}/api/auth/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cid: 'curl-attacker' }),
+  });
+  assert.equal(noOriginRes.status, 403, 'empty Origin must not mint a session token');
+
+  // Mint one legitimate same-origin session token
+  const sessRes = await fetch(`${baseUrl}/api/auth/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: baseUrl },
+    body: JSON.stringify({ cid: 'legit-browser' }),
+  });
+  assert.equal(sessRes.status, 200);
+  const sessJson = (await sessRes.json()) as { token: string };
+
+  // P1-2: Anonymous session token alone MUST NOT access /api/proxy when PROXY_API_KEY / PROXY_ACCESS_KEY is configured
+  const anonProxyRes = await fetch(`${baseUrl}/api/proxy`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Proxy-Token': sessJson.token,
+    },
+    body: JSON.stringify({ url: 'https://httpbin.org/get', method: 'GET' }),
+  });
+  assert.equal(anonProxyRes.status, 401, 'anonymous session token must not borrow PROXY_API_KEY');
+
+  // With valid X-Proxy-Access-Key, auth passes (downstream host check or request proceeds; non-allowlisted host returns 403 from allowlist, not 401)
+  const authedProxyRes = await fetch(`${baseUrl}/api/proxy`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Proxy-Access-Key': 'e2e-proxy-access-key',
+    },
+    body: JSON.stringify({ url: 'https://blocked.invalid/test', method: 'GET' }),
+  });
+  assert.equal(authedProxyRes.status, 403, 'valid X-Proxy-Access-Key should pass auth and hit allowlist check');
+
+  // P2-4: Publish a nested room and verify GET /api/rooms returns logical roomPath
+  const pubRes = await fetch(`${baseUrl}/api/rooms/team/design/blueprint/publish`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Proxy-Token': sessJson.token,
+      'X-Blueprint-Save-Key': 'e2e-sec-admin-key',
+    },
+    body: JSON.stringify({ blueprint: { version: 1, chunkSize: 512, nodes: {}, annotations: {}, edges: {} } }),
+  });
+  assert.equal(pubRes.status, 200);
+
+  const roomsRes = await fetch(`${baseUrl}/api/rooms`, {
+    headers: { 'X-Proxy-Token': sessJson.token },
+  });
+  assert.equal(roomsRes.status, 200);
+  const roomsJson = (await roomsRes.json()) as { ok: boolean; persisted: string[] };
+  assert.ok(roomsJson.persisted.includes('team/design'), `expected logical roomPath team/design, got ${JSON.stringify(roomsJson.persisted)}`);
+
+  // P1-1: Spoofing X-Forwarded-For with TRUST_PROXY=false MUST NOT bypass rate limit (limit=3; 2 hits already used on /api/auth/session)
+  let hit429 = false;
+  for (let i = 0; i < 4; i++) {
+    const r = await fetch(`${baseUrl}/api/auth/session`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: baseUrl,
+        'X-Forwarded-For': `203.0.113.${10 + i}`,
+      },
+      body: JSON.stringify({ cid: `spoof-${i}` }),
+    });
+    if (r.status === 429) {
+      hit429 = true;
+      break;
+    }
+  }
+  assert.equal(hit429, true, 'spoofed X-Forwarded-For must not bypass PROXY_RATE_LIMIT_PER_MIN');
+});

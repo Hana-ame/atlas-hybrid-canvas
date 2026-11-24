@@ -20,8 +20,8 @@
 
 import { idbGet, idbSet } from './idbStorage';
 import { RpcClient, frameToResponse } from './rpcClient';
-import { DEFAULT_ROOM_PATH, normalizeRoomPath } from './roomPath';
 import { normalizeWsUrl } from './runtimeConfig';
+import { DEFAULT_ROOM_PATH, normalizeRoomPath } from './roomPath';
 import {
   createWindowRateLimiter,
   handleApiRequest,
@@ -45,22 +45,30 @@ const BLUEPRINT_KEY = 'atlas-hybrid-mock-server-blueprint-v1';
 const REVISION_KEY = 'atlas-hybrid-mock-server-revision-v1';
 
 /** IndexedDB 版存储，接口与服务端的 createMemoryStore() 完全一致。 */
-const browserStore: BlueprintStore = {
-  async readRevision() {
-    const raw = await idbGet<number>(REVISION_KEY);
-    const n = Number(raw);
-    return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 1;
-  },
-  async writeRevision(rev) {
-    await idbSet(REVISION_KEY, rev);
-  },
-  async readBlueprint() {
-    return idbGet<unknown>(BLUEPRINT_KEY);
-  },
-  async writeBlueprint(bp) {
-    return idbSet(BLUEPRINT_KEY, bp);
-  },
-};
+function createBrowserRoomStore(rawRoomPath?: string | null): BlueprintStore {
+  const normalized = normalizeRoomPath(rawRoomPath);
+  const isDefault = normalized === DEFAULT_ROOM_PATH;
+  const bpKey = isDefault ? BLUEPRINT_KEY : `atlas-hybrid-mock-server-room:${normalized}:blueprint`;
+  const revKey = isDefault ? REVISION_KEY : `atlas-hybrid-mock-server-room:${normalized}:revision`;
+  return {
+    async readRevision() {
+      const raw = await idbGet<number>(revKey);
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 1;
+    },
+    async writeRevision(rev) {
+      await idbSet(revKey, rev);
+    },
+    async readBlueprint() {
+      return idbGet<unknown>(bpKey);
+    },
+    async writeBlueprint(bp) {
+      return idbSet(bpKey, bp);
+    },
+  };
+}
+
+const browserStore: BlueprintStore = createBrowserRoomStore(DEFAULT_ROOM_PATH);
 
 /**
  * 浏览器版出站请求。
@@ -88,7 +96,15 @@ const browserFetcher: HttpFetcher = {
       if (res.type === 'opaqueredirect' || res.status === 0) {
         return { status: 302, headers: {}, body: new Uint8Array(0) };
       }
+      const MAX_BROWSER_PROXY_BYTES = 2 * 1024 * 1024;
+      const contentLen = Number(res.headers.get('content-length') || 0);
+      if (Number.isFinite(contentLen) && contentLen > MAX_BROWSER_PROXY_BYTES) {
+        throw new Error(`响应体超过 ${MAX_BROWSER_PROXY_BYTES} 字节上限`);
+      }
       const buf = new Uint8Array(await res.arrayBuffer());
+      if (buf.byteLength > MAX_BROWSER_PROXY_BYTES) {
+        throw new Error(`响应体超过 ${MAX_BROWSER_PROXY_BYTES} 字节上限`);
+      }
       const headers: Record<string, string> = {};
       res.headers.forEach((v, k) => {
         headers[k] = v;
@@ -108,15 +124,16 @@ function parseAllowedHosts(raw: string | undefined): string[] {
     .filter(Boolean);
 }
 
-const ALLOWED_HOSTS = parseAllowedHosts(import.meta.env.VITE_PROXY_ALLOWED_HOSTS);
-const MOCK_SAVE_KEY = (import.meta.env.VITE_MOCK_SAVE_KEY || 'atlas-demo-key').trim();
+const ALLOWED_HOSTS = parseAllowedHosts((import.meta.env ?? {} as Record<string, string | undefined>).VITE_PROXY_ALLOWED_HOSTS);
+const MOCK_SAVE_KEY = ((import.meta.env ?? {} as Record<string, string | undefined>).VITE_MOCK_SAVE_KEY || 'atlas-demo-key').trim();
 const PROXY_RATE_LIMIT_PER_MIN = Math.max(
   1,
-  Number(import.meta.env.VITE_PROXY_RATE_LIMIT_PER_MIN || 30)
+  Number((import.meta.env ?? {} as Record<string, string | undefined>).VITE_PROXY_RATE_LIMIT_PER_MIN || 30)
 );
 
 const browserDeps: ApiDeps = {
   store: browserStore,
+  getRoomStore: createBrowserRoomStore,
   proxy: {
     allowedHosts: ALLOWED_HOSTS,
     hasUpstreamSecret: false,
@@ -130,7 +147,7 @@ const browserDeps: ApiDeps = {
 
 // ─────────────────────────── 服务端转发 ───────────────────────────
 
-const RPC_WS_URL = normalizeWsUrl(String(import.meta.env.VITE_BACKEND_WS_URL ?? ''));
+const RPC_WS_URL = normalizeWsUrl(String((import.meta.env ?? {} as Record<string, string | undefined>).VITE_BACKEND_WS_URL ?? ''));
 let rpcClient: RpcClient | null = null;
 
 function getRpcClient(): RpcClient | null {

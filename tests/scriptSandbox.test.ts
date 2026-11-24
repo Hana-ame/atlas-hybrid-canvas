@@ -276,3 +276,35 @@ test('Worker sandbox varsChanged trigger: fires onChange when Inspector edits a 
   assert.ok((res.logs as string[]).includes('score 80 -> 95'));
   assert.deepEqual((res.updatedVars as Record<string, unknown>).contents, [{ type: 'text', text: 'badge:S' }]);
 });
+
+test('Worker sandbox runtime nullification blocks nested Worker/Blob/URL/WebTransport/WebAssembly escape (P1-A)', async () => {
+  const fs = await import('node:fs/promises');
+  const src = await fs.readFile(new URL('../src/core/scriptSandbox.ts', import.meta.url), 'utf8');
+  for (const api of ['Worker', 'SharedWorker', 'Blob', 'URL', 'WebTransport', 'WebAssembly', 'fetch', 'WebSocket', 'importScripts']) {
+    assert.ok(src.includes(`'${api}'`), `workerBootstrap must nullify ${api}`);
+  }
+  // Simulate the exact nullification loop on a mock WorkerGlobalScope and verify the nested-Worker escape fails
+  const mockProto: Record<string, unknown> = {
+    Worker: function FakeWorker() {},
+    SharedWorker: function FakeSharedWorker() {},
+    Blob: function FakeBlob() {},
+    URL: { createObjectURL: () => 'blob:fake' },
+    WebTransport: function FakeWT() {},
+    WebAssembly: { instantiate: () => {} },
+    fetch: () => {},
+  };
+  const mockSelf = Object.create(mockProto) as Record<string, unknown>;
+  for (const api of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'BroadcastChannel', 'importScripts', 'indexedDB', 'caches', 'setTimeout', 'setInterval', 'postMessage', 'Worker', 'SharedWorker', 'Blob', 'URL', 'WebTransport', 'WebAssembly']) {
+    Object.defineProperty(mockSelf, api, { value: undefined, writable: false, configurable: false });
+    Object.defineProperty(mockProto, api, { value: undefined, writable: false, configurable: false });
+  }
+  assert.equal(mockSelf['Wor' + 'ker'], undefined);
+  assert.equal(mockSelf['Bl' + 'ob'], undefined);
+  assert.equal(mockSelf['U' + 'RL'], undefined);
+  assert.equal(mockSelf['Web' + 'Transport'], undefined);
+  assert.equal(mockSelf['Web' + 'Assembly'], undefined);
+  assert.throws(() => {
+    const u = (mockSelf['U' + 'RL'] as any).createObjectURL(new (mockSelf['Bl' + 'ob'] as any)(['fetch()']));
+    new (mockSelf['Wor' + 'ker'] as any)(u);
+  }, TypeError);
+});

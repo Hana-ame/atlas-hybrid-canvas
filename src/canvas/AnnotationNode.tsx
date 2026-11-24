@@ -37,6 +37,9 @@ function AnnotationNodeInner({ data, selected }: NodeProps) {
   const [editingText, setEditingText] = useState(false);
   const [editingImageUrl, setEditingImageUrl] = useState(false);
   const [imageUrlDraft, setImageUrlDraft] = useState(annotation.imageUrl || '');
+  useEffect(() => {
+    setImageUrlDraft(annotation.imageUrl || '');
+  }, [annotation.imageUrl]);
   const [imageUrlError, setImageUrlError] = useState('');
   const [liveSize, setLiveSize] = useState<{ width: number; height: number } | null>(null);
   const displayWidth = liveSize ? liveSize.width : annotation.width;
