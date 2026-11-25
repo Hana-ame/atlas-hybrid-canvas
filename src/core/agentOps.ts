@@ -28,6 +28,7 @@ import type {
 import { isSafeImageUrl, isSafeVideoUrl } from './mediaHelper';
 import { isSafePdfUrl } from './pdfHelper';
 import { isSafePollUrl } from './apiPoller';
+import { sanitizeControlPoints } from './edgePath';
 import { findNonOverlappingPosition, type RectBox } from './placement';
 import { validateScriptSafety } from './scriptSandbox';
 import { BUILTIN_TEMPLATES } from './widgetTemplates';
@@ -149,6 +150,7 @@ export interface ConnectEdgeOp {
   color?: string;
   dashed?: boolean;
   bidirectional?: boolean;
+  controlPoints?: Array<{ x: number; y: number }>;
 }
 
 export interface DeleteEdgeOp {
@@ -717,6 +719,7 @@ export function applyAgentOperations(
           color: typeof item.color === 'string' && item.color.trim() ? item.color.trim() : undefined,
           dashed: Boolean(item.dashed),
           bidirectional: Boolean(item.bidirectional),
+          controlPoints: item.controlPoints ? sanitizeControlPoints(item.controlPoints) : undefined,
           rev: 1,
           cid: actor,
         };

@@ -236,6 +236,11 @@ export interface CanvasAnnotation {
   cid: string;
 }
 
+export interface EdgeControlPoint {
+  x: number;
+  y: number;
+}
+
 export interface BlueprintEdge {
   id: string;
   source: string;
@@ -247,6 +252,8 @@ export interface BlueprintEdge {
   dashed?: boolean;
   /** 是否为单线双向连线（双头箭头 <——>，任一端变更自动通知对端） */
   bidirectional?: boolean;
+  /** 可选自定义路径控制点（按顺序平滑穿过，避让节点卡片） */
+  controlPoints?: EdgeControlPoint[];
   rev: number;
   cid: string;
 }

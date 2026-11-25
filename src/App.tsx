@@ -52,6 +52,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { AnnotationNode, type AnnotationNodeData } from './canvas/AnnotationNode';
+import { ControllableEdge } from './canvas/ControllableEdge';
 import { ChunkUnderlayCanvas } from './canvas/ChunkUnderlayCanvas';
 import { WidgetNode, type WidgetNodeData } from './canvas/WidgetNode';
 import type { ScriptConsoleEntry } from './components/NodeInspectorPanel';
@@ -107,6 +108,7 @@ import {
 import type {
   BaseBlueprint,
   BlueprintEdge,
+  EdgeControlPoint,
   BlueprintNode,
   BlueprintTemplate,
   CanvasAnnotation,
@@ -119,6 +121,9 @@ import type {
 const nodeTypes = {
   widget: WidgetNode,
   annotation: AnnotationNode,
+};
+const edgeTypes = {
+  controllable: ControllableEdge,
 };
 const SELF_CID = `client-${Math.random().toString(36).slice(2, 7)}`;
 
@@ -1992,19 +1997,50 @@ function HybridCanvasWorkspace() {
     return s;
   }, [rfNodes]);
 
+  const handleUpdateEdgeControlPoints = useCallback(
+    (edgeId: string, nextPoints: EdgeControlPoint[]) => {
+      pushHistory();
+      setBase((prev) => {
+        const cur = prev.edges[edgeId];
+        if (!cur) return prev;
+        return {
+          ...prev,
+          version: prev.version + 1,
+          edges: {
+            ...prev.edges,
+            [edgeId]: {
+              ...cur,
+              controlPoints: nextPoints.length > 0 ? nextPoints : undefined,
+              rev: cur.rev + 1,
+              cid: SELF_CID,
+            },
+          },
+        };
+      });
+    },
+    [pushHistory]
+  );
+
   const rfEdges: Edge[] = useMemo(() => {
     if (lod === 'macro') return [];
     return filterVisibleEdges(base.edges, mountedWidgetIdSet).map((e) => {
       const stroke = e.color || '#64748B';
       return {
         id: e.id,
+        type: 'controllable',
         source: e.source,
         target: e.target,
         sourceHandle: e.sourceHandle ?? undefined,
         targetHandle: e.targetHandle ?? undefined,
         label: e.label,
         animated: Boolean(e.dashed),
-        style: { stroke, strokeWidth: 2 },
+        style: { stroke, strokeWidth: 2.2 },
+        data: {
+          controlPoints: e.controlPoints,
+          sourceTitle: base.nodes[e.source]?.title,
+          targetTitle: base.nodes[e.target]?.title,
+          onUpdateControlPoints: handleUpdateEdgeControlPoints,
+        },
         ...(e.bidirectional
           ? {
               markerStart: {
@@ -2023,7 +2059,7 @@ function HybridCanvasWorkspace() {
         },
       };
     });
-  }, [lod, base.edges, mountedWidgetIdSet]);
+  }, [lod, base.edges, base.nodes, mountedWidgetIdSet, handleUpdateEdgeControlPoints]);
 
   // 关键修复：onNodesChange 直接交给 applyNodeChanges 处理拖动/测量/选中，
   // 拖动过程中不触碰 overlay/base，只在松手（dragging === false）时一次性落盘，0 闪烁！
@@ -2540,6 +2576,8 @@ function HybridCanvasWorkspace() {
         panOnDrag
         zoomOnPinch
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        elevateEdgesOnSelect
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}

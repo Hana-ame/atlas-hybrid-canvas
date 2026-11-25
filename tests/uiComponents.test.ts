@@ -1,3 +1,4 @@
+import { ControllableEdge } from '../src/canvas/ControllableEdge.tsx';
 import { ReactFlowProvider } from '@xyflow/react';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -237,4 +238,39 @@ test('Canvas media/control blocks and contentBlockRegistry render valid controls
   assert.ok(AnnotationNode);
   assert.ok(ChunkUnderlayCanvas);
   assert.equal(typeof App, 'function');
+});
+
+test('ControllableEdge renders origin anchor dot, smooth path, control point handles when selected, and label pill', () => {
+  const html = renderToStaticMarkup(
+    React.createElement(
+      ReactFlowProvider,
+      null,
+      React.createElement(
+        'svg',
+        null,
+        React.createElement(ControllableEdge, {
+          id: 'edge-test-1',
+          source: 'n1',
+          target: 'n2',
+          sourceX: 100,
+          sourceY: 100,
+          targetX: 400,
+          targetY: 200,
+          sourcePosition: 'right' as any,
+          targetPosition: 'left' as any,
+          selected: true,
+          label: 'cancel',
+          style: { stroke: '#DC2626' },
+          data: {
+            controlPoints: [{ x: 250, y: 40 }],
+            sourceTitle: 'RUNNING',
+            targetTitle: 'IDLE',
+            onUpdateControlPoints: () => {},
+          },
+        } as any)
+      )
+    )
+  );
+  assert.ok(html.includes('250.0 40.0') || html.includes('250, 40'), 'should render control point path/handle');
+  assert.ok(html.includes('#DC2626'), 'should apply edge stroke color');
 });
