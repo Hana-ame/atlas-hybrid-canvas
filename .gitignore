@@ -3,6 +3,7 @@ node_modules/
 
 # build output
 dist/
+dist-server/
 dist-ssr/
 
 # env（.env.example 是模板，.env 才是真凭证，绝不提交）
