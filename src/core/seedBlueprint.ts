@@ -893,6 +893,264 @@ on('enter', (msg) => {
       rev: 1,
       cid: 'server-base',
     },
+    // ==================== ZONE G：Edge 通道版状态机（不改原 ZONE F，连线即共享消息槽 + flag 视觉反馈） ====================
+    'efsm-idle': {
+      id: 'efsm-idle',
+      x: 560,
+      y: 2800,
+      width: 300,
+      height: 215,
+      title: 'Edge 状态 A：IDLE 待机',
+      body: '',
+      category: '● ACTIVE',
+      color: '#2563EB',
+      inputPorts: [
+        { id: 'in-1', label: 'cancel 入口' },
+        { id: 'in-2', label: 'reset/restart 入口' },
+      ],
+      outputPorts: [{ id: 'out-1', label: 'start 出口' }],
+      defaultVars: { active: true, visits: 1, lastFrom: '初始态' },
+      script: String.raw`const isActive = Boolean(vars.active);
+const visits = Number(vars.visits ?? 1);
+const pendingIn = (vars.input || []).find((e) => e.flag);
+const outStart = (vars.output || []).find((e) => e.tag === 'start') || (vars.output || [])[0];
+vars.color = isActive ? '#2563EB' : (pendingIn ? '#F59E0B' : '#94A3B8');
+vars.type = isActive ? '● ACTIVE' : (pendingIn ? '● 待签收' : 'IDLE');
+
+vars.contents = [
+  {
+    type: 'text',
+    text: isActive
+      ? (outStart ? '当前激活 · 点击将令牌写入 [' + (outStart.tag || outStart.name) + '] 连线' : '当前激活 · 尚未连出 start 边')
+      : ('未激活 · 上游写入后连线会亮起流动，点下方「签收连线」读取'),
+    align: 'center',
+    color: isActive ? '#1D4ED8' : (pendingIn ? '#B45309' : '#64748B'),
+    fontSize: 12,
+    bold: isActive || Boolean(pendingIn)
+  },
+  { type: 'text', text: '进入次数：' + visits + ' · 来源：' + (vars.lastFrom || '-'), align: 'center', color: '#475569', fontSize: 11 },
+  [
+    { type: 'button', id: 'sendStart', label: '▶ 写入 start 连线', variant: 'primary', disabled: !isActive || !outStart },
+    { type: 'button', id: 'accept', label: '✓ 签收连线', variant: 'success', disabled: isActive }
+  ]
+];
+
+on('sendStart', () => {
+  if (!Boolean(vars.active)) return;
+  const edge = (vars.output || []).find((e) => e.tag === 'start') || (vars.output || [])[0];
+  if (!edge) return;
+  vars.active = false;
+  edge.msg = { from: 'IDLE', event: 'start', at: lib.now() };
+  edge.flag = true;
+  edge.dashed = true;      // 发送时切为流动虚线
+  edge.color = '#F59E0B';  // 亮琥珀色提示有待签收令牌
+  edge.tag = 'start · 待签收';
+});
+
+on('accept', () => {
+  const edge = (vars.input || []).find((e) => e.flag);
+  if (!edge) return;
+  const msg = edge.msg || {};
+  edge.flag = false;
+  edge.dashed = false;     // 签收后切回静态实线
+  edge.color = '';         // 清空覆盖，恢复默认线色
+  edge.tag = msg.event || 'done';
+  vars.active = true;
+  vars.visits = Number(vars.visits ?? 0) + 1;
+  vars.lastFrom = (msg.from || '上游') + ' (' + (msg.event || edge.tag || 'edge') + ')';
+});`,
+      rev: 1,
+      cid: 'server-base',
+    },
+    'efsm-running': {
+      id: 'efsm-running',
+      x: 940,
+      y: 2800,
+      width: 320,
+      height: 225,
+      title: 'Edge 状态 B：RUNNING 运行中',
+      body: '',
+      category: 'RUNNING',
+      color: '#94A3B8',
+      inputPorts: [
+        { id: 'in-1', label: 'start 入口' },
+        { id: 'in-2', label: 'resume 入口' },
+      ],
+      outputPorts: [
+        { id: 'out-1', label: 'finish 出口' },
+        { id: 'out-2', label: 'pause 出口' },
+        { id: 'out-3', label: 'cancel 出口' },
+      ],
+      defaultVars: { active: false, visits: 0, lastFrom: '-' },
+      script: String.raw`const isActive = Boolean(vars.active);
+const visits = Number(vars.visits ?? 0);
+const pendingIn = (vars.input || []).find((e) => e.flag);
+const pickOut = (tag, idx) => (vars.output || []).find((e) => e.tag === tag) || (vars.output || [])[idx];
+vars.color = isActive ? '#059669' : (pendingIn ? '#F59E0B' : '#94A3B8');
+vars.type = isActive ? '● ACTIVE' : (pendingIn ? '● 待签收' : 'RUNNING');
+
+vars.contents = [
+  {
+    type: 'text',
+    text: isActive ? '运行中 · 选择一条出边写入令牌' : ('未激活 · 连线亮起流动时点下方「签收连线」读取'),
+    align: 'center',
+    color: isActive ? '#047857' : (pendingIn ? '#B45309' : '#64748B'),
+    fontSize: 12,
+    bold: isActive || Boolean(pendingIn)
+  },
+  { type: 'text', text: '进入次数：' + visits + ' · 来源：' + (vars.lastFrom || '-'), align: 'center', color: '#475569', fontSize: 11 },
+  { type: 'button', id: 'accept', label: '✓ 签收连线进入 RUNNING', variant: 'success', disabled: isActive },
+  [
+    { type: 'button', id: 'pause', label: '⏸ 暂停', variant: 'secondary', disabled: !isActive || !pickOut('pause', 1) },
+    { type: 'button', id: 'finish', label: '✓ 完成', variant: 'primary', disabled: !isActive || !pickOut('finish', 0) },
+    { type: 'button', id: 'cancel', label: '✕ 取消', variant: 'danger', disabled: !isActive || !pickOut('cancel', 2) }
+  ]
+];
+
+on('accept', () => {
+  const edge = (vars.input || []).find((e) => e.flag);
+  if (!edge) return;
+  const msg = edge.msg || {};
+  edge.flag = false;
+  vars.active = true;
+  vars.visits = Number(vars.visits ?? 0) + 1;
+  vars.lastFrom = (msg.from || '上游') + ' (' + (msg.event || edge.tag || 'edge') + ')';
+});
+
+const sendVia = (tag, idx) => {
+  if (!Boolean(vars.active)) return;
+  const edge = pickOut(tag, idx);
+  if (!edge) return;
+  vars.active = false;
+  edge.msg = { from: 'RUNNING', event: tag, at: lib.now() };
+  edge.flag = true;
+};
+on('finish', () => sendVia('finish', 0));
+on('pause', () => sendVia('pause', 1));
+on('cancel', () => sendVia('cancel', 2));`,
+      rev: 1,
+      cid: 'server-base',
+    },
+    'efsm-paused': {
+      id: 'efsm-paused',
+      x: 940,
+      y: 3090,
+      width: 320,
+      height: 215,
+      title: 'Edge 状态 C：PAUSED 已暂停',
+      body: '',
+      category: 'PAUSED',
+      color: '#94A3B8',
+      inputPorts: [{ id: 'in-1', label: 'pause 入口' }],
+      outputPorts: [
+        { id: 'out-1', label: 'resume 出口' },
+        { id: 'out-2', label: 'reset 出口' },
+      ],
+      defaultVars: { active: false, visits: 0, lastFrom: '-' },
+      script: String.raw`const isActive = Boolean(vars.active);
+const visits = Number(vars.visits ?? 0);
+const pendingIn = (vars.input || []).find((e) => e.flag);
+const pickOut = (tag, idx) => (vars.output || []).find((e) => e.tag === tag) || (vars.output || [])[idx];
+vars.color = isActive ? '#D97706' : (pendingIn ? '#F59E0B' : '#94A3B8');
+vars.type = isActive ? '● ACTIVE' : (pendingIn ? '● 待签收' : 'PAUSED');
+
+vars.contents = [
+  {
+    type: 'text',
+    text: isActive ? '已暂停 · 可写入 resume 或 reset 连线' : ('未激活 · 连线亮起流动时点下方「签收连线」读取'),
+    align: 'center',
+    color: isActive ? '#B45309' : '#64748B',
+    fontSize: 12,
+    bold: isActive || Boolean(pendingIn)
+  },
+  { type: 'text', text: '暂停次数：' + visits + ' · 来源：' + (vars.lastFrom || '-'), align: 'center', color: '#475569', fontSize: 11 },
+  { type: 'button', id: 'accept', label: '✓ 签收连线进入 PAUSED', variant: 'success', disabled: isActive },
+  [
+    { type: 'button', id: 'resume', label: '▶ 恢复', variant: 'primary', disabled: !isActive || !pickOut('resume', 0) },
+    { type: 'button', id: 'reset', label: '↺ 重置', variant: 'secondary', disabled: !isActive || !pickOut('reset', 1) }
+  ]
+];
+
+on('accept', () => {
+  const edge = (vars.input || []).find((e) => e.flag);
+  if (!edge) return;
+  const msg = edge.msg || {};
+  edge.flag = false;
+  vars.active = true;
+  vars.visits = Number(vars.visits ?? 0) + 1;
+  vars.lastFrom = (msg.from || '上游') + ' (' + (msg.event || edge.tag || 'edge') + ')';
+});
+
+const sendVia = (tag, idx) => {
+  if (!Boolean(vars.active)) return;
+  const edge = pickOut(tag, idx);
+  if (!edge) return;
+  vars.active = false;
+  edge.msg = { from: 'PAUSED', event: tag, at: lib.now() };
+  edge.flag = true;
+};
+on('resume', () => sendVia('resume', 0));
+on('reset', () => sendVia('reset', 1));`,
+      rev: 1,
+      cid: 'server-base',
+    },
+    'efsm-done': {
+      id: 'efsm-done',
+      x: 1340,
+      y: 2800,
+      width: 300,
+      height: 215,
+      title: 'Edge 状态 D：DONE 已完成',
+      body: '',
+      category: 'DONE',
+      color: '#94A3B8',
+      inputPorts: [{ id: 'in-1', label: 'finish 入口' }],
+      outputPorts: [{ id: 'out-1', label: 'restart 出口' }],
+      defaultVars: { active: false, visits: 0, lastFrom: '-' },
+      script: String.raw`const isActive = Boolean(vars.active);
+const visits = Number(vars.visits ?? 0);
+const pendingIn = (vars.input || []).find((e) => e.flag);
+const outRestart = (vars.output || []).find((e) => e.tag === 'restart') || (vars.output || [])[0];
+vars.color = isActive ? '#7C3AED' : (pendingIn ? '#F59E0B' : '#94A3B8');
+vars.type = isActive ? '● ACTIVE' : (pendingIn ? '● 待签收' : 'DONE');
+
+vars.contents = [
+  {
+    type: 'text',
+    text: isActive ? '已完成 · 点击写入 restart 连线闭环回 IDLE' : ('未激活 · 连线亮起流动时点下方「签收连线」读取'),
+    align: 'center',
+    color: isActive ? '#6D28D9' : (pendingIn ? '#B45309' : '#64748B'),
+    fontSize: 12,
+    bold: isActive || Boolean(pendingIn)
+  },
+  { type: 'text', text: '完成次数：' + visits + ' · 来源：' + (vars.lastFrom || '-'), align: 'center', color: '#475569', fontSize: 11 },
+  [
+    { type: 'button', id: 'accept', label: '✓ 签收完成', variant: 'success', disabled: isActive },
+    { type: 'button', id: 'restart', label: '↻ 写入 restart', variant: 'primary', disabled: !isActive || !outRestart }
+  ]
+];
+
+on('accept', () => {
+  const edge = (vars.input || []).find((e) => e.flag);
+  if (!edge) return;
+  const msg = edge.msg || {};
+  edge.flag = false;
+  vars.active = true;
+  vars.visits = Number(vars.visits ?? 0) + 1;
+  vars.lastFrom = (msg.from || '上游') + ' (' + (msg.event || edge.tag || 'edge') + ')';
+});
+
+on('restart', () => {
+  if (!Boolean(vars.active)) return;
+  const edge = (vars.output || []).find((e) => e.tag === 'restart') || (vars.output || [])[0];
+  if (!edge) return;
+  vars.active = false;
+  edge.msg = { from: 'DONE', event: 'restart', at: lib.now() };
+  edge.flag = true;
+});`,
+      rev: 1,
+      cid: 'server-base',
+    },
     'fsm-monitor': {
       id: 'fsm-monitor',
       x: 1310,
@@ -1231,6 +1489,89 @@ on('clearLog', () => {
           { x: 488, y: 2630 },
           { x: 488, y: 2200 },
         ],
+        rev: 1,
+        cid: 'server-base',
+      },
+      // ZONE G：Edge 通道版状态机连线（删线即断流，写 msg/flag 边自动高亮流动，手动签收后熄灭）
+      'edge-efsm-start': {
+        id: 'edge-efsm-start',
+        source: 'efsm-idle',
+        target: 'efsm-running',
+        sourceHandle: 'out-1',
+        targetHandle: 'in-1',
+        label: 'start',
+        color: '#2563EB',
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-efsm-finish': {
+        id: 'edge-efsm-finish',
+        source: 'efsm-running',
+        target: 'efsm-done',
+        sourceHandle: 'out-1',
+        targetHandle: 'in-1',
+        label: 'finish',
+        color: '#059669',
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-efsm-pause': {
+        id: 'edge-efsm-pause',
+        source: 'efsm-running',
+        target: 'efsm-paused',
+        sourceHandle: 'out-2',
+        targetHandle: 'in-1',
+        label: 'pause',
+        color: '#D97706',
+        controlPoints: [{ x: 1295, y: 2945 }, { x: 1295, y: 3180 }],
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-efsm-resume': {
+        id: 'edge-efsm-resume',
+        source: 'efsm-paused',
+        target: 'efsm-running',
+        sourceHandle: 'out-1',
+        targetHandle: 'in-2',
+        label: 'resume',
+        color: '#059669',
+        controlPoints: [{ x: 895, y: 3165 }, { x: 895, y: 2945 }],
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-efsm-cancel': {
+        id: 'edge-efsm-cancel',
+        source: 'efsm-running',
+        target: 'efsm-idle',
+        sourceHandle: 'out-3',
+        targetHandle: 'in-1',
+        label: 'cancel',
+        color: '#DC2626',
+        controlPoints: [{ x: 1280, y: 3045 }, { x: 890, y: 3045 }, { x: 520, y: 2880 }],
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-efsm-reset': {
+        id: 'edge-efsm-reset',
+        source: 'efsm-paused',
+        target: 'efsm-idle',
+        sourceHandle: 'out-2',
+        targetHandle: 'in-2',
+        label: 'reset',
+        color: '#64748B',
+        controlPoints: [{ x: 760, y: 3225 }, { x: 520, y: 2955 }],
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-efsm-restart': {
+        id: 'edge-efsm-restart',
+        source: 'efsm-done',
+        target: 'efsm-idle',
+        sourceHandle: 'out-1',
+        targetHandle: 'in-2',
+        label: 'restart',
+        color: '#4F46E5',
+        controlPoints: [{ x: 1690, y: 2910 }, { x: 1690, y: 3360 }, { x: 488, y: 3360 }, { x: 488, y: 2955 }],
         rev: 1,
         cid: 'server-base',
       },

@@ -863,15 +863,27 @@ function HybridCanvasWorkspace() {
   );
 
   const buildEdgeSnapshots = useCallback(
-    (edgeMap: Record<string, BlueprintEdge>): EdgeSnapshot[] =>
-      Object.values(edgeMap).map((e) => ({
-        id: e.id,
-        source: e.source,
-        target: e.target,
-        sourceHandle: e.sourceHandle,
-        targetHandle: e.targetHandle,
-        label: e.label,
-      })),
+    (edgeMap: Record<string, BlueprintEdge>): EdgeSnapshot[] => {
+      const rtMap = overlayRef.current.edgeRuntime ?? {};
+      return Object.values(edgeMap).map((e) => {
+        const rt = rtMap[e.id];
+        return {
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          sourceHandle: e.sourceHandle,
+          targetHandle: e.targetHandle,
+          label: rt?.tag !== undefined ? rt.tag : e.label,
+          color: rt?.color !== undefined && rt.color !== '' ? rt.color : e.color,
+          dashed: rt?.dashed !== undefined ? rt.dashed : e.dashed,
+          name: rt?.name,
+          width: rt?.width,
+          msg: rt?.msg,
+          flag: rt?.flag,
+          seq: rt?.seq,
+        };
+      });
+    },
     []
   );
 
@@ -938,7 +950,7 @@ function HybridCanvasWorkspace() {
         );
       }
 
-      // 1) 更新自身 runtimeVars 与画板背景注释覆盖
+      // 1) 更新自身 runtimeVars、画板背景注释覆盖与边通道寄存器（edgeRuntime）
       setOverlay((prev) => {
         const nextAnnOverrides = { ...(prev.annotationOverrides ?? {}) };
         for (const op of res.annotationOps) {
@@ -948,6 +960,22 @@ function HybridCanvasWorkspace() {
           }
           nextAnnOverrides[op.id] = { ...(nextAnnOverrides[op.id] ?? {}), ...safePatch };
         }
+        const nextEdgeRuntime = { ...(prev.edgeRuntime ?? {}) };
+        for (const eop of res.edgeOps) {
+          const cur = nextEdgeRuntime[eop.edgeId] ?? {};
+          nextEdgeRuntime[eop.edgeId] = {
+            ...cur,
+            msg: eop.msg,
+            flag: eop.flag,
+            seq: (cur.seq ?? 0) + (eop.bumpSeq ? 1 : 0),
+            updatedAt: Date.now(),
+            ...(eop.tag !== undefined ? { tag: eop.tag } : {}),
+            ...(eop.name !== undefined ? { name: eop.name } : {}),
+            ...(eop.dashed !== undefined ? { dashed: eop.dashed } : {}),
+            ...(eop.color !== undefined ? { color: eop.color } : {}),
+            ...(eop.width !== undefined ? { width: eop.width } : {}),
+          };
+        }
         return {
           ...prev,
           runtimeVars: {
@@ -955,6 +983,7 @@ function HybridCanvasWorkspace() {
             [nodeId]: res.updatedVars,
           },
           annotationOverrides: nextAnnOverrides,
+          edgeRuntime: nextEdgeRuntime,
         };
       });
 
@@ -1191,8 +1220,8 @@ function HybridCanvasWorkspace() {
         await Promise.all(emitTasks);
       }
 
-      // 4) 若本次交互修改了自身状态，并发同时刷新所有通过连线接在下游的脚本控件（扇出同步生效）
-      if (trigger.kind !== 'render') {
+      // 4) 若本次交互通过 edgeOps 写了边寄存器，则不自动触发下游 render（防环路，改为边高亮 + 手动读取）
+      if (trigger.kind !== 'render' && res.edgeOps.length === 0) {
         const downstreamIds = getReactiveTargetNodeIds(
           createdEdges,
           nodeId,
@@ -2073,8 +2102,14 @@ function HybridCanvasWorkspace() {
 
   const rfEdges: Edge[] = useMemo(() => {
     if (lod === 'macro') return [];
+    const edgeRuntimeMap = overlay.edgeRuntime ?? {};
     return filterVisibleEdges(base.edges, mountedWidgetIdSet).map((e) => {
-      const stroke = e.color || '#64748B';
+      const rt = edgeRuntimeMap[e.id];
+      const hasFlag = Boolean(rt?.flag);
+      const effectiveLabel = rt?.tag !== undefined ? (rt.tag || undefined) : e.label;
+      const effectiveAnimated = rt?.dashed !== undefined ? Boolean(rt.dashed) : (Boolean(e.dashed) || hasFlag);
+      const stroke = (rt?.color && rt.color.trim()) ? rt.color.trim() : (hasFlag ? '#F59E0B' : (e.color || '#64748B'));
+      const effectiveWidth = typeof rt?.width === 'number' ? Math.max(1, Math.min(8, rt.width)) : (hasFlag ? 3.2 : 2.2);
       return {
         id: e.id,
         type: 'controllable',
@@ -2083,14 +2118,16 @@ function HybridCanvasWorkspace() {
         sourceHandle: e.sourceHandle ?? undefined,
         targetHandle: e.targetHandle ?? undefined,
         selected: selectedEdgeIds.has(e.id),
-        label: e.label,
-        animated: Boolean(e.dashed),
-        style: { stroke, strokeWidth: 2.2 },
+        label: effectiveLabel,
+        animated: effectiveAnimated,
+        style: { stroke, strokeWidth: effectiveWidth },
         data: {
           controlPoints: e.controlPoints,
           sourceTitle: base.nodes[e.source]?.title,
           targetTitle: base.nodes[e.target]?.title,
           isEditingLabel: editingEdgeLabelId === e.id,
+          edgeFlag: hasFlag,
+          edgeMsg: rt?.msg,
           onUpdateControlPoints: handleUpdateEdgeControlPoints,
           onEditLabel: handleEditEdgeLabel,
           onCommitLabel: handleCommitEdgeLabel,
@@ -2121,6 +2158,7 @@ function HybridCanvasWorkspace() {
     mountedWidgetIdSet,
     selectedEdgeIds,
     editingEdgeLabelId,
+    overlay.edgeRuntime,
     handleUpdateEdgeControlPoints,
     handleEditEdgeLabel,
     handleCommitEdgeLabel,
