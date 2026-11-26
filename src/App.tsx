@@ -38,6 +38,7 @@ import {
 } from '@xyflow/react';
 import {
   Download,
+  History,
   KeyRound,
   LayoutGrid,
   Layers,
@@ -58,6 +59,7 @@ import { areControlPointsEqual, sanitizeControlPoints } from './core/edgePath';
 import { ChunkUnderlayCanvas } from './canvas/ChunkUnderlayCanvas';
 import { WidgetNode, type WidgetNodeData } from './canvas/WidgetNode';
 import type { ScriptConsoleEntry } from './components/NodeInspectorPanel';
+import type { RoomHistoryEntryItem } from './components/VersionHistoryDrawer';
 import { auditBlueprintScripts, type ScriptAuditEntry } from './core/scriptAudit';
 import { getReactiveTargetNodeIds } from './core/edgeGraph';
 import { useCanvasShortcuts } from './hooks/useCanvasShortcuts';
@@ -73,6 +75,9 @@ const SearchJumpModal = lazy(() =>
 );
 const ScriptTrustModal = lazy(() =>
   import('./components/ScriptTrustModal').then((m) => ({ default: m.ScriptTrustModal }))
+);
+const VersionHistoryDrawer = lazy(() =>
+  import('./components/VersionHistoryDrawer').then((m) => ({ default: m.VersionHistoryDrawer }))
 );
 import type { RoomStatus } from './core/roomClient';
 import { TEMPLATE_DRAG_MIME, TemplateDrawer } from './components/TemplateDrawer';
@@ -169,12 +174,12 @@ function HybridCanvasWorkspace() {
   const [inspectingNodeId, setInspectingNodeId] = useState<string | null>(null);
   const [busyButtonKey, setBusyButtonKey] = useState<string | null>(null);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
+  const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [saveKeyInput, setSaveKeyInput] = useState('');
   const [saveKeyError, setSaveKeyError] = useState<string | null>(null);
+  const [rollbackError, setRollbackError] = useState<string | null>(null);
   const [isSavingBase, setIsSavingBase] = useState(false);
-  const [roomHistory, setRoomHistory] = useState<
-    Array<{ version: number; ts: number; action: string; actor: string; summary: string }>
-  >([]);
+  const [roomHistory, setRoomHistory] = useState<RoomHistoryEntryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const historyReqSeqRef = useRef(0);
 
@@ -190,7 +195,7 @@ function HybridCanvasWorkspace() {
       if (resp.ok) {
         const json = (await resp.json()) as {
           ok?: boolean;
-          entries?: Array<{ version: number; ts: number; action: string; actor: string; summary: string }>;
+          entries?: RoomHistoryEntryItem[];
         };
         if (seq === historyReqSeqRef.current && json.ok && Array.isArray(json.entries)) {
           setRoomHistory(json.entries);
@@ -204,17 +209,21 @@ function HybridCanvasWorkspace() {
   }, []);
 
   useEffect(() => {
-    if (saveModalOpen) void loadRoomHistory();
-  }, [saveModalOpen, loadRoomHistory]);
+    if (historyDrawerOpen) void loadRoomHistory();
+  }, [historyDrawerOpen, loadRoomHistory]);
 
-  const handleRollbackVersion = async (version: number) => {
+  useEffect(() => {
+    if (inspectingNodeId) setHistoryDrawerOpen(false);
+  }, [inspectingNodeId]);
+
+  const handleRollbackVersion = async (version: number): Promise<boolean> => {
     const key = saveKeyInput.trim();
     if (!key) {
-      setSaveKeyError('回档同样需要输入管理员保存密钥 (X-Blueprint-Save-Key)');
-      return;
+      setRollbackError('回档同样需要输入管理员保存密钥 (X-Blueprint-Save-Key)');
+      return false;
     }
     setIsSavingBase(true);
-    setSaveKeyError(null);
+    setRollbackError(null);
     try {
       const res = await fetch(buildRoomRollbackUrl(roomNameRef.current), {
         method: 'POST',
@@ -231,16 +240,18 @@ function HybridCanvasWorkspace() {
         error?: string;
       };
       if (!res.ok || !json.ok || !json.blueprint) {
-        setSaveKeyError(json.error || `回档失败 (HTTP ${res.status})`);
-        return;
+        setRollbackError(json.error || `回档失败 (HTTP ${res.status})`);
+        return false;
       }
       renderedScriptsRef.current.clear();
       setBase(json.blueprint);
       setChunkSyncTick((t) => t + 1);
       setStatusLog(`已回档至版本 v${version}`);
       void loadRoomHistory();
+      return true;
     } catch (err) {
-      setSaveKeyError(err instanceof Error ? err.message : '回档请求失败');
+      setRollbackError(err instanceof Error ? err.message : '回档请求失败');
+      return false;
     } finally {
       setIsSavingBase(false);
     }
@@ -2405,6 +2416,7 @@ function HybridCanvasWorkspace() {
       });
       setChunkSyncTick((t) => t + 1);
       setSaveModalOpen(false);
+      if (historyDrawerOpen) void loadRoomHistory();
       setStatusLog(`已通过密钥校验并保存到后端 (rev #${json.serverRevision})`);
     } catch {
       setSaveKeyError('无法连接到后端保存接口，当前修改仍安全保留在本地 IndexedDB');
@@ -2508,6 +2520,32 @@ function HybridCanvasWorkspace() {
             className="inline-flex items-center rounded-md border border-slate-300 bg-white p-1.5 text-slate-700 hover:bg-slate-50 disabled:opacity-35"
           >
             <Redo2 className="h-3.5 w-3.5" />
+          </button>
+
+          <button
+            type="button"
+            title="查看服务端房间版本历史与回档"
+            onClick={() => {
+              setRollbackError(null);
+              setHistoryDrawerOpen((v) => {
+                const next = !v;
+                if (next) {
+                  setInspectingNodeId(null);
+                  if (typeof window !== 'undefined' && window.innerWidth < 768) {
+                    setTemplateDrawerOpen(false);
+                  }
+                }
+                return next;
+              });
+            }}
+            className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium ${
+              historyDrawerOpen
+                ? 'border-blue-300 bg-blue-50 text-blue-800'
+                : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            <History className="h-3.5 w-3.5" />
+            版本历史
           </button>
 
           <button
@@ -2645,6 +2683,28 @@ function HybridCanvasWorkspace() {
             onDeleteNode={handleDeleteNode}
             onResetLocal={handleResetNodeLocal}
             onSaveAsTemplate={handleSaveAsTemplate}
+          />
+        </Suspense>
+      )}
+
+      {/* 右侧房间版本历史与回档抽屉（Figma / Notion 风格时间线 + 二次确认回档） */}
+      {historyDrawerOpen && (
+        <Suspense fallback={null}>
+          <VersionHistoryDrawer
+            open={historyDrawerOpen}
+            roomName={roomName}
+            entries={roomHistory}
+            loading={historyLoading}
+            submitting={isSavingBase}
+            saveKey={saveKeyInput}
+            error={rollbackError}
+            onChangeSaveKey={(nextKey) => {
+              setSaveKeyInput(nextKey);
+              if (rollbackError) setRollbackError(null);
+            }}
+            onRefresh={() => void loadRoomHistory()}
+            onRollback={handleRollbackVersion}
+            onClose={() => setHistoryDrawerOpen(false)}
           />
         </Suspense>
       )}
@@ -2876,48 +2936,23 @@ function HybridCanvasWorkspace() {
               </div>
             )}
 
-            <div className="mt-4 border-t border-slate-100 pt-3">
-              <div className="mb-1.5 flex items-center justify-between text-xs font-semibold text-slate-700">
-                <span>房间修改日志与版本回档</span>
-                <button
-                  type="button"
-                  onClick={() => void loadRoomHistory()}
-                  className="text-[11px] font-normal text-blue-600 hover:underline"
-                >
-                  {historyLoading ? '加载中…' : '刷新'}
-                </button>
-              </div>
-              {roomHistory.length === 0 ? (
-                <div className="rounded bg-slate-50 px-2.5 py-2 text-[11px] text-slate-500">
-                  暂无后端修改记录（发布或协同保存后自动生成可回档版本）
-                </div>
-              ) : (
-                <div className="max-h-36 space-y-1 overflow-y-auto pr-1">
-                  {roomHistory.map((item) => (
-                    <div
-                      key={item.version}
-                      className="flex items-center justify-between gap-2 rounded border border-slate-100 bg-slate-50/70 px-2 py-1 text-[11px]"
-                    >
-                      <div className="min-w-0 truncate text-slate-700">
-                        <span className="font-mono font-semibold text-slate-900">v{item.version}</span>{' '}
-                        <span className="rounded bg-slate-200/70 px-1 text-[10px]">{item.action}</span>{' '}
-                        <span>{item.summary}</span>
-                      </div>
-                      <button
-                        type="button"
-                        disabled={isSavingBase}
-                        onClick={() => void handleRollbackVersion(item.version)}
-                        className="shrink-0 rounded border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
-                      >
-                        回档
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="mt-4 flex items-center justify-end gap-2">
+            <div className="mt-4 flex items-center justify-end gap-2 border-t border-slate-100 pt-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setSaveModalOpen(false);
+                  setInspectingNodeId(null);
+                  setRollbackError(null);
+                  setHistoryDrawerOpen(true);
+                  if (typeof window !== 'undefined' && window.innerWidth < 768) {
+                    setTemplateDrawerOpen(false);
+                  }
+                }}
+                className="mr-auto inline-flex items-center gap-1 text-xs font-medium text-blue-700 hover:underline"
+              >
+                <History className="h-3.5 w-3.5" />
+                版本历史与回档
+              </button>
               <button
                 type="button"
                 onClick={() => setSaveModalOpen(false)}

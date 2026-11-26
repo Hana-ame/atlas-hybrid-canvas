@@ -9,6 +9,7 @@ import { TemplateDrawer } from '../src/components/TemplateDrawer.tsx';
 import { SearchJumpModal } from '../src/components/SearchJumpModal.tsx';
 import { ScriptTrustModal } from '../src/components/ScriptTrustModal.tsx';
 import { NodeInspectorPanel } from '../src/components/NodeInspectorPanel.tsx';
+import { VersionHistoryDrawer } from '../src/components/VersionHistoryDrawer.tsx';
 import { ImageNodeBlock } from '../src/canvas/ImageNodeBlock.tsx';
 import { VideoNodeBlock } from '../src/canvas/VideoNodeBlock.tsx';
 import { SliderControlBlock } from '../src/canvas/SliderControlBlock.tsx';
@@ -17,7 +18,7 @@ import { ImageButtonBlock } from '../src/canvas/ImageButtonBlock.tsx';
 import { ApiPollerBlock } from '../src/canvas/ApiPollerBlock.tsx';
 import { PdfViewerBlock } from '../src/canvas/PdfViewerBlock.tsx';
 import { SmartNodeResizer } from '../src/canvas/SmartNodeResizer.tsx';
-import { WidgetNode } from '../src/canvas/WidgetNode.tsx';
+import { WidgetNode, computeHorizontalDragScrollLeft } from '../src/canvas/WidgetNode.tsx';
 import { AnnotationNode } from '../src/canvas/AnnotationNode.tsx';
 import { ChunkUnderlayCanvas } from '../src/canvas/ChunkUnderlayCanvas.tsx';
 import { renderContentBlock } from '../src/canvas/contentBlockRegistry.tsx';
@@ -355,10 +356,16 @@ test('WidgetNode & button blocks prevent layout shift and render vars as a fixed
   assert.equal(html.includes('执行中…'), false, 'busy button should not replace label with shorter 执行中… text');
   assert.ok(html.includes('animate-spin'), 'busy button should display spinner icon while loading');
   assert.ok(html.includes('vars-scroll-row') && html.includes('overflow-x-auto'), 'vars must render in a single-line horizontally scrollable row');
+  assert.ok(html.includes('cursor-grab') && html.includes('select-none'), 'vars bar should expose grab cursor and disable accidental text selection during drag');
   assert.ok(html.includes('whitespace-nowrap'), 'var pills must stay on a single line without wrapping');
   const btnIdx = html.indexOf('算 5² (POST /demo/square)');
   const varsIdx = html.indexOf('vars-scroll-row');
   assert.ok(btnIdx > -1 && varsIdx > -1 && btnIdx < varsIdx, 'buttons must stay above fixed bottom vars bar');
+
+  // Dragging left (-60px) scrolls right (+60px); dragging right (+40px) scrolls left (-40px), clamped at 0
+  assert.equal(computeHorizontalDragScrollLeft(0, 200, 140), 60);
+  assert.equal(computeHorizontalDragScrollLeft(60, 140, 180), 20);
+  assert.equal(computeHorizontalDragScrollLeft(10, 100, 150), 0);
 
   const emptyVarsHtml = renderWidget({ ...entity, defaultVars: {}, effectiveVars: {}, hasRuntimeVars: false }, null);
   assert.ok(emptyVarsHtml.includes('vars-scroll-row') && emptyVarsHtml.includes('vars: 暂无'), 'button widgets should reserve fixed single-line vars bar height even before first click');
@@ -386,4 +393,36 @@ test('WidgetNode & button blocks prevent layout shift and render vars as a fixed
   assert.ok(scriptBtnHtml.includes('Run Demo Task'), 'busy script button should preserve label');
   assert.equal(scriptBtnHtml.includes('执行中…'), false, 'busy script button should not swap label text');
   assert.ok(scriptBtnHtml.includes('animate-spin'), 'busy script button should animate icon only');
+});
+
+test('VersionHistoryDrawer renders chronological timeline with current version badge and safe rollback triggers for historical versions', () => {
+  const html = renderToStaticMarkup(
+    React.createElement(VersionHistoryDrawer, {
+      open: true,
+      roomName: 'atlas-main',
+      entries: [
+        { version: 1, ts: 1732650000000, action: 'publish', actor: 'admin', summary: '管理员发布蓝图' },
+        { version: 3, ts: 1732651200000, action: 'agent', actor: 'agent:172.18.0.1', summary: '执行 1 项操作：update_widget×1' },
+        { version: 2, ts: 1732650600000, action: 'agent', actor: 'agent:172.18.0.1', summary: 'Add elyfn demo widget' },
+      ],
+      loading: false,
+      submitting: false,
+      saveKey: '',
+      error: null,
+      onChangeSaveKey: () => {},
+      onRefresh: () => {},
+      onRollback: async () => true,
+      onClose: () => {},
+    })
+  );
+  assert.ok(html.includes('版本历史'), 'drawer should display title');
+  assert.ok(html.includes('atlas-main'), 'drawer should display active room name');
+  assert.ok(html.includes('当前线上'), 'latest version should display live badge');
+  assert.ok(html.includes('回档至此版本'), 'older versions should expose rollback confirmation trigger');
+  assert.ok(html.includes('操作者：agent:172.18.0.1'), 'entries should attribute actor');
+  // Chronological descending order: v3 appears before v2, v2 before v1
+  const v3Pos = html.indexOf('v3');
+  const v2Pos = html.indexOf('v2');
+  const v1Pos = html.indexOf('v1');
+  assert.ok(v3Pos > -1 && v2Pos > -1 && v1Pos > -1 && v3Pos < v2Pos && v2Pos < v1Pos, 'versions must be ordered newest-first');
 });

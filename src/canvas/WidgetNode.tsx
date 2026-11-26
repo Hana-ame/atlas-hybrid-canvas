@@ -7,7 +7,7 @@
  * - 当 entity.script 产出 vars.contents 时，自动切换为声明式流式 UI（文本、按钮、原生输入框与水平行）。
  */
 
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import { SmartNodeResizer } from './SmartNodeResizer';
 import { CanvasErrorBoundary } from '../components/CanvasErrorBoundary';
@@ -47,6 +47,15 @@ export interface WidgetNodeData extends Record<string, unknown> {
   mediaActive?: boolean;
 }
 
+/** Computes target horizontal scrollLeft when dragging the single-line vars bar. */
+export function computeHorizontalDragScrollLeft(
+  startScrollLeft: number,
+  startX: number,
+  currentX: number
+): number {
+  return Math.max(0, startScrollLeft - (currentX - startX));
+}
+
 const VARIANT_CLASSES: Record<string, string> = {
   primary: 'bg-slate-900 text-white hover:bg-slate-700',
   secondary: 'bg-slate-100 text-slate-800 hover:bg-slate-200 border border-slate-200',
@@ -83,6 +92,21 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [editingBody, setEditingBody] = useState(false);
   const [liveSize, setLiveSize] = useState<{ width: number; height: number } | null>(null);
+  const [draggingVars, setDraggingVars] = useState(false);
+  const varsDragRef = useRef<{ pointerId: number; startX: number; startScrollLeft: number } | null>(null);
+
+  const endVarsDrag = (el: HTMLDivElement, pointerId: number) => {
+    if (varsDragRef.current?.pointerId !== pointerId) return;
+    varsDragRef.current = null;
+    setDraggingVars(false);
+    try {
+      if (el.hasPointerCapture?.(pointerId)) {
+        el.releasePointerCapture(pointerId);
+      }
+    } catch {
+      // ignore environments without pointer capture
+    }
+  };
   const displayWidth = liveSize ? liveSize.width : entity.width;
   const displayHeight = liveSize ? liveSize.height : entity.height;
 
@@ -465,7 +489,39 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
 
       {!hasScriptContents && (varEntries.length > 0 || (entity.buttons && entity.buttons.length > 0)) && (
         <div
-          className="nodrag nopan nowheel vars-scroll-row flex h-8 shrink-0 items-center gap-1.5 overflow-x-auto overflow-y-hidden rounded-b-lg border-t border-slate-100 bg-slate-50/75 px-3"
+          className={`nodrag nopan nowheel vars-scroll-row flex h-8 shrink-0 select-none items-center gap-1.5 overflow-x-auto overflow-y-hidden rounded-b-lg border-t border-slate-100 bg-slate-50/75 px-3 ${
+            varEntries.length > 0 ? (draggingVars ? 'cursor-grabbing' : 'cursor-grab') : ''
+          }`}
+          onPointerDown={(e) => {
+            if (e.button !== 0 || varEntries.length === 0) return;
+            const el = e.currentTarget;
+            if (el.scrollWidth <= el.clientWidth) return;
+            const rect = el.getBoundingClientRect();
+            if (rect.height > 0 && e.clientY > rect.top + el.clientTop + el.clientHeight) return;
+            varsDragRef.current = {
+              pointerId: e.pointerId,
+              startX: e.clientX,
+              startScrollLeft: el.scrollLeft,
+            };
+            setDraggingVars(true);
+            try {
+              el.setPointerCapture?.(e.pointerId);
+            } catch {
+              // ignore environments without pointer capture
+            }
+          }}
+          onPointerMove={(e) => {
+            const drag = varsDragRef.current;
+            if (!drag || drag.pointerId !== e.pointerId) return;
+            e.currentTarget.scrollLeft = computeHorizontalDragScrollLeft(
+              drag.startScrollLeft,
+              drag.startX,
+              e.clientX
+            );
+          }}
+          onPointerUp={(e) => endVarsDrag(e.currentTarget, e.pointerId)}
+          onPointerCancel={(e) => endVarsDrag(e.currentTarget, e.pointerId)}
+          onLostPointerCapture={(e) => endVarsDrag(e.currentTarget, e.pointerId)}
           onWheel={(e) => {
             const el = e.currentTarget;
             if (el.scrollWidth > el.clientWidth && Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
@@ -473,13 +529,13 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
               e.preventDefault();
             }
           }}
-          title="左右滚动查看变量 (vars)"
+          title="按住左右拖动或滚轮查看变量 (vars)"
         >
           {varEntries.length > 0 ? (
             varEntries.map(([k, v]) => (
               <span
                 key={k}
-                className="shrink-0 select-text whitespace-nowrap rounded border border-slate-200/80 bg-white px-1.5 py-0.5 font-mono text-[10px] text-slate-700"
+                className="shrink-0 select-none whitespace-nowrap rounded border border-slate-200/80 bg-white px-1.5 py-0.5 font-mono text-[10px] text-slate-700"
               >
                 {k}={typeof v === 'object' ? JSON.stringify(v) : String(v)}
               </span>
