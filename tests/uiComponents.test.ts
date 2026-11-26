@@ -305,3 +305,85 @@ test('ControllableEdge omits origin dot when bidirectional markerStart is presen
   );
   assert.equal(html.includes('cx="100"'), false, 'should not draw origin dot on top of bidirectional markerStart arrow');
 });
+
+test('WidgetNode & button blocks prevent layout shift and render vars as a fixed-height horizontal scroll row', () => {
+  const seed = createSeedBlueprint();
+  const baseNode = Object.values(seed.nodes)[0];
+  const entity = {
+    ...baseNode,
+    id: 'node-btn-layout',
+    title: 'Layout Stable Card',
+    buttons: [
+      { id: 'btn-sq', label: '算 5² (POST /demo/square)', actionType: 'proxy_http', proxyUrl: '/demo/square', variant: 'primary' },
+    ],
+    defaultVars: { lastHttpStatus: 200 },
+    effectiveVars: { lastHttpStatus: 200, lastHttpResponse: { square: 25 } },
+    hasLocalOverride: false,
+    hasRuntimeVars: true,
+  } as any;
+  const noop = () => {};
+  const renderWidget = (targetEntity: any, busyButtonKey: string | null) =>
+    renderToStaticMarkup(
+      React.createElement(
+        ReactFlowProvider,
+        null,
+        React.createElement(WidgetNode as any, {
+          id: targetEntity.id,
+          selected: false,
+          data: {
+            entity: targetEntity,
+            onRunButton: noop,
+            onRunScriptClick: noop,
+            onScriptInputChange: noop,
+            onScriptInputSubmit: noop,
+            onToggleLock: noop,
+            onResetLocal: noop,
+            onEditTitle: noop,
+            onEditBody: noop,
+            onResizeNode: noop,
+            onOpenInspector: noop,
+            onDuplicateNode: noop,
+            onDeleteNode: noop,
+            busyButtonKey,
+          },
+        })
+      )
+    );
+
+  const html = renderWidget(entity, 'node-btn-layout:btn-sq');
+  assert.ok(html.includes('算 5² (POST /demo/square)'), 'busy button should retain original label width');
+  assert.equal(html.includes('执行中…'), false, 'busy button should not replace label with shorter 执行中… text');
+  assert.ok(html.includes('animate-spin'), 'busy button should display spinner icon while loading');
+  assert.ok(html.includes('vars-scroll-row') && html.includes('overflow-x-auto'), 'vars must render in a single-line horizontally scrollable row');
+  assert.ok(html.includes('whitespace-nowrap'), 'var pills must stay on a single line without wrapping');
+  const btnIdx = html.indexOf('算 5² (POST /demo/square)');
+  const varsIdx = html.indexOf('vars-scroll-row');
+  assert.ok(btnIdx > -1 && varsIdx > -1 && btnIdx < varsIdx, 'buttons must stay above fixed bottom vars bar');
+
+  const emptyVarsHtml = renderWidget({ ...entity, defaultVars: {}, effectiveVars: {}, hasRuntimeVars: false }, null);
+  assert.ok(emptyVarsHtml.includes('vars-scroll-row') && emptyVarsHtml.includes('vars: 暂无'), 'button widgets should reserve fixed single-line vars bar height even before first click');
+
+  const scriptBtnEl = renderContentBlock(
+    { type: 'button', id: 'run-demo', label: 'Run Demo Task', variant: 'primary' } as any,
+    {
+      entity: { ...entity, id: 'node-script-btn' },
+      idx: 0,
+      inRow: false,
+      busyButtonKey: 'node-script-btn:script:run-demo',
+      mediaActive: false,
+      onRunScriptClick: noop,
+      onScriptInputChange: noop,
+      onSliderChange: noop,
+      onSliderCommit: noop,
+      onPad2DChange: noop,
+      onPad2DCommit: noop,
+      onImageButtonTrigger: noop,
+      onBatchUpdateVars: noop,
+      onScriptInputSubmit: noop,
+    }
+  );
+  const scriptBtnHtml = renderToStaticMarkup(scriptBtnEl as React.ReactElement);
+  assert.ok(scriptBtnHtml.includes('Run Demo Task'), 'busy script button should preserve label');
+  assert.equal(scriptBtnHtml.includes('执行中…'), false, 'busy script button should not swap label text');
+  assert.ok(scriptBtnHtml.includes('animate-spin'), 'busy script button should animate icon only');
+});

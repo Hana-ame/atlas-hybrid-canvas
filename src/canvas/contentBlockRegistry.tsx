@@ -5,7 +5,7 @@
  */
 
 import { Suspense, lazy, type ReactNode } from 'react';
-import { Play } from 'lucide-react';
+import { Loader2, Play } from 'lucide-react';
 import { ImageNodeBlock } from './ImageNodeBlock';
 import { SliderControlBlock } from './SliderControlBlock';
 import { Pad2DControlBlock } from './Pad2DControlBlock';
@@ -162,8 +162,12 @@ export const CONTENT_BLOCK_REGISTRY: {
           inRow && !block.width ? 'flex-1' : ''
         } ${cls}`}
       >
-        <Play className="h-3 w-3 shrink-0" />
-        <span className="truncate">{isBusy ? '执行中…' : block.label}</span>
+        {isBusy ? (
+          <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+        ) : (
+          <Play className="h-3 w-3 shrink-0" />
+        )}
+        <span className="truncate">{block.label}</span>
       </button>
     );
   },

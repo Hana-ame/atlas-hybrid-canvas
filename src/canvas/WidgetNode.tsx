@@ -11,7 +11,7 @@ import { memo, useEffect, useState } from 'react';
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import { SmartNodeResizer } from './SmartNodeResizer';
 import { CanvasErrorBoundary } from '../components/CanvasErrorBoundary';
-import { Copy, Globe, Lock, Play, RotateCcw, Settings2, Trash2, Unlock } from 'lucide-react';
+import { Copy, Globe, Loader2, Lock, Play, RotateCcw, Settings2, Trash2, Unlock } from 'lucide-react';
 import { RESERVED_WIDGET_PROP_VARS } from '../core/layeredStore';
 import { parseTaskLine, toggleTaskLine } from '../core/taskList';
 import { DEFAULT_INPUT_PORTS, DEFAULT_OUTPUT_PORTS } from '../core/edgePath';
@@ -353,7 +353,7 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
                   setEditingBody(true);
                 }}
                 title="按住拖动 · 双击编辑正文（支持 - [] / - [ ] / - [x] 复选框）"
-                className="min-h-[44px] flex-1 select-none break-words rounded px-0.5 py-0.5 text-xs leading-relaxed text-slate-600 hover:bg-slate-50/70"
+                className="min-h-[36px] shrink-0 select-none break-words rounded px-0.5 py-0.5 text-xs leading-relaxed text-slate-600 hover:bg-slate-50/70"
               >
                 {entity.body ? (
                   <div className="flex flex-col gap-0.5">
@@ -417,21 +417,8 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
               </div>
             )}
 
-            {varEntries.length > 0 && (
-              <div className="flex select-none flex-wrap gap-1">
-                {varEntries.map(([k, v]) => (
-                  <span
-                    key={k}
-                    className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-700"
-                  >
-                    {k}={typeof v === 'object' ? JSON.stringify(v) : String(v)}
-                  </span>
-                ))}
-              </div>
-            )}
-
             {entity.buttons && entity.buttons.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
+              <div className="flex shrink-0 flex-wrap gap-1.5">
                 {entity.buttons.map((btn) => {
                   const btnKey = `${entity.id}:${btn.id}`;
                   const isBusy = busyButtonKey === btnKey;
@@ -448,20 +435,62 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
                       }}
                       className={`nodrag nopan inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium disabled:opacity-50 ${cls}`}
                     >
-                      {btn.actionType === 'proxy_http' ? (
-                        <Globe className="h-3 w-3" />
+                      {isBusy ? (
+                        <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                      ) : btn.actionType === 'proxy_http' ? (
+                        <Globe className="h-3 w-3 shrink-0" />
                       ) : (
-                        <Play className="h-3 w-3" />
+                        <Play className="h-3 w-3 shrink-0" />
                       )}
-                      {isBusy ? '执行中…' : btn.label}
+                      {btn.label}
                     </button>
                   );
                 })}
               </div>
             )}
+
+            {!editingBody && (
+              <div
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  setEditingBody(true);
+                }}
+                title="双击编辑正文"
+                className="min-h-0 flex-1"
+              />
+            )}
           </>
         )}
       </div>
+
+      {!hasScriptContents && (varEntries.length > 0 || (entity.buttons && entity.buttons.length > 0)) && (
+        <div
+          className="nodrag nopan nowheel vars-scroll-row flex h-8 shrink-0 items-center gap-1.5 overflow-x-auto overflow-y-hidden rounded-b-lg border-t border-slate-100 bg-slate-50/75 px-3"
+          onWheel={(e) => {
+            const el = e.currentTarget;
+            if (el.scrollWidth > el.clientWidth && Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+              el.scrollLeft += e.deltaY;
+              e.preventDefault();
+            }
+          }}
+          title="左右滚动查看变量 (vars)"
+        >
+          {varEntries.length > 0 ? (
+            varEntries.map(([k, v]) => (
+              <span
+                key={k}
+                className="shrink-0 select-text whitespace-nowrap rounded border border-slate-200/80 bg-white px-1.5 py-0.5 font-mono text-[10px] text-slate-700"
+              >
+                {k}={typeof v === 'object' ? JSON.stringify(v) : String(v)}
+              </span>
+            ))
+          ) : (
+            <span className="shrink-0 select-none whitespace-nowrap font-mono text-[10px] text-slate-400">
+              vars: 暂无
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

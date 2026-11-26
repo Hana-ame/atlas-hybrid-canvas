@@ -49,6 +49,24 @@ html, body, #root {
   display: none;
 }
 
+.vars-scroll-row {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.65) transparent;
+}
+.vars-scroll-row::-webkit-scrollbar {
+  height: 5px;
+}
+.vars-scroll-row::-webkit-scrollbar-track {
+  background: transparent;
+}
+.vars-scroll-row::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.55);
+  border-radius: 9999px;
+}
+.vars-scroll-row::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.8);
+}
+
 /* 缩放器大碰撞箱：视觉细巧、命中宽大；角点压在边线之上，连线端口保持最高层级 */
 .react-flow__resize-control.line {
   z-index: 12;
