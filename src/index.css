@@ -34,6 +34,13 @@ html, body, #root {
   display: none;
 }
 
+/* 连线控制点与新增手柄：覆盖 .react-flow__edge 的 visibleStroke 继承，确保透明命中热区与圆心可完整响应拖拽 */
+.react-flow__edge .edge-control-handle,
+.react-flow__edge .edge-control-handle * {
+  pointer-events: all !important;
+  touch-action: none !important;
+}
+
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;

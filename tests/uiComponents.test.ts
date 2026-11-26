@@ -273,6 +273,8 @@ test('ControllableEdge renders origin anchor dot, smooth path, control point han
   );
   assert.ok(html.includes('250.0 40.0') || html.includes('250, 40'), 'should render control point path/handle');
   assert.ok(html.includes('#DC2626'), 'should apply edge stroke color');
+  assert.ok(html.includes('nodrag nopan edge-control-handle'), 'control point handles must isolate canvas pan/drag');
+  assert.ok(html.includes('pointer-events="all"'), 'control point handles must override visibleStroke pointer-events');
 });
 
 test('ControllableEdge omits origin dot when bidirectional markerStart is present', () => {

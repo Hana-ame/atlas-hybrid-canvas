@@ -2026,12 +2026,19 @@ function HybridCanvasWorkspace() {
     [pushHistory]
   );
 
-  const handleEditEdgeLabel = useCallback(
-    (edgeId: string) => {
+  const [selectedEdgeIds, setSelectedEdgeIds] = useState<Set<string>>(() => new Set());
+  const [editingEdgeLabelId, setEditingEdgeLabelId] = useState<string | null>(null);
+
+  const handleEditEdgeLabel = useCallback((edgeId: string) => {
+    if (!baseRef.current.edges[edgeId]) return;
+    setEditingEdgeLabelId(edgeId);
+  }, []);
+
+  const handleCommitEdgeLabel = useCallback(
+    (edgeId: string, nextLabel: string) => {
+      setEditingEdgeLabelId((cur) => (cur === edgeId ? null : cur));
       const initial = baseRef.current.edges[edgeId];
       if (!initial) return;
-      const nextLabel = window.prompt('修改连线标签文字（留空清除）：', initial.label ?? '');
-      if (nextLabel === null) return;
       const normalized = nextLabel.trim() || undefined;
       if ((initial.label || undefined) === normalized) return;
       pushHistory();
@@ -2051,6 +2058,10 @@ function HybridCanvasWorkspace() {
     [pushHistory]
   );
 
+  const handleCancelEditEdgeLabel = useCallback((edgeId: string) => {
+    setEditingEdgeLabelId((cur) => (cur === edgeId ? null : cur));
+  }, []);
+
   const rfEdges: Edge[] = useMemo(() => {
     if (lod === 'macro') return [];
     return filterVisibleEdges(base.edges, mountedWidgetIdSet).map((e) => {
@@ -2062,6 +2073,7 @@ function HybridCanvasWorkspace() {
         target: e.target,
         sourceHandle: e.sourceHandle ?? undefined,
         targetHandle: e.targetHandle ?? undefined,
+        selected: selectedEdgeIds.has(e.id),
         label: e.label,
         animated: Boolean(e.dashed),
         style: { stroke, strokeWidth: 2.2 },
@@ -2069,8 +2081,11 @@ function HybridCanvasWorkspace() {
           controlPoints: e.controlPoints,
           sourceTitle: base.nodes[e.source]?.title,
           targetTitle: base.nodes[e.target]?.title,
+          isEditingLabel: editingEdgeLabelId === e.id,
           onUpdateControlPoints: handleUpdateEdgeControlPoints,
           onEditLabel: handleEditEdgeLabel,
+          onCommitLabel: handleCommitEdgeLabel,
+          onCancelEditLabel: handleCancelEditEdgeLabel,
         },
         ...(e.bidirectional
           ? {
@@ -2090,7 +2105,18 @@ function HybridCanvasWorkspace() {
         },
       };
     });
-  }, [lod, base.edges, base.nodes, mountedWidgetIdSet, handleUpdateEdgeControlPoints, handleEditEdgeLabel]);
+  }, [
+    lod,
+    base.edges,
+    base.nodes,
+    mountedWidgetIdSet,
+    selectedEdgeIds,
+    editingEdgeLabelId,
+    handleUpdateEdgeControlPoints,
+    handleEditEdgeLabel,
+    handleCommitEdgeLabel,
+    handleCancelEditEdgeLabel,
+  ]);
 
   // 关键修复：onNodesChange 直接交给 applyNodeChanges 处理拖动/测量/选中，
   // 拖动过程中不触碰 overlay/base，只在松手（dragging === false）时一次性落盘，0 闪烁！
@@ -2274,8 +2300,40 @@ function HybridCanvasWorkspace() {
   }, [executeUnifiedWidgetScript, pushHistory, validateConnectionByWidgets]);
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
+    const selectChanges = changes.filter(
+      (c): c is Extract<EdgeChange, { type: 'select' }> => c.type === 'select'
+    );
+    if (selectChanges.length > 0) {
+      setSelectedEdgeIds((prev) => {
+        let next: Set<string> | null = null;
+        for (const sc of selectChanges) {
+          const has = (next ?? prev).has(sc.id);
+          if (sc.selected && !has) {
+            if (!next) next = new Set(prev);
+            next.add(sc.id);
+          } else if (!sc.selected && has) {
+            if (!next) next = new Set(prev);
+            next.delete(sc.id);
+          }
+        }
+        return next ?? prev;
+      });
+    }
+
     const removed = changes.filter((c) => c.type === 'remove').map((c) => c.id);
     if (removed.length === 0) return;
+    setSelectedEdgeIds((prev) => {
+      if (prev.size === 0) return prev;
+      let next: Set<string> | null = null;
+      for (const id of removed) {
+        if ((next ?? prev).has(id)) {
+          if (!next) next = new Set(prev);
+          next.delete(id);
+        }
+      }
+      return next ?? prev;
+    });
+    setEditingEdgeLabelId((cur) => (cur && removed.includes(cur) ? null : cur));
     pushHistory();
     const affectedTargets = new Set<string>();
     const nextEdges = { ...edgesRef.current };
@@ -2635,7 +2693,10 @@ function HybridCanvasWorkspace() {
         onEdgeDoubleClick={(_ev, edge) => {
           handleEditEdgeLabel(edge.id);
         }}
-        onPaneClick={() => setInspectingNodeId(null)}
+        onPaneClick={() => {
+          setInspectingNodeId(null);
+          setEditingEdgeLabelId(null);
+        }}
         selectionKeyCode="Shift"
         multiSelectionKeyCode="Shift"
         minZoom={0.12}

@@ -1,4 +1,4 @@
-# Atlas Hybrid Canvas — 混合无限画布蓝图框架（v12）
+# Atlas Hybrid Canvas — 混合无限画布蓝图框架（v96）
 
 **Atlas Hybrid Canvas** 是一套面向**大空间蓝图、策划大地图、知识地图与可编程工作台**的混合渲染无限画布项目。它结合了三套架构的各自长板：
 
@@ -12,6 +12,7 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ 上层 React Flow DOM 交互层（zoom > 38% 仅挂载当前可见 Chunk 活跃节点）     │
 │  · WidgetNode（默认整卡可拖、双击编辑标题/正文、多入/出端口、vars.contents）│
+│  · ControllableEdge（控制点样条避让、标签画布内联编辑、4px 阈值拖拽状态机） │
 │  · AnnotationNode（编辑态解锁的文本框与等比插图，关闭后自动回归底层瓦片）   │
 ├─────────────────────────────────────────────────────────────────────────┤
 │ 底层同步 Canvas 2D 瓦片层（ChunkUnderlayCanvas，Zustand 零重渲染同步）    │
@@ -39,6 +40,19 @@
 3. **两类背景注释层（文本框 + 等比插图）**：平时完全点击穿透且烘焙进离屏瓦片；开启「注释层：可拖动编辑」后可调字号、字色、色块底色（含透明）、上传本地插图与等比缩放，且支持被控件脚本动态改变背景（`canvas.setAnnotationBg` 等）。
 4. **声明式流式 UI 与跨控件联动脚本**：支持在隔离 Web Worker 中通过 `vars.contents` 渲染文本、按钮、原生 `<input>`/`<textarea>` 和水平行排布 `[...]`，支持 `on`、`onSubmit`、`widgets.create/connect/remove/get/vars`、`emit`、`broadcast`；内置开箱可玩的「示例：一键创建并联动控件」。
 5. **权威底座 + 个人本地叠加层 + 保存鉴权**：所有运行时 `vars` 和个人修改默认只存当前浏览器 IndexedDB（零 `localStorage`），支持单节点或全局一键还原；点顶栏「保存（需 Key）」需校验 `X-Blueprint-Save-Key`，无密钥访客仅可通过控件内预设 API 访问后端。
+6. **可控连线与画布内联标签编辑**：连线可插入最多 12 个控制点，Catmull-Rom 转三次贝塞尔样条平滑穿过全部控制点；近景 SVG 与全景 `macro` Canvas 共用同一套几何，缩放后走线完全一致。标签在曲线弧长中点**原地**变为输入框，不弹任何原生对话框。
+
+## 连线交互（控制点与标签）
+
+| 操作 | 效果 |
+| --- | --- |
+| 双击连线本体 / 双击标签胶囊 | 在标签位置原地弹出内联输入框；`Enter` 或失焦提交，`Esc` 取消，中文输入法组合期不会误提交 |
+| `Alt + 双击` 连线 | 在最近线段插入控制点；普通双击与 `Shift + 双击` 一律放行给标签编辑 / 框选 |
+| 左键拖动控制点 | 4px 屏幕位移阈值后开始调整弯曲路径；`pointercancel` 严格回滚 |
+| 双击 / 右键控制点 | 删除该控制点，右键不会因后续 `pointerup` 被复活 |
+| 点击或拖出每段曲线中点的「+」 | 新增弯折点；与标签胶囊重合时手柄自动下移 22px 避让 |
+
+控制手柄带 `nodrag nopan` 与显式 `pointer-events: all`，不会触发画布平移；外发光与「+」内十字均为 `pointer-events: none`，只由外层命中圆承担拖拽。只读模式（无保存权限）仅展示控制点，不提供拖拽与插入入口。
 
 ## 快速开始
 
@@ -57,6 +71,7 @@ npm run dev
 
 ```bash
 npm run typecheck   # TypeScript 严格类型检查 (tsc --noEmit)
+npm test            # node:test 单元测试（几何、agentOps、UI 组件，含独立回归用例）
 npm run build       # 构建生产静态产物到 dist/（静态部署自动启用 IndexedDB Mock API）
 ```
 
@@ -79,9 +94,10 @@ npm run build       # 构建生产静态产物到 dist/（静态部署自动启�
     ├── App.tsx                     # 顶层工作台编排（受控 rfNodes、LOD 迟滞、脚本调度、保存弹窗）
     ├── main.tsx                    # 入口文件（生产静态模式自动挂载 mockApi）
     ├── canvas/
-    │   ├── ChunkUnderlayCanvas.tsx # 零重渲染底层 Canvas 2D 瓦片、背景文本框/插图与全景大字层
-    │   ├── WidgetNode.tsx          # React Flow 控件节点（整卡拖动、双击编辑、多端口、流式 UI）
-    │   └── AnnotationNode.tsx      # 注释编辑态组件（文本框与等比插图、色板/底色/换图工具栏）
+│   ├── ChunkUnderlayCanvas.tsx # 零重渲染底层 Canvas 2D 瓦片、背景文本框/插图与全景大字层
+│   ├── ControllableEdge.tsx    # 可拖拽控制点连线与标签画布内联编辑（4px 阈值拖拽状态机）
+│   ├── WidgetNode.tsx          # React Flow 控件节点（整卡拖动、双击编辑、多端口、流式 UI）
+│   └── AnnotationNode.tsx      # 注释编辑态组件（文本框与等比插图、色板/底色/换图工具栏）
     ├── components/
     │   ├── TemplateDrawer.tsx      # 左侧所见即所得拖放模板库抽屉
     │   └── NodeInspectorPanel.tsx  # 右侧控件属性、端口、统一脚本、按钮与变量编辑器
@@ -92,6 +108,8 @@ npm run build       # 构建生产静态产物到 dist/（静态部署自动启�
         ├── layeredStore.ts         # 权威底座 + 个人本地叠加层合并与发布逻辑
         ├── idbStorage.ts           # 零依赖异步 IndexedDB 键值封装
         ├── scriptSandbox.ts        # 静态安全扫描 + 一次性 Blob Web Worker 隔离执行引擎
+        ├── edgePath.ts             # 控制点样条几何、弧长中点、端口定位与拖拽状态机（SVG/Canvas 共用）
+        ├── agentOps.ts             # Agent 工具 schema、蓝图摘要与批量操作归一化
         ├── widgetTemplates.ts      # 13+ 内置模板与 IndexedDB 自定义模板存取
         ├── seedBlueprint.ts        # 默认种子蓝图（含 example-spawner 联动示例与压测生成器）
         ├── mockApi.ts              # 静态站浏览器内 Mock 后端（契约与真后端完全一致）
