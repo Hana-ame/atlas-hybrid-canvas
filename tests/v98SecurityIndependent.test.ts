@@ -16,7 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { validateScriptSafety } from '../src/core/scriptSandbox.ts';
 import { applyAgentOperations } from '../src/core/agentOps.ts';
-import { computeRecordDiff } from '../src/core/crdt.ts';
+import { computeRecordDiff, mergeRecordFieldsLWW } from '../src/core/crdt.ts';
 import { createSeedBlueprint } from '../src/core/seedBlueprint.ts';
 import { createRoomBlueprintStoreRegistry } from '../server/fileStore.ts';
 
@@ -109,4 +109,37 @@ test('独立D：fileStore 冷启动并发读取后，新写入不会被迟到水
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('独立E：同名字段的显式字段戳优先于对方记录级回退，墓碑仍按 rev 裁决', () => {
+  const remote = {
+    id: 'n1', rev: 10, cid: 'client-z', title: 'Remote', color: '#222',
+    fieldRevs: { title: { rev: 10, cid: 'client-z' }, color: { rev: 10, cid: 'client-z' } },
+  };
+  const localFallbackOnly = {
+    id: 'n1', rev: 11, cid: 'client-a', title: 'New', color: '#111',
+    fieldRevs: { title: { rev: 11, cid: 'client-a' } }, // color 只有记录级回退戳
+  };
+
+  const m1 = mergeRecordFieldsLWW(remote as any, localFallbackOnly as any);
+  assert.equal(m1.merged.title, 'New', '双方均有显式 title 戳时，高 rev 的本地标题生效');
+  assert.equal(m1.merged.color, '#222', '远端 color 有显式字段戳，不应被本地记录级回退戳盖掉');
+
+  // 反向：本地有显式 color 戳，对方只有更高记录 rev 也应保住本地值
+  const localExplicit = {
+    ...localFallbackOnly,
+    fieldRevs: { title: { rev: 11, cid: 'client-a' }, color: { rev: 11, cid: 'client-a' } },
+  };
+  const remoteFallbackOnly = { ...remote, rev: 12, fieldRevs: { title: { rev: 12, cid: 'client-z' } } };
+  const m2 = mergeRecordFieldsLWW(localExplicit as any, remoteFallbackOnly as any);
+  assert.equal(m2.merged.color, '#111');
+
+  // 非恒真：字段确实缺失时，仍按记录级 rev 判定为墓碑删除
+  const withExtra = {
+    id: 'n2', rev: 2, cid: 'client-a', title: 'T', extra: 'old',
+    fieldRevs: { title: { rev: 2, cid: 'client-a' }, extra: { rev: 1, cid: 'client-a' } },
+  };
+  const deletion = { id: 'n2', rev: 2, cid: 'client-b', title: 'T', fieldRevs: { title: { rev: 2, cid: 'client-b' } } };
+  const m3 = mergeRecordFieldsLWW(withExtra as any, deletion as any);
+  assert.equal('extra' in m3.merged, false, '字段缺失的墓碑语义不能被新规则破坏');
 });

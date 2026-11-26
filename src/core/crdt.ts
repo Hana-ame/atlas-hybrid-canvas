@@ -92,7 +92,19 @@ export function mergeRecordFieldsLWW<T extends VersionedRecord>(
       continue;
     }
 
-    if (beats(incStamp, curStamp)) {
+    // 同名字段双方都存在时，显式字段戳优先于对方的「记录级 rev 回退」：
+    // computeRecordDiff() 会因别的字段变更整体抬高 rev，该抬升不能顺带覆盖
+    // 远端对该字段已有的显式历史。字段缺失（墓碑）分支仍按记录级 rev 裁决。
+    const curHasStamp = Boolean(curRevs?.[key]);
+    const incHasStamp = Boolean(incRevs?.[key]);
+    const incWins =
+      curHasStamp && !incHasStamp
+        ? false
+        : !curHasStamp && incHasStamp
+          ? true
+          : beats(incStamp, curStamp);
+
+    if (incWins) {
       if (JSON.stringify(curVal) !== JSON.stringify(incVal)) {
         nextObj[key] = incVal;
         changed = true;
