@@ -26,6 +26,8 @@ export interface ControllableEdgeData extends Record<string, unknown> {
   sourceTitle?: string;
   targetTitle?: string;
   isEditingLabel?: boolean;
+  edgeFlag?: boolean;
+  edgeMsg?: unknown;
   onUpdateControlPoints?: (edgeId: string, nextPoints: EdgeControlPoint[]) => void;
   onEditLabel?: (edgeId: string) => void;
   onCommitLabel?: (edgeId: string, nextLabel: string) => void;
@@ -59,6 +61,13 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
   const onCommitLabel = edgeData.onCommitLabel;
   const onCancelEditLabel = edgeData.onCancelEditLabel;
   const isEditingLabel = Boolean(edgeData.isEditingLabel);
+  const edgeFlag = Boolean(edgeData.edgeFlag);
+  const edgeMsgPreview =
+    edgeData.edgeMsg === undefined || edgeData.edgeMsg === null
+      ? ''
+      : typeof edgeData.edgeMsg === 'string'
+        ? edgeData.edgeMsg.slice(0, 24)
+        : (() => { try { return JSON.stringify(edgeData.edgeMsg).slice(0, 28); } catch { return 'msg'; } })();
 
   const [hovered, setHovered] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -239,7 +248,7 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
       ? `${edgeData.sourceTitle} → ${edgeData.targetTitle}（双击编辑标签 · 拖出「+」或 Alt+双击添加控制点 · 右键/双击控制点删除）`
       : '双击编辑标签 · 拖出「+」或 Alt+双击添加控制点 · 右键/双击控制点删除';
 
-  const hasVisibleLabel = Boolean(label) || isEditingLabel;
+  const hasVisibleLabel = Boolean(label) || isEditingLabel || edgeFlag;
 
   return (
     <g
@@ -383,8 +392,8 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
           );
         })}
 
-      {/* 连线标签 / 画布内联标签输入框（位于真实曲线弧长中点，绝不弹出原生 alert/prompt） */}
-      {(isEditingLabel || Boolean(label)) && (
+      {/* 连线标签 / 未读消息胶囊 / 画布内联标签输入框 */}
+      {(isEditingLabel || Boolean(label) || edgeFlag) && (
         <EdgeLabelRenderer>
           {isEditingLabel ? (
             <div
@@ -431,7 +440,8 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
             </div>
           ) : (
             <div
-              title={routeTooltip}
+              title={edgeFlag ? `${routeTooltip}
+未读消息：${edgeMsgPreview}` : routeTooltip}
               onMouseEnter={handleMouseEnter}
               onMouseLeave={handleMouseLeave}
               onDoubleClick={handleLabelDoubleClick}
@@ -439,12 +449,19 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
                 position: 'absolute',
                 transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
                 pointerEvents: 'all',
-                borderColor: isActive ? stroke : '#CBD5E1',
-                color: isActive ? stroke : '#334155',
+                borderColor: edgeFlag ? '#F59E0B' : (isActive ? stroke : '#CBD5E1'),
+                color: edgeFlag ? '#B45309' : (isActive ? stroke : '#334155'),
+                backgroundColor: edgeFlag ? '#FFFBEB' : 'rgba(255,255,255,0.95)',
               }}
-              className="nodrag nopan select-none rounded-full border bg-white/95 px-2 py-0.5 text-[11px] font-semibold shadow-sm transition-colors"
+              className="nodrag nopan inline-flex select-none items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold shadow-sm transition-colors"
             >
-              {String(label)}
+              {edgeFlag && <span className="inline-block h-2 w-2 rounded-full bg-amber-500 animate-pulse" />}
+              <span>{label ? String(label) : 'NEW'}</span>
+              {edgeFlag && edgeMsgPreview && (
+                <span className="max-w-[110px] truncate font-mono text-[10px] font-normal text-amber-800">
+                  {edgeMsgPreview}
+                </span>
+              )}
             </div>
           )}
         </EdgeLabelRenderer>

@@ -166,6 +166,25 @@ export interface EdgeSnapshot {
   sourceHandle?: string;
   targetHandle?: string;
   label?: string;
+  color?: string;
+  dashed?: boolean;
+  msg?: unknown;
+  flag?: boolean;
+  seq?: number;
+  name?: string;
+  width?: number;
+}
+
+export interface EdgeChannelOp {
+  edgeId: string;
+  msg: unknown;
+  flag: boolean;
+  bumpSeq: boolean;
+  tag?: string;
+  name?: string;
+  dashed?: boolean;
+  color?: string;
+  width?: number;
 }
 
 export interface AnnotationScriptOp {
@@ -223,6 +242,7 @@ export interface SandboxExecutionResult {
   annotationOps: AnnotationScriptOp[];
   widgetOps: WidgetScriptOp[];
   emitOps: EmitScriptOp[];
+  edgeOps: EdgeChannelOp[];
   logs: string[];
   connectValidation?: { ok: boolean; reason?: string };
   error?: string;
@@ -250,6 +270,7 @@ export async function runInIsolatedWorker(
       annotationOps: [],
       widgetOps: [],
       emitOps: [],
+      edgeOps: [],
       logs: [],
       error: check.reason,
     };
@@ -269,6 +290,7 @@ export async function runInIsolatedWorker(
       const annotationOps = [];
       const widgetOps = [];
       const emitOps = [];
+      const edgeOps = [];
       let suppressSideEffects = false;
       const peerMap = Object.assign(Object.create(null), peers || {});
       const edgeList = Array.isArray(edges) ? edges.slice() : [];
@@ -276,6 +298,45 @@ export async function runInIsolatedWorker(
       const ctx = {
         entity: selfEntity || { id: 'self', title: '控件', label: '控件', body: '', x: 0, y: 0, width: 280, height: 180, color: '#2563EB', vars: {} },
       };
+      const cloneChannelVal = (v) => {
+        if (v === null || v === undefined || typeof v !== 'object') return v;
+        try { return JSON.parse(JSON.stringify(v)); } catch { return v; }
+      };
+      const sortPortKey = (p) => String(p || '');
+      const buildChannelList = (dir) =>
+        edgeList
+          .filter((e) => (dir === 'out' ? e.source === ctx.entity.id : e.target === ctx.entity.id))
+          .sort((a, b) => sortPortKey(dir === 'out' ? a.sourceHandle : a.targetHandle).localeCompare(sortPortKey(dir === 'out' ? b.sourceHandle : b.targetHandle)))
+          .map((e) => {
+            const port = dir === 'out' ? (e.sourceHandle || 'out-1') : (e.targetHandle || 'in-1');
+            return {
+              edgeId: e.id,
+              port,
+              name: e.name !== undefined ? String(e.name) : port,
+              tag: e.label || '',
+              dashed: Boolean(e.dashed),
+              color: e.color || '',
+              width: typeof e.width === 'number' ? e.width : undefined,
+              msg: cloneChannelVal(e.msg),
+              flag: Boolean(e.flag),
+              seq: Number(e.seq || 0),
+              peerId: dir === 'out' ? e.target : e.source,
+            };
+          });
+      const initialEdgeSnap = Object.create(null);
+      for (const e of edgeList) {
+        initialEdgeSnap[e.id] = {
+          msg: cloneChannelVal(e.msg),
+          flag: Boolean(e.flag),
+          tag: e.label || '',
+          name: e.name,
+          dashed: Boolean(e.dashed),
+          color: e.color || '',
+          width: typeof e.width === 'number' ? e.width : undefined,
+        };
+      }
+      vars.output = buildChannelList('out');
+      vars.input = buildChannelList('in');
 
       const log = (...args) => { if (!suppressSideEffects) logs.push(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')); };
       const lib = {
@@ -624,7 +685,7 @@ export async function runInIsolatedWorker(
               connectValidation = { ok: false, reason: String(raw.reason || (ctx.entity.title + ' 拒绝了此连线')) };
             }
           }
-          _post({ ok: true, updatedVars: initialVars, annotationOps: [], widgetOps: [], emitOps: [], logs, connectValidation });
+          _post({ ok: true, updatedVars: initialVars, annotationOps: [], widgetOps: [], emitOps: [], edgeOps: [], logs, connectValidation });
           return;
         }
 
@@ -651,9 +712,48 @@ export async function runInIsolatedWorker(
           await runUserCode();
         }
 
+        // 收集对 vars.output / vars.input 边通道的写入（仅改边寄存器，不自动触发对端 render）
+        const seenEdgeOps = Object.create(null);
+        for (const list of [vars.output, vars.input]) {
+          if (!Array.isArray(list)) continue;
+          for (const ch of list) {
+            if (!ch || typeof ch !== 'object' || !ch.edgeId) continue;
+            const prev = initialEdgeSnap[ch.edgeId] || { msg: undefined, flag: false, tag: '', name: undefined, dashed: false, color: '', width: undefined };
+            const msgChanged = !valuesEqual(prev.msg, ch.msg);
+            const flagChanged = Boolean(ch.flag) !== Boolean(prev.flag);
+            const tagChanged = String(ch.tag ?? '') !== String(prev.tag ?? '');
+            const defaultName = ch.port || '';
+            const prevEffectiveName = prev.name !== undefined ? String(prev.name) : defaultName;
+            const nameChanged = String(ch.name ?? '') !== prevEffectiveName;
+            const dashedChanged = Boolean(ch.dashed) !== Boolean(prev.dashed);
+            const colorChanged = String(ch.color ?? '') !== String(prev.color ?? '');
+            const nextWidth = typeof ch.width === 'number' && Number.isFinite(ch.width) ? Math.max(1, Math.min(8, ch.width)) : undefined;
+            const widthChanged = nextWidth !== prev.width;
+            if (!msgChanged && !flagChanged && !tagChanged && !nameChanged && !dashedChanged && !colorChanged && !widthChanged) continue;
+            // 若脚本改了 msg 但没显式改 flag，自动把 flag 置 true；若显式设 flag = false 则尊重之
+            const nextFlag = flagChanged ? Boolean(ch.flag) : (msgChanged ? true : Boolean(ch.flag));
+            const op = {
+              edgeId: String(ch.edgeId),
+              msg: cloneChannelVal(ch.msg),
+              flag: nextFlag,
+              bumpSeq: msgChanged,
+            };
+            if (tagChanged) op.tag = String(ch.tag ?? '');
+            if (nameChanged) op.name = String(ch.name ?? '');
+            if (dashedChanged) op.dashed = Boolean(ch.dashed);
+            if (colorChanged) op.color = String(ch.color ?? '');
+            if (widthChanged) op.width = nextWidth;
+            seenEdgeOps[ch.edgeId] = op;
+          }
+        }
+        for (const eid of Object.keys(seenEdgeOps)) edgeOps.push(seenEdgeOps[eid]);
+
         const plainVars = {};
-        for (const k of Object.keys(vars)) plainVars[k] = vars[k];
-        _post({ ok: true, updatedVars: plainVars, annotationOps, widgetOps, emitOps, logs });
+        for (const k of Object.keys(vars)) {
+          if (k === 'input' || k === 'output') continue;
+          plainVars[k] = vars[k];
+        }
+        _post({ ok: true, updatedVars: plainVars, annotationOps, widgetOps, emitOps, edgeOps, logs });
       } catch (err) {
         _post({
           ok: false,
@@ -661,6 +761,7 @@ export async function runInIsolatedWorker(
           annotationOps: [],
           widgetOps: [],
           emitOps: [],
+          edgeOps: [],
           logs,
           error: err instanceof Error ? err.message : String(err),
         });
@@ -691,6 +792,7 @@ export async function runInIsolatedWorker(
           annotationOps: [],
           widgetOps: [],
           emitOps: [],
+          edgeOps: [],
           logs: [],
           error: `脚本执行超时（超过 ${MAX_COMPUTE_MS / 1000}s 已强杀 Worker）`,
         },
@@ -710,6 +812,7 @@ export async function runInIsolatedWorker(
           annotationOps: Array.isArray(ev.data.annotationOps) ? ev.data.annotationOps : [],
           widgetOps: Array.isArray(ev.data.widgetOps) ? ev.data.widgetOps : [],
           emitOps: Array.isArray(ev.data.emitOps) ? ev.data.emitOps : [],
+          edgeOps: Array.isArray(ev.data.edgeOps) ? ev.data.edgeOps : [],
         },
         Boolean(ev.data && ev.data.ok)
       );
@@ -723,6 +826,7 @@ export async function runInIsolatedWorker(
           annotationOps: [],
           widgetOps: [],
           emitOps: [],
+          edgeOps: [],
           logs: [],
           error: ev.message || 'Worker 运行异常',
         },

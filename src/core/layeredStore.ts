@@ -29,6 +29,7 @@ export function createEmptyOverlay(): LocalOverlayState {
     runtimeVars: {},
     nodePatches: {},
     annotationOverrides: {},
+    edgeRuntime: {},
     trustedRemoteScripts: {},
   };
 }
@@ -66,6 +67,7 @@ export async function loadLocalOverlay(roomPath?: string): Promise<LocalOverlayS
       runtimeVars: sanitizeEphemeralBlobVars(parsed.runtimeVars ?? {}),
       nodePatches: parsed.nodePatches ?? {},
       annotationOverrides: parsed.annotationOverrides ?? {},
+      edgeRuntime: parsed.edgeRuntime ?? {},
       trustedRemoteScripts: parsed.trustedRemoteScripts ?? {},
     };
   } catch {
@@ -187,6 +189,8 @@ export const RESERVED_WIDGET_PROP_VARS = new Set([
   'x',
   'y',
   'locked',
+  'input',
+  'output',
 ]);
 
 function toFiniteNum(v: unknown): number | null {

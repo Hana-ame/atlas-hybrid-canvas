@@ -292,10 +292,24 @@ export interface LocalAnnotationOverride {
   imageUrl?: string;
 }
 
+export interface EdgeChannelState {
+  msg?: unknown;
+  flag?: boolean;
+  seq?: number;
+  updatedAt?: number;
+  /** 脚本动态覆盖连线标签、名称、虚实线、颜色与线宽 */
+  tag?: string;
+  name?: string;
+  dashed?: boolean;
+  color?: string;
+  width?: number;
+}
+
 export interface LocalOverlayState {
   runtimeVars: Record<string, Record<string, unknown>>;
   nodePatches: Record<string, LocalNodePatch>;
   annotationOverrides: Record<string, LocalAnnotationOverride>;
+  edgeRuntime?: Record<string, EdgeChannelState>;
   trustedRemoteScripts: Record<string, boolean>;
 }
 
