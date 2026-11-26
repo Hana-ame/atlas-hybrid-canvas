@@ -14,12 +14,12 @@ import { CanvasErrorBoundary } from '../components/CanvasErrorBoundary';
 import { Copy, Globe, Lock, Play, RotateCcw, Settings2, Trash2, Unlock } from 'lucide-react';
 import { RESERVED_WIDGET_PROP_VARS } from '../core/layeredStore';
 import { parseTaskLine, toggleTaskLine } from '../core/taskList';
+import { DEFAULT_INPUT_PORTS, DEFAULT_OUTPUT_PORTS } from '../core/edgePath';
 import { IMMERSIVE_BLOCK_TYPES, renderContentBlock } from './contentBlockRegistry';
 import type {
   ContentFlowItem,
   ContentLeafBlock,
   EffectiveBlueprintNode,
-  NodePortSpec,
   WidgetButtonSpec,
 } from '../core/types';
 
@@ -46,15 +46,6 @@ export interface WidgetNodeData extends Record<string, unknown> {
   busyButtonKey: string | null;
   mediaActive?: boolean;
 }
-
-const DEFAULT_INPUT_PORTS: NodePortSpec[] = [
-  { id: 'in-1', label: '入口 1' },
-  { id: 'in-2', label: '入口 2' },
-];
-
-const DEFAULT_OUTPUT_PORTS: NodePortSpec[] = [
-  { id: 'out-1', label: '出口 1' },
-];
 
 const VARIANT_CLASSES: Record<string, string> = {
   primary: 'bg-slate-900 text-white hover:bg-slate-700',

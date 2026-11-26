@@ -224,6 +224,7 @@ export interface AgentBlueprintSummary {
     target: string;
     label?: string;
     bidirectional?: boolean;
+    controlPoints?: Array<{ x: number; y: number }>;
   }>;
 }
 
@@ -358,13 +359,17 @@ export function summarizeBlueprintForAgent(raw: unknown): AgentBlueprintSummary 
     height: a.height,
     bgColor: a.bgColor,
   }));
-  const edges = Object.values(bp.edges).map((e) => ({
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    label: e.label,
-    bidirectional: e.bidirectional,
-  }));
+  const edges = Object.values(bp.edges).map((e) => {
+    const cleanCps = sanitizeControlPoints(e.controlPoints);
+    return {
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      label: e.label,
+      bidirectional: e.bidirectional,
+      ...(cleanCps.length > 0 ? { controlPoints: cleanCps } : {}),
+    };
+  });
   return {
     version: bp.version,
     nodeCount: nodes.length,
@@ -719,7 +724,10 @@ export function applyAgentOperations(
           color: typeof item.color === 'string' && item.color.trim() ? item.color.trim() : undefined,
           dashed: Boolean(item.dashed),
           bidirectional: Boolean(item.bidirectional),
-          controlPoints: item.controlPoints ? sanitizeControlPoints(item.controlPoints) : undefined,
+          controlPoints: (() => {
+            const cps = item.controlPoints ? sanitizeControlPoints(item.controlPoints) : [];
+            return cps.length > 0 ? cps : undefined;
+          })(),
           rev: 1,
           cid: actor,
         };
@@ -839,6 +847,18 @@ export function getAgentToolSchema() {
                 source: { type: 'string' },
                 target: { type: 'string' },
                 bidirectional: { type: 'boolean' },
+                controlPoints: {
+                  type: 'array',
+                  description: '可选连线控制点数组 [{x, y}]，按顺序平滑绕过卡片（最多 12 个）',
+                  items: {
+                    type: 'object',
+                    required: ['x', 'y'],
+                    properties: {
+                      x: { type: 'number' },
+                      y: { type: 'number' },
+                    },
+                  },
+                },
               },
             },
           },

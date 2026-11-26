@@ -3,6 +3,7 @@ import { useStoreApi } from '@xyflow/react';
 import type { ChunkManager } from '../core/chunkManager';
 import { formatTaskTextForCanvas } from '../core/taskList';
 import type { ChunkTileCache } from '../core/chunkTileCache';
+import { computeControlPointBezierSegments, evalCubicBezier, resolveNodePortY } from '../core/edgePath';
 import type {
   BlueprintEdge,
   CanvasAnnotation,
@@ -399,11 +400,11 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
           const tgt = p.nodes[edge.target];
           if (!src || !tgt) continue;
           const sx = src.x + src.width;
-          const sy = src.y + src.height * 0.5;
+          const sy = resolveNodePortY(src, edge.sourceHandle, 'output');
           const tx2 = tgt.x;
-          const ty2 = tgt.y + tgt.height * 0.5;
-          const dx = Math.max(40, Math.abs(tx2 - sx) * 0.45);
+          const ty2 = resolveNodePortY(tgt, edge.targetHandle, 'input');
           const stroke = edge.color || '#64748B';
+          const segs = computeControlPointBezierSegments(sx, sy, tx2, ty2, edge.controlPoints);
 
           ctx.save();
           ctx.strokeStyle = stroke;
@@ -412,23 +413,15 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
           if (edge.dashed) ctx.setLineDash([8 / zoom, 6 / zoom]);
           ctx.beginPath();
           ctx.moveTo(sx, sy);
-          ctx.bezierCurveTo(sx + dx, sy, tx2 - dx, ty2, tx2, ty2);
+          for (const seg of segs) {
+            ctx.bezierCurveTo(seg.cp1x, seg.cp1y, seg.cp2x, seg.cp2y, seg.x, seg.y);
+          }
           ctx.stroke();
           ctx.setLineDash([]);
 
-          // 闭合入箭头：取贝塞尔终点附近（t=0.92）割线方向，使箭头贴合曲线实际入角
-          const tRef = 0.92;
-          const uRef = 1 - tRef;
-          const prevX =
-            uRef * uRef * uRef * sx +
-            3 * uRef * uRef * tRef * (sx + dx) +
-            3 * uRef * tRef * tRef * (tx2 - dx) +
-            tRef * tRef * tRef * tx2;
-          const prevY =
-            uRef * uRef * uRef * sy +
-            3 * uRef * uRef * tRef * sy +
-            3 * uRef * tRef * tRef * ty2 +
-            tRef * tRef * tRef * ty2;
+          // 闭合入箭头：复用 evalCubicBezier(lastSeg, 0.92) 取末端切线方向，贴合控制点样条实际入角
+          const lastSeg = segs[segs.length - 1];
+          const { x: prevX, y: prevY } = evalCubicBezier(lastSeg, 0.92);
           const angle =
             tx2 === prevX && ty2 === prevY ? 0 : Math.atan2(ty2 - prevY, tx2 - prevX);
           ctx.beginPath();
@@ -438,20 +431,9 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
           ctx.closePath();
           ctx.fill();
 
-          // 双向连线在起点补画反向入箭头
+          // 双向连线在起点补画反向入箭头（复用 evalCubicBezier）
           if (edge.bidirectional) {
-            const tStart = 0.08;
-            const uStart = 1 - tStart;
-            const nextX =
-              uStart * uStart * uStart * sx +
-              3 * uStart * uStart * tStart * (sx + dx) +
-              3 * uStart * tStart * tStart * (tx2 - dx) +
-              tStart * tStart * tStart * tx2;
-            const nextY =
-              uStart * uStart * uStart * sy +
-              3 * uStart * uStart * tStart * sy +
-              3 * uStart * tStart * tStart * ty2 +
-              tStart * tStart * tStart * ty2;
+            const { x: nextX, y: nextY } = evalCubicBezier(segs[0], 0.08);
             const startAngle =
               sx === nextX && sy === nextY ? Math.PI : Math.atan2(sy - nextY, sx - nextX);
             ctx.beginPath();

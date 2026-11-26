@@ -274,3 +274,32 @@ test('ControllableEdge renders origin anchor dot, smooth path, control point han
   assert.ok(html.includes('250.0 40.0') || html.includes('250, 40'), 'should render control point path/handle');
   assert.ok(html.includes('#DC2626'), 'should apply edge stroke color');
 });
+
+test('ControllableEdge omits origin dot when bidirectional markerStart is present', () => {
+  const html = renderToStaticMarkup(
+    React.createElement(
+      ReactFlowProvider,
+      null,
+      React.createElement(
+        'svg',
+        null,
+        React.createElement(ControllableEdge, {
+          id: 'edge-bi',
+          source: 'n1',
+          target: 'n2',
+          sourceX: 100,
+          sourceY: 100,
+          targetX: 300,
+          targetY: 100,
+          sourcePosition: 'right' as any,
+          targetPosition: 'left' as any,
+          selected: false,
+          markerStart: 'url(#arrow-start)',
+          style: { stroke: '#2563EB' },
+          data: {},
+        } as any)
+      )
+    )
+  );
+  assert.equal(html.includes('cx="100"'), false, 'should not draw origin dot on top of bidirectional markerStart arrow');
+});

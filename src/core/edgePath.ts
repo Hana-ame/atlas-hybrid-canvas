@@ -1,14 +1,45 @@
 /**
  * @file edgePath.ts
- * @description 可控连线（带控制点）的纯几何路径与标签定位工具：
+ * @description 可控连线（带控制点）的纯几何路径、端口定位与交互拖拽状态机：
  * - 无控制点时生成平滑三次贝塞尔曲线；
  * - 有控制点时使用 Catmull-Rom 转三次贝塞尔样条，平滑穿过全部控制点；
- * - 计算连线视觉中点用于标签定位，以及点击线段插入控制点的最优索引。
+ * - segmentMidpoints 与 labelX/labelY 均按真实三次贝塞尔曲线 B(t) 采样，贴合曲线本体；
+ * - 提供 resolveNodePortY() 与 WidgetNode 多端口纵坐标公式 100% 同源，供全景 Canvas 复用；
+ * - 提供纯状态机 createControlPointDragSession()，统一处理左键过滤、4px 抖动阈值、pointerId 隔离、pointercancel 回滚与卸载清理。
  */
 
-import type { EdgeControlPoint } from './types';
+import type { EdgeControlPoint, NodePortSpec } from './types';
 
 export const MAX_EDGE_CONTROL_POINTS = 12;
+export const CONTROL_POINT_DRAG_THRESHOLD_PX = 4;
+
+export const DEFAULT_INPUT_PORTS: NodePortSpec[] = [
+  { id: 'in-1', label: '入口 1' },
+  { id: 'in-2', label: '入口 2' },
+];
+
+export const DEFAULT_OUTPUT_PORTS: NodePortSpec[] = [
+  { id: 'out-1', label: '出口 1' },
+];
+
+/** 决定连线本体双击行为：仅 Alt+双击且可写时插入控制点，普通双击与 Shift+双击一律放行冒泡给标签编辑。 */
+export function decideEdgeDoubleClickAction(opts: {
+  altKey?: boolean;
+  hasOnUpdate: boolean;
+}): 'insert_control_point' | 'bubble_edit_label' {
+  return opts.hasOnUpdate && Boolean(opts.altKey) ? 'insert_control_point' : 'bubble_edit_label';
+}
+
+export interface CubicBezierSegment {
+  x0: number;
+  y0: number;
+  cp1x: number;
+  cp1y: number;
+  cp2x: number;
+  cp2y: number;
+  x: number;
+  y: number;
+}
 
 export function sanitizeControlPoints(raw: unknown): EdgeControlPoint[] {
   if (!Array.isArray(raw)) return [];
@@ -16,17 +47,137 @@ export function sanitizeControlPoints(raw: unknown): EdgeControlPoint[] {
   for (const item of raw) {
     if (out.length >= MAX_EDGE_CONTROL_POINTS) break;
     if (!item || typeof item !== 'object') continue;
-    const x = Number((item as { x?: unknown }).x);
-    const y = Number((item as { y?: unknown }).y);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    const rawX = (item as { x?: unknown }).x;
+    const rawY = (item as { y?: unknown }).y;
+    if (typeof rawX !== 'number' || typeof rawY !== 'number') continue;
+    if (!Number.isFinite(rawX) || !Number.isFinite(rawY)) continue;
+    const x = rawX;
+    const y = rawY;
     out.push({ x: Math.round(x), y: Math.round(y) });
   }
   return out;
 }
 
+export function areControlPointsEqual(
+  a?: EdgeControlPoint[] | null,
+  b?: EdgeControlPoint[] | null
+): boolean {
+  const sa = sanitizeControlPoints(a);
+  const sb = sanitizeControlPoints(b);
+  if (sa.length !== sb.length) return false;
+  for (let i = 0; i < sa.length; i++) {
+    if (sa[i].x !== sb[i].x || sa[i].y !== sb[i].y) return false;
+  }
+  return true;
+}
+
 /**
- * 给定起点、终点与若干控制点，生成平滑穿过所有控制点的 SVG path 与标签中点坐标。
- * 使用 Centripetal/Uniform Catmull-Rom 转为三次贝塞尔段（张力 0.5），既平滑又贴合控制点。
+ * 与 WidgetNode.tsx 保持 100% 一致的多端口纵向位置计算：
+ * 第 idx 个端口位于 node.y + node.height * ((idx + 1) / (ports.length + 1))。
+ */
+export function resolveNodePortY(
+  node: { y: number; height: number; inputPorts?: NodePortSpec[]; outputPorts?: NodePortSpec[] },
+  handleId?: string | null,
+  kind: 'input' | 'output' = 'input'
+): number {
+  const rawPorts = kind === 'input' ? node.inputPorts : node.outputPorts;
+  const ports =
+    rawPorts === undefined
+      ? kind === 'input'
+        ? DEFAULT_INPUT_PORTS
+        : DEFAULT_OUTPUT_PORTS
+      : rawPorts;
+  if (!Array.isArray(ports) || ports.length <= 1) {
+    return node.y + node.height * 0.5;
+  }
+  // 缺省 handleId 时与 React Flow 默认连接首个端口的行为对齐（idx = 0）
+  const idx = handleId ? ports.findIndex((p) => p.id === handleId) : 0;
+  const resolvedIdx = idx < 0 ? 0 : idx;
+  return node.y + node.height * ((resolvedIdx + 1) / (ports.length + 1));
+}
+
+/** 计算三次贝塞尔段在参数 t ∈ [0, 1] 上的精确坐标 B(t)。 */
+export function evalCubicBezier(seg: CubicBezierSegment, t: number): EdgeControlPoint {
+  const u = 1 - t;
+  const u2 = u * u;
+  const u3 = u2 * u;
+  const t2 = t * t;
+  const t3 = t2 * t;
+  return {
+    x: u3 * seg.x0 + 3 * u2 * t * seg.cp1x + 3 * u * t2 * seg.cp2x + t3 * seg.x,
+    y: u3 * seg.y0 + 3 * u2 * t * seg.cp1y + 3 * u * t2 * seg.cp2y + t3 * seg.y,
+  };
+}
+
+/** 近似计算单段三次贝塞尔弧长（8 段折线采样）。 */
+function approxSegmentLength(seg: CubicBezierSegment): number {
+  let len = 0;
+  let prev = { x: seg.x0, y: seg.y0 };
+  const steps = 8;
+  for (let s = 1; s <= steps; s++) {
+    const cur = evalCubicBezier(seg, s / steps);
+    len += Math.hypot(cur.x - prev.x, cur.y - prev.y);
+    prev = cur;
+  }
+  return len;
+}
+
+/**
+ * 计算从起点经由全部控制点到终点的逐段三次贝塞尔曲线参数。
+ * SVG 与 Canvas 2D 全景渲染共用此函数，确保缩远后走线与近景完全一致。
+ */
+export function computeControlPointBezierSegments(
+  sourceX: number,
+  sourceY: number,
+  targetX: number,
+  targetY: number,
+  controlPoints?: EdgeControlPoint[]
+): CubicBezierSegment[] {
+  const cps = sanitizeControlPoints(controlPoints);
+  if (cps.length === 0) {
+    const dx = Math.max(48, Math.abs(targetX - sourceX) * 0.45);
+    return [
+      {
+        x0: sourceX,
+        y0: sourceY,
+        cp1x: sourceX + dx,
+        cp1y: sourceY,
+        cp2x: targetX - dx,
+        cp2y: targetY,
+        x: targetX,
+        y: targetY,
+      },
+    ];
+  }
+
+  const pts: EdgeControlPoint[] = [
+    { x: sourceX, y: sourceY },
+    ...cps,
+    { x: targetX, y: targetY },
+  ];
+
+  const segments: CubicBezierSegment[] = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[Math.min(pts.length - 1, i + 2)];
+    segments.push({
+      x0: p1.x,
+      y0: p1.y,
+      cp1x: p1.x + (p2.x - p0.x) / 6,
+      cp1y: p1.y + (p2.y - p0.y) / 6,
+      cp2x: p2.x - (p3.x - p1.x) / 6,
+      cp2y: p2.y - (p3.y - p1.y) / 6,
+      x: p2.x,
+      y: p2.y,
+    });
+  }
+  return segments;
+}
+
+/**
+ * 给定起点、终点与若干控制点，生成平滑穿过所有控制点的 SVG path 与精确落在曲线上的标签中点及各段 "+" 锚点。
  */
 export function buildControlPointEdgePath(
   sourceX: number,
@@ -36,74 +187,50 @@ export function buildControlPointEdgePath(
   controlPoints?: EdgeControlPoint[]
 ): { path: string; labelX: number; labelY: number; segmentMidpoints: Array<{ x: number; y: number; insertIndex: number }> } {
   const cps = sanitizeControlPoints(controlPoints);
+  const segments = computeControlPointBezierSegments(sourceX, sourceY, targetX, targetY, cps);
+
   if (cps.length === 0) {
-    const dx = Math.max(48, Math.abs(targetX - sourceX) * 0.45);
-    const c1x = sourceX + dx;
-    const c1y = sourceY;
-    const c2x = targetX - dx;
-    const c2y = targetY;
-    const path = `M ${sourceX} ${sourceY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${targetX} ${targetY}`;
-    const labelX = 0.125 * sourceX + 0.375 * c1x + 0.375 * c2x + 0.125 * targetX;
-    const labelY = 0.125 * sourceY + 0.375 * c1y + 0.375 * c2y + 0.125 * targetY;
+    const seg = segments[0];
+    const path = `M ${seg.x0} ${seg.y0} C ${seg.cp1x} ${seg.cp1y}, ${seg.cp2x} ${seg.cp2y}, ${seg.x} ${seg.y}`;
+    const mid = evalCubicBezier(seg, 0.5);
     return {
       path,
-      labelX: Math.round(labelX),
-      labelY: Math.round(labelY),
-      segmentMidpoints: [{ x: Math.round(labelX), y: Math.round(labelY), insertIndex: 0 }],
+      labelX: Math.round(mid.x),
+      labelY: Math.round(mid.y),
+      segmentMidpoints: [{ x: Math.round(mid.x), y: Math.round(mid.y), insertIndex: 0 }],
     };
   }
 
-  const pts: EdgeControlPoint[] = [
-    { x: sourceX, y: sourceY },
-    ...cps,
-    { x: targetX, y: targetY },
-  ];
-
-  // Catmull-Rom 样条转三次贝塞尔段
-  const parts: string[] = [`M ${pts[0].x} ${pts[0].y}`];
-  for (let i = 0; i < pts.length - 1; i++) {
-    const p0 = pts[Math.max(0, i - 1)];
-    const p1 = pts[i];
-    const p2 = pts[i + 1];
-    const p3 = pts[Math.min(pts.length - 1, i + 2)];
-
-    const cp1x = p1.x + (p2.x - p0.x) / 6;
-    const cp1y = p1.y + (p2.y - p0.y) / 6;
-    const cp2x = p2.x - (p3.x - p1.x) / 6;
-    const cp2y = p2.y - (p3.y - p1.y) / 6;
-    parts.push(
-      `C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`
-    );
-  }
-
-  // 计算每段中点（供悬停/选中时显示 "+" 插入控制点手柄）
+  const parts: string[] = [`M ${sourceX} ${sourceY}`];
   const segmentMidpoints: Array<{ x: number; y: number; insertIndex: number }> = [];
   const segLengths: number[] = [];
   let totalLen = 0;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const a = pts[i];
-    const b = pts[i + 1];
-    const len = Math.hypot(b.x - a.x, b.y - a.y);
-    segLengths.push(len);
-    totalLen += len;
+
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    parts.push(
+      `C ${seg.cp1x.toFixed(1)} ${seg.cp1y.toFixed(1)}, ${seg.cp2x.toFixed(1)} ${seg.cp2y.toFixed(1)}, ${seg.x.toFixed(1)} ${seg.y.toFixed(1)}`
+    );
+    const curveMid = evalCubicBezier(seg, 0.5);
     segmentMidpoints.push({
-      x: Math.round((a.x + b.x) / 2),
-      y: Math.round((a.y + b.y) / 2),
+      x: Math.round(curveMid.x),
+      y: Math.round(curveMid.y),
       insertIndex: i,
     });
+    const len = approxSegmentLength(seg);
+    segLengths.push(len);
+    totalLen += len;
   }
 
-  // 标签放在整条折线弧长 50% 处，避免挤到端点或互相重叠
-  let labelX = pts[Math.floor(pts.length / 2)].x;
-  let labelY = pts[Math.floor(pts.length / 2)].y;
+  // 标签放在整条三次贝塞尔曲线弧长 50% 的真实 B(t) 点上，不偏离大弧度曲线本体
+  let labelPt = evalCubicBezier(segments[Math.floor(segments.length / 2)], 0.5);
   if (totalLen > 0) {
     let acc = 0;
     const half = totalLen / 2;
-    for (let i = 0; i < segLengths.length; i++) {
+    for (let i = 0; i < segments.length; i++) {
       if (acc + segLengths[i] >= half && segLengths[i] > 0) {
-        const t = (half - acc) / segLengths[i];
-        labelX = pts[i].x + (pts[i + 1].x - pts[i].x) * t;
-        labelY = pts[i].y + (pts[i + 1].y - pts[i].y) * t;
+        const t = Math.max(0, Math.min(1, (half - acc) / segLengths[i]));
+        labelPt = evalCubicBezier(segments[i], t);
         break;
       }
       acc += segLengths[i];
@@ -112,13 +239,12 @@ export function buildControlPointEdgePath(
 
   return {
     path: parts.join(' '),
-    labelX: Math.round(labelX),
-    labelY: Math.round(labelY),
+    labelX: Math.round(labelPt.x),
+    labelY: Math.round(labelPt.y),
     segmentMidpoints,
   };
 }
 
-/** 计算点到线段的最短距离平方，用于双击连线任意位置时找到最合适的插入段索引。 */
 function distSqToSegment(p: EdgeControlPoint, a: EdgeControlPoint, b: EdgeControlPoint): number {
   const vx = b.x - a.x;
   const vy = b.y - a.y;
@@ -157,6 +283,7 @@ export function insertControlPoint(
   point: EdgeControlPoint
 ): EdgeControlPoint[] {
   const safe = sanitizeControlPoints(controlPoints);
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return safe;
   if (safe.length >= MAX_EDGE_CONTROL_POINTS) return safe;
   const idx = Math.max(0, Math.min(safe.length, index));
   const next = safe.slice();
@@ -168,4 +295,107 @@ export function removeControlPoint(controlPoints: EdgeControlPoint[], index: num
   const safe = sanitizeControlPoints(controlPoints);
   if (index < 0 || index >= safe.length) return safe;
   return safe.filter((_, i) => i !== index);
+}
+
+export interface MinimalPointerEvent {
+  button?: number;
+  pointerId?: number;
+  clientX: number;
+  clientY: number;
+}
+
+export interface ControlPointDragSessionOptions {
+  index: number;
+  initialPoints: EdgeControlPoint[];
+  isNewInsert: boolean;
+  startEvent: MinimalPointerEvent;
+  dragThresholdPx?: number;
+  screenToFlow: (pt: { x: number; y: number }) => { x: number; y: number };
+  onDraftChange: (draft: EdgeControlPoint[] | null) => void;
+  onCommit?: (finalPoints: EdgeControlPoint[]) => void;
+  addWindowListener: (type: 'pointermove' | 'pointerup' | 'pointercancel', fn: (ev: MinimalPointerEvent) => void) => void;
+  removeWindowListener: (type: 'pointermove' | 'pointerup' | 'pointercancel', fn: (ev: MinimalPointerEvent) => void) => void;
+}
+
+/**
+ * 可独立单测的控制点拖拽会话控制器：
+ * - 拒绝非左键（button !== 0）与只读模式（!onCommit）；
+ * - 按 pointerId 隔离多指触控；
+ * - 对已有控制点施加 4px 屏幕位移阈值，避免双击删点时 1-2px 抖动触发空提交；
+ * - pointercancel 严格回滚不提交（含新建 + 插入）；
+ * - 返回 cleanup() 供组件卸载或删除操作立即注销全部 window 监听器。
+ */
+export function createControlPointDragSession(opts: ControlPointDragSessionOptions): (() => void) | null {
+  if (!opts.onCommit) return null;
+  if ((opts.startEvent.button ?? 0) !== 0) return null;
+  if (!Number.isInteger(opts.index) || opts.index < 0 || opts.index >= opts.initialPoints.length) return null;
+
+  const threshold = Math.max(0, opts.dragThresholdPx ?? CONTROL_POINT_DRAG_THRESHOLD_PX);
+  const activePointerId = opts.startEvent.pointerId;
+  const startScreenX = opts.startEvent.clientX;
+  const startScreenY = opts.startEvent.clientY;
+  let draft: EdgeControlPoint[] | null = opts.initialPoints.slice();
+  let hasChanged = opts.isNewInsert;
+  let thresholdPassed = opts.isNewInsert;
+  let active = true;
+
+  if (opts.isNewInsert) {
+    opts.onDraftChange(draft);
+  }
+
+  const cleanup = () => {
+    if (!active) return;
+    active = false;
+    opts.removeWindowListener('pointermove', handleMove);
+    opts.removeWindowListener('pointerup', handleUp);
+    opts.removeWindowListener('pointercancel', handleCancel);
+    draft = null;
+  };
+
+  const isMatchingPointer = (ev: MinimalPointerEvent): boolean =>
+    activePointerId === undefined || ev.pointerId === undefined || ev.pointerId === activePointerId;
+
+  const handleMove = (ev: MinimalPointerEvent) => {
+    if (!active || !draft || !isMatchingPointer(ev)) return;
+    if (!thresholdPassed) {
+      if (Math.hypot(ev.clientX - startScreenX, ev.clientY - startScreenY) < threshold) {
+        return;
+      }
+      thresholdPassed = true;
+    }
+    const flowPos = opts.screenToFlow({ x: ev.clientX, y: ev.clientY });
+    if (!Number.isFinite(flowPos.x) || !Number.isFinite(flowPos.y)) return;
+    const rx = Math.round(flowPos.x);
+    const ry = Math.round(flowPos.y);
+    const cur = draft[opts.index];
+    if (cur && cur.x === rx && cur.y === ry) return;
+    hasChanged = true;
+    const next = draft.slice();
+    next[opts.index] = { x: rx, y: ry };
+    draft = next;
+    opts.onDraftChange(next);
+  };
+
+  const handleUp = (ev: MinimalPointerEvent) => {
+    if (!active || !isMatchingPointer(ev)) return;
+    const finalPoints = draft;
+    const shouldCommit = hasChanged && Boolean(finalPoints);
+    cleanup();
+    opts.onDraftChange(null);
+    if (shouldCommit && finalPoints && opts.onCommit) {
+      opts.onCommit(finalPoints);
+    }
+  };
+
+  const handleCancel = (ev: MinimalPointerEvent) => {
+    if (!active || !isMatchingPointer(ev)) return;
+    cleanup();
+    opts.onDraftChange(null);
+  };
+
+  opts.addWindowListener('pointermove', handleMove);
+  opts.addWindowListener('pointerup', handleUp);
+  opts.addWindowListener('pointercancel', handleCancel);
+
+  return cleanup;
 }

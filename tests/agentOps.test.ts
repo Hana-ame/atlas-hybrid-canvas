@@ -166,3 +166,37 @@ test('applyAgentOperations() rejects unsafe URLs inside structured blocks (image
   ]);
   assert.equal(badPdfBlock.ok, false);
 });
+
+test('agentOps exposes controlPoints in schema, summary, and normalizes empty [] to undefined', () => {
+  const schema = getAgentToolSchema();
+  const opsTool = schema.find((t) => t.name === 'atlas_canvas_ops') as any;
+  assert.ok(opsTool.parameters.properties.ops.items.properties.controlPoints, 'schema must declare controlPoints');
+
+  const res = applyAgentOperations(null, [
+    { op: 'create_widget', id: 'a', title: 'A' },
+    { op: 'create_widget', id: 'b', title: 'B' },
+    { op: 'connect_edge', id: 'e-cp', source: 'a', target: 'b', controlPoints: [{ x: 200, y: 50 }] },
+    { op: 'connect_edge', id: 'e-empty', source: 'b', target: 'a', controlPoints: [] },
+  ]);
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  assert.equal(res.blueprint.edges['e-empty'].controlPoints, undefined, 'empty controlPoints [] must normalize to undefined');
+
+  const summary = summarizeBlueprintForAgent(res.blueprint);
+  const eCp = summary.edges.find((e) => e.id === 'e-cp');
+  assert.deepEqual(eCp?.controlPoints, [{ x: 200, y: 50 }]);
+});
+
+test('summarizeBlueprintForAgent() omits dirty NaN controlPoints instead of emitting []', () => {
+  const dirtyBp = {
+    version: 1,
+    chunkSize: 512,
+    nodes: {},
+    annotations: {},
+    edges: {
+      'e-dirty': { id: 'e-dirty', source: 'a', target: 'b', controlPoints: [{ x: Number.NaN, y: 0 }], rev: 1, cid: 'x' },
+    },
+  };
+  const summary = summarizeBlueprintForAgent(dirtyBp);
+  assert.equal('controlPoints' in summary.edges[0], false);
+});

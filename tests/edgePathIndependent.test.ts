@@ -1,8 +1,8 @@
 /**
  * @file edgePathIndependent.test.ts
- * @description v91 独立审查配套测试（独立编写，不复用 tests/edgePath.test.ts 的断言口径）。
+ * @description 连线控制点路径的独立测试（独立编写，不复用 tests/edgePath.test.ts 的断言口径）。
  *
- * 与项目自带 v91 测试的差异：
+ * 与项目自带测试的差异：
  * 1. 自带测试只校验「路径里出现控制点坐标字符串」「控制点数组长度 >= 2」，
  *    本文件改为**解析 path 指令**，断言 M 起点与每段 C 的终点序列严格等于
  *    [source, ...controlPoints, target]，即样条真的穿过每个控制点；
@@ -10,8 +10,8 @@
  *    本文件按种子数据里的真实卡片矩形做**几何避让断言**（控制点不得落在任何状态卡内部）；
  * 3. 补充入参不可变性、上限饱和、索引钳位、findBestInsertIndex 精确命中、
  *    agentOps 端到端 sanitize 等自带测试未覆盖的边界；
- * 4. 末尾 3 条为「现状锁定」用例：把 v91 现存缺陷的当前数值钉住并注明应有行为，
- *    修复后这些断言会失败，从而强制同步更新（详见 changelog/v91-review-01.md）。
+ * 4. 独立⑩⑪ 为 v91 审查发现、v92/v95 已修复缺陷的正向回归（拒绝非 number 坐标、
+ *    段中点落在曲线上）；独立⑫ 锁定仍未收敛的遗留行为（uniform Catmull-Rom 过冲）。
  */
 
 import test from 'node:test';
@@ -69,15 +69,6 @@ function sampleCubic(c: Cubic, t: number): Pt {
   };
 }
 
-/** 折线（控制多边形）弧长累计。 */
-function chordLengths(pts: Pt[]): number[] {
-  const out: number[] = [];
-  for (let i = 0; i < pts.length - 1; i++) {
-    out.push(Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y));
-  }
-  return out;
-}
-
 test('独立①：路径严格穿过 [起点, ...控制点, 终点]，段数 = 控制点数 + 1', () => {
   const src = { x: 0, y: 0 };
   const tgt = { x: 300, y: 200 };
@@ -126,46 +117,48 @@ test('独立②：无控制点时退化为单段贝塞尔，标签落在端点�
   assert.equal(segmentMidpoints[0].insertIndex, 0);
 });
 
-test('独立③：标签位于控制多边形弧长 50% 处，且落在所有控制点包围盒内', () => {
+test('独立③：标签落在渲染曲线上，且位于曲线真实弧长中段（45%~55%）', () => {
   const src = { x: 0, y: 0 };
   const tgt = { x: 300, y: 200 };
   const cps = [
     { x: 100, y: 0 },
     { x: 100, y: 100 },
   ];
-  const { labelX, labelY } = buildControlPointEdgePath(src.x, src.y, tgt.x, tgt.y, cps);
+  const { path, labelX, labelY } = buildControlPointEdgePath(src.x, src.y, tgt.x, tgt.y, cps);
+  const { cubics } = parsePath(path);
 
-  const pts: Pt[] = [src, ...cps, tgt];
-  const lens = chordLengths(pts);
-  const total = lens.reduce((a, b) => a + b, 0);
-  assert.ok(total > 0);
+  // 对解析出的每段三次贝塞尔做密集采样，累计真实弧长
+  const SAMPLES_PER_SEG = 200;
+  const samples: Array<{ p: Pt; arc: number }> = [];
+  let prev: Pt = cubics[0].from;
+  let acc = 0;
+  for (const cubic of cubics) {
+    for (let i = 1; i <= SAMPLES_PER_SEG; i++) {
+      const p = sampleCubic(cubic, i / SAMPLES_PER_SEG);
+      acc += Math.hypot(p.x - prev.x, p.y - prev.y);
+      prev = p;
+      samples.push({ p, arc: acc });
+    }
+  }
+  assert.ok(acc > 0, '曲线总弧长应大于 0');
 
-  // 找到标签落在哪一段、离折线多远、距起点已走过的折线弧长
   const label: Pt = { x: labelX, y: labelY };
   let best = { dist: Infinity, arc: 0 };
-  let acc = 0;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const a = pts[i];
-    const b = pts[i + 1];
-    const vx = b.x - a.x;
-    const vy = b.y - a.y;
-    const lenSq = vx * vx + vy * vy;
-    const t = lenSq > 0 ? Math.max(0, Math.min(1, ((label.x - a.x) * vx + (label.y - a.y) * vy) / lenSq)) : 0;
-    const px = a.x + t * vx;
-    const py = a.y + t * vy;
-    const d = Math.hypot(label.x - px, label.y - py);
-    if (d < best.dist) best = { dist: d, arc: acc + t * (lens[i] || 0) };
-    acc += lens[i] || 0;
+  for (const s of samples) {
+    const d = Math.hypot(s.p.x - label.x, s.p.y - label.y);
+    if (d < best.dist) best = { dist: d, arc: s.arc };
   }
 
-  assert.ok(best.dist <= 1.01, `标签应贴在控制多边形上，实测偏离 ${best.dist.toFixed(2)}px`);
+  // 标签必须是曲线上的点（坐标取整带来 ≤0.71px 误差）
+  assert.ok(best.dist <= 1.5, `标签应贴合曲线本体，实测偏离曲线 ${best.dist.toFixed(2)}px`);
+  const ratio = best.arc / acc;
   assert.ok(
-    Math.abs(best.arc - total / 2) <= 1.01,
-    `标签应位于折线弧长 50%（${(total / 2).toFixed(2)}px）处，实测 ${best.arc.toFixed(2)}px`
+    ratio >= 0.45 && ratio <= 0.55,
+    `标签应位于曲线弧长中段，实测弧长占比 ${(ratio * 100).toFixed(1)}%`
   );
 
-  const xs = pts.map((p) => p.x);
-  const ys = pts.map((p) => p.y);
+  const xs = [src, ...cps, tgt].map((p) => p.x);
+  const ys = [src, ...cps, tgt].map((p) => p.y);
   assert.ok(labelX >= Math.min(...xs) && labelX <= Math.max(...xs), '标签 x 不得跑出控制点包围盒');
   assert.ok(labelY >= Math.min(...ys) && labelY <= Math.max(...ys), '标签 y 不得跑出控制点包围盒');
 });
@@ -250,13 +243,21 @@ test('独立⑥：findBestInsertIndex() 精确命中最近线段（含两端钳�
   assert.equal(degenerate, 0);
 });
 
-test('独立⑦：ZONE F 五条回退连线的控制点全部落在状态卡矩形之外且互不重合', () => {
+test('独立⑦：ZONE F 五条回退连线的控制点全部落在状态卡与横幅矩形之外且互不重合', () => {
   const seed = createSeedBlueprint();
-  const cards = ['fsm-idle', 'fsm-running', 'fsm-paused', 'fsm-done'].map((id) => {
-    const n = seed.nodes[id];
-    assert.ok(n, `种子缺少节点 ${id}`);
-    return { id, x: n.x, y: n.y, w: n.width, h: n.height };
-  });
+  const obstacles = [
+    ...['fsm-idle', 'fsm-running', 'fsm-paused', 'fsm-done'].map((id) => {
+      const n = seed.nodes[id];
+      assert.ok(n, `种子缺少节点 ${id}`);
+      return { id, x: n.x, y: n.y, w: n.width, h: n.height };
+    }),
+    // v93 把 ZONE F 横幅上移到 y=1955..1999，与卡片之间留出净空走廊
+    (() => {
+      const ann = seed.annotations['ann-zone-fsm'];
+      assert.ok(ann, '种子缺少 ZONE F 横幅注释 ann-zone-fsm');
+      return { id: 'ann-zone-fsm', x: ann.x, y: ann.y, w: ann.width, h: ann.height };
+    })(),
+  ];
 
   const routedEdges = [
     'edge-fsm-run-idle', // cancel
@@ -281,12 +282,12 @@ test('独立⑦：ZONE F 五条回退连线的控制点全部落在状态卡矩�
       assert.equal(seen.has(key), false, `控制点 (${key}) 在 ${edgeId} 中与其它连线重复，会造成标签/走线重叠`);
       seen.add(key);
 
-      for (const card of cards) {
+      for (const card of obstacles) {
         const inside = cp.x > card.x && cp.x < card.x + card.w && cp.y > card.y && cp.y < card.y + card.h;
         assert.equal(
           inside,
           false,
-          `${edgeId} 的控制点 (${cp.x},${cp.y}) 落在卡片 ${card.id} 内部（矩形 ${card.x},${card.y} ${card.w}x${card.h}）`
+          `${edgeId} 的控制点 (${cp.x},${cp.y}) 落在 ${card.id} 内部（矩形 ${card.x},${card.y} ${card.w}x${card.h}）`
         );
       }
     }
@@ -354,36 +355,40 @@ test('独立⑨：上限 12 时路径段数与控制点数仍自洽，且标签�
 });
 
 /* ------------------------------------------------------------------ *
- * 以下 3 条为「现状锁定」用例。
- * 它们把 v91 现存缺陷的当前数值钉住：一旦有人修复，这些断言会失败，
- * 从而强制同步更新并提醒复核 changelog/v91-review-01.md 中的对应条目。
+ * 独立⑩⑪ 是 v91 审查（见 changelog/v91-review-02.md）发现、v92/v95 已修复
+ * 缺陷的正向回归；独立⑫ 锁定仍未收敛的遗留行为。
  * ------------------------------------------------------------------ */
 
-test('独立⑩[现状锁定]：sanitize 目前把 null / 空串坐标强转为 0（应改为拒绝）', () => {
-  // 期望行为：{ x: null } / { x: '' } 不是合法坐标，应被丢弃 → []
-  // 当前行为：Number(null) === 0、Number('') === 0，于是被当成原点控制点写入。
-  assert.deepEqual(sanitizeControlPoints([{ x: null, y: 3 }]), [{ x: 0, y: 3 }]);
-  assert.deepEqual(sanitizeControlPoints([{ x: '', y: 3 }]), [{ x: 0, y: 3 }]);
+test('独立⑩[已修复回归]：sanitize 拒绝 null / 空串 / 布尔等非 number 坐标', () => {
+  // v91 曾用 Number(x) 强转，null→0、''→0、[]→0、true→1，脏坐标被当成原点写入。
+  // v95 改为 typeof x === 'number' 前置判定，这些值必须被丢弃。
+  assert.deepEqual(sanitizeControlPoints([{ x: null, y: 3 }]), []);
+  assert.deepEqual(sanitizeControlPoints([{ x: '', y: 3 }]), []);
+  assert.deepEqual(sanitizeControlPoints([{ x: [], y: 3 }]), []);
+  assert.deepEqual(sanitizeControlPoints([{ x: true, y: 3 }]), []);
+  assert.deepEqual(sanitizeControlPoints([{ x: '12', y: 3 }]), []);
+  // 合法 number 仍保留
+  assert.deepEqual(sanitizeControlPoints([{ x: 4, y: 3 }]), [{ x: 4, y: 3 }]);
 });
 
-test('独立⑪[现状锁定]：段中点手柄/标签取的是控制多边形弦中点，不在渲染曲线上', () => {
-  // 控制点 B 相对弦 A→C 有 200px 折角，曲线在弦外鼓出
+test('独立⑪[已修复回归]：段中点「+」手柄落在渲染曲线上，而非弦中点', () => {
+  // v91 取相邻两点算术平均（弦中点），与该段贝塞尔 t=0.5 点相距 18.75px；
+  // v95 改 evalCubicBezier(seg, 0.5) 采样，手柄贴合曲线。
   const { path, segmentMidpoints } = buildControlPointEdgePath(0, 0, 300, 200, [{ x: 0, y: 200 }]);
-  const mid = segmentMidpoints[0];
-
   const { cubics } = parsePath(path);
+  const mid = segmentMidpoints[0];
   const onCurve = sampleCubic(cubics[0], 0.5);
   const gap = Math.hypot(mid.x - onCurve.x, mid.y - onCurve.y);
 
-  // 期望行为：手柄应贴在曲线上（gap <= 2px）
-  // 当前行为：手柄固定在弦中点 (0,100)，曲线实际经过 (-18.75,100)，偏离约 18.75px
-  assert.ok(gap > 15, `当前弦中点与曲线中点应存在明显偏离，实测 ${gap.toFixed(2)}px`);
-  assert.equal(mid.x, 0);
-  assert.equal(mid.y, 100);
+  assert.ok(gap <= 2, `「+」手柄应贴合曲线，实测偏离 ${gap.toFixed(2)}px`);
+  // 曲线中点确实偏离弦中点 (0,100)，说明这两个口径本身不同，上述断言并非恒真
+  assert.ok(Math.hypot(onCurve.x - 0, onCurve.y - 100) > 15, '该用例的曲线中点应明显偏离弦中点');
 });
 
-test('独立⑫[现状锁定]：uniform Catmull-Rom 在疏密不均控制点下会冲出包围盒', () => {
-  // 控制点前后间距 5px 与 300px 悬殊，uniform 参数化会产生过冲
+test('独立⑫[遗留行为锁定]：uniform Catmull-Rom 在疏密不均控制点下仍会冲出包围盒', () => {
+  // computeControlPointBezierSegments() 使用 (p2 - p0) / 6 的 uniform 参数化，
+  // 相邻间距悬殊时切线被放大。此处 5px 与 300px 相距悬殊，曲线向上过冲约 22px。
+  // 说明：v95 已删除文件头「Centripetal」表述，故这只是尚未收敛的几何行为，不再是注释与实现不符。
   const { path } = buildControlPointEdgePath(0, 0, 5, 300, [{ x: 5, y: 0 }]);
   const { cubics } = parsePath(path);
 
@@ -394,7 +399,7 @@ test('独立⑫[现状锁定]：uniform Catmull-Rom 在疏密不均控制点下�
     }
   }
 
-  // 期望行为：曲线不应越过控制点包围盒上界 y=0 之外超过 2px（centripetal 参数化可避免）
-  // 当前行为：过冲到 y ≈ -22.2
+  // 控制点包围盒上界为 y=0，当前会过冲到约 y=-22.2；若将来改用 centripetal 参数化，
+  // 该断言会失败，届时请把阈值改为「不低于 -2」并同步 changelog。
   assert.ok(minY < -15, `当前应出现明显过冲，实测最低点 y=${minY.toFixed(2)}`);
 });

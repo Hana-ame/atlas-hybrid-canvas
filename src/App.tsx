@@ -53,6 +53,7 @@ import {
 } from 'lucide-react';
 import { AnnotationNode, type AnnotationNodeData } from './canvas/AnnotationNode';
 import { ControllableEdge } from './canvas/ControllableEdge';
+import { areControlPointsEqual, sanitizeControlPoints } from './core/edgePath';
 import { ChunkUnderlayCanvas } from './canvas/ChunkUnderlayCanvas';
 import { WidgetNode, type WidgetNodeData } from './canvas/WidgetNode';
 import type { ScriptConsoleEntry } from './components/NodeInspectorPanel';
@@ -1999,6 +2000,40 @@ function HybridCanvasWorkspace() {
 
   const handleUpdateEdgeControlPoints = useCallback(
     (edgeId: string, nextPoints: EdgeControlPoint[]) => {
+      const existing = baseRef.current.edges[edgeId];
+      if (!existing) return;
+      const sanitized = sanitizeControlPoints(nextPoints);
+      if (areControlPointsEqual(existing.controlPoints, sanitized)) return;
+      pushHistory();
+      setBase((prev) => {
+        const cur = prev.edges[edgeId];
+        if (!cur || areControlPointsEqual(cur.controlPoints, sanitized)) return prev;
+        return {
+          ...prev,
+          version: prev.version + 1,
+          edges: {
+            ...prev.edges,
+            [edgeId]: {
+              ...cur,
+              controlPoints: sanitized.length > 0 ? sanitized : undefined,
+              rev: cur.rev + 1,
+              cid: SELF_CID,
+            },
+          },
+        };
+      });
+    },
+    [pushHistory]
+  );
+
+  const handleEditEdgeLabel = useCallback(
+    (edgeId: string) => {
+      const initial = baseRef.current.edges[edgeId];
+      if (!initial) return;
+      const nextLabel = window.prompt('修改连线标签文字（留空清除）：', initial.label ?? '');
+      if (nextLabel === null) return;
+      const normalized = nextLabel.trim() || undefined;
+      if ((initial.label || undefined) === normalized) return;
       pushHistory();
       setBase((prev) => {
         const cur = prev.edges[edgeId];
@@ -2008,12 +2043,7 @@ function HybridCanvasWorkspace() {
           version: prev.version + 1,
           edges: {
             ...prev.edges,
-            [edgeId]: {
-              ...cur,
-              controlPoints: nextPoints.length > 0 ? nextPoints : undefined,
-              rev: cur.rev + 1,
-              cid: SELF_CID,
-            },
+            [edgeId]: { ...cur, label: normalized, rev: cur.rev + 1, cid: SELF_CID },
           },
         };
       });
@@ -2040,6 +2070,7 @@ function HybridCanvasWorkspace() {
           sourceTitle: base.nodes[e.source]?.title,
           targetTitle: base.nodes[e.target]?.title,
           onUpdateControlPoints: handleUpdateEdgeControlPoints,
+          onEditLabel: handleEditEdgeLabel,
         },
         ...(e.bidirectional
           ? {
@@ -2059,7 +2090,7 @@ function HybridCanvasWorkspace() {
         },
       };
     });
-  }, [lod, base.edges, base.nodes, mountedWidgetIdSet, handleUpdateEdgeControlPoints]);
+  }, [lod, base.edges, base.nodes, mountedWidgetIdSet, handleUpdateEdgeControlPoints, handleEditEdgeLabel]);
 
   // 关键修复：onNodesChange 直接交给 applyNodeChanges 处理拖动/测量/选中，
   // 拖动过程中不触碰 overlay/base，只在松手（dragging === false）时一次性落盘，0 闪烁！
@@ -2602,23 +2633,7 @@ function HybridCanvasWorkspace() {
           setStatusLog(nextBi ? '已切换为单线双向连线（<——>）' : '已切换为单向连线（——>）');
         }}
         onEdgeDoubleClick={(_ev, edge) => {
-          const initial = baseRef.current.edges[edge.id];
-          if (!initial) return;
-          const nextLabel = window.prompt('修改连线标签文字（留空清除）：', initial.label ?? '');
-          if (nextLabel === null) return;
-          pushHistory();
-          setBase((prev) => {
-            const cur = prev.edges[edge.id];
-            if (!cur) return prev;
-            return {
-              ...prev,
-              version: prev.version + 1,
-              edges: {
-                ...prev.edges,
-                [edge.id]: { ...cur, label: nextLabel.trim() || undefined, rev: cur.rev + 1, cid: SELF_CID },
-              },
-            };
-          });
+          handleEditEdgeLabel(edge.id);
         }}
         onPaneClick={() => setInspectingNodeId(null)}
         selectionKeyCode="Shift"
