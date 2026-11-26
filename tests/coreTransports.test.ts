@@ -2,7 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { WebSocket as NodeWebSocket } from 'ws';
-import { normalizeWsUrl, hasBackend, defaultRoomWsUrl } from '../src/core/runtimeConfig.ts';
+import {
+  normalizeWsUrl,
+  hasBackend,
+  defaultRoomWsUrl,
+  parseForceBackendProxy,
+  shouldUseBackendProxy,
+} from '../src/core/runtimeConfig.ts';
+import { executeHttpButtonAction } from '../src/core/httpButton.ts';
 import { RpcClient, frameToResponse } from '../src/core/rpcClient.ts';
 import { CollaborativeRoomClient } from '../src/core/roomClient.ts';
 import { attachRoomServer } from '../server/roomServer.ts';
@@ -223,4 +230,74 @@ test('mockApi: static mode isolates blueprints per roomPath via getRoomStore (P1
     g.window = origWin;
     g.fetch = origFetch;
   }
+});
+
+test('runtimeConfig: parseForceBackendProxy & shouldUseBackendProxy support configurable direct CORS mode', () => {
+  assert.equal(parseForceBackendProxy(undefined), true);
+  assert.equal(parseForceBackendProxy(''), true);
+  assert.equal(parseForceBackendProxy('true'), true);
+  assert.equal(parseForceBackendProxy('false'), false);
+  assert.equal(parseForceBackendProxy('0'), false);
+  assert.equal(parseForceBackendProxy('off'), false);
+  assert.equal(parseForceBackendProxy('NO'), false);
+  assert.equal(shouldUseBackendProxy(false), false);
+  assert.equal(shouldUseBackendProxy(true), true);
+});
+
+test('httpButton: executeHttpButtonAction supports direct CORS/same-origin fetch and optional /api/proxy', async () => {
+  const calls: Array<{ url: string; method?: string; body?: unknown; contentType?: string }> = [];
+  const fakeFetch: typeof fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    const headers = new Headers(init?.headers);
+    calls.push({
+      url,
+      method: init?.method,
+      body: init?.body,
+      contentType: headers.get('content-type') ?? undefined,
+    });
+    return new Response(JSON.stringify({ ok: true, square: 25 }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  const directRes = await executeHttpButtonAction(
+    {
+      proxyUrl: '/math/square',
+      proxyMethod: 'POST',
+      proxyBody: '{"x":5}',
+      useProxy: false,
+    },
+    fakeFetch
+  );
+  assert.equal(directRes.ok, true);
+  assert.equal(directRes.usedProxy, false);
+  assert.equal(directRes.status, 200);
+  assert.deepEqual(directRes.responseBody, { ok: true, square: 25 });
+  assert.equal(calls[0].url, '/math/square');
+  assert.equal(calls[0].method, 'POST');
+  assert.equal(calls[0].contentType, 'application/json');
+
+  const proxyRes = await executeHttpButtonAction(
+    {
+      proxyUrl: 'https://api.example.com/hook',
+      proxyMethod: 'POST',
+      proxyBody: '{"hello":1}',
+      useProxy: true,
+    },
+    fakeFetch
+  );
+  assert.equal(proxyRes.ok, true);
+  assert.equal(proxyRes.usedProxy, true);
+  assert.equal(calls[1].url, '/api/proxy');
+
+  const blockedRes = await executeHttpButtonAction(
+    {
+      proxyUrl: 'javascript:alert(1)',
+      proxyMethod: 'GET',
+      useProxy: false,
+    },
+    fakeFetch
+  );
+  assert.equal(blockedRes.ok, false);
 });

@@ -8,6 +8,10 @@ COPY package.json package-lock.json* ./
 RUN npm ci
 
 COPY . .
+ARG VITE_BACKEND_WS_URL=
+ARG VITE_FORCE_BACKEND_PROXY=false
+ENV VITE_BACKEND_WS_URL=${VITE_BACKEND_WS_URL}
+ENV VITE_FORCE_BACKEND_PROXY=${VITE_FORCE_BACKEND_PROXY}
 RUN npm run build && npm run build:server && npm run build:mcp
 
 FROM node:22-alpine AS runner

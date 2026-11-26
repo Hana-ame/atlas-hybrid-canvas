@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { BookmarkPlus, Copy, Plus, RotateCcw, Terminal, Trash2, X } from 'lucide-react';
 import { validateScriptSafety, validateScriptSyntax } from '../core/scriptSandbox';
+import { shouldUseBackendProxy } from '../core/runtimeConfig';
 import type { EffectiveBlueprintNode, WidgetButtonSpec } from '../core/types';
 
 export interface ScriptConsoleEntry {
@@ -422,7 +423,7 @@ vars.updatedAt = lib.now();`,
                     className="rounded border border-slate-200 bg-white px-1.5 py-1 text-[11px] text-slate-700"
                   >
                     <option value="script">Worker 脚本</option>
-                    <option value="proxy_http">代理 HTTP</option>
+                    <option value="proxy_http">HTTP 请求</option>
                   </select>
                   <button
                     type="button"
@@ -442,26 +443,46 @@ vars.updatedAt = lib.now();`,
                     className="mt-2 w-full rounded border border-slate-200 bg-slate-900 p-2 font-mono text-[11px] text-emerald-300 outline-none focus:border-blue-500"
                   />
                 ) : (
-                  <div className="mt-2 flex gap-1.5">
-                    <select
-                      value={btn.proxyMethod ?? 'GET'}
-                      onChange={(e) =>
-                        handleUpdateButton(btn.id, {
-                          proxyMethod: e.target.value as 'GET' | 'POST',
-                        })
-                      }
-                      className="rounded border border-slate-200 bg-white px-1.5 py-1 font-mono text-[11px]"
-                    >
-                      <option value="GET">GET</option>
-                      <option value="POST">POST</option>
-                    </select>
-                    <input
-                      type="text"
-                      value={btn.proxyUrl ?? ''}
-                      onChange={(e) => handleUpdateButton(btn.id, { proxyUrl: e.target.value })}
-                      placeholder="https://httpbin.org/get"
-                      className="flex-1 rounded border border-slate-200 bg-white px-2 py-1 font-mono text-[11px]"
-                    />
+                  <div className="mt-2 space-y-1.5">
+                    <div className="flex gap-1.5">
+                      <select
+                        value={btn.proxyMethod ?? 'GET'}
+                        onChange={(e) =>
+                          handleUpdateButton(btn.id, {
+                            proxyMethod: e.target.value as 'GET' | 'POST',
+                          })
+                        }
+                        className="rounded border border-slate-200 bg-white px-1.5 py-1 font-mono text-[11px]"
+                      >
+                        <option value="GET">GET</option>
+                        <option value="POST">POST</option>
+                      </select>
+                      <input
+                        type="text"
+                        value={btn.proxyUrl ?? ''}
+                        onChange={(e) => handleUpdateButton(btn.id, { proxyUrl: e.target.value })}
+                        placeholder="https://... 或 /math/square"
+                        className="flex-1 rounded border border-slate-200 bg-white px-2 py-1 font-mono text-[11px]"
+                      />
+                    </div>
+                    {(btn.proxyMethod ?? 'GET') === 'POST' && (
+                      <textarea
+                        rows={2}
+                        value={btn.proxyBody ?? ''}
+                        onChange={(e) => handleUpdateButton(btn.id, { proxyBody: e.target.value })}
+                        placeholder='可选 POST 请求体，如 {"x": 5}'
+                        className="w-full rounded border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-800 outline-none focus:border-blue-500"
+                      />
+                    )}
+                    <label className="inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-600 select-none">
+                      <input
+                        type="checkbox"
+                        checked={shouldUseBackendProxy(btn.useProxy)}
+                        onChange={(e) => handleUpdateButton(btn.id, { useProxy: e.target.checked })}
+                        className="h-3.5 w-3.5 accent-blue-600"
+                      />
+                      <span>经后端 /api/proxy 转发（关闭则直接浏览器 CORS / 同源请求）</span>
+                    </label>
                   </div>
                 )}
               </div>

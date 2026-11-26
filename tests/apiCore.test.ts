@@ -239,3 +239,28 @@ test('apiCore: 静态模式兜底 /api/rooms/<room>/history 与 rollback 不穿�
   const rb = await handleApiRequest(deps, makeReq('POST', '/api/rooms/team/design/rollback', { body: { version: 1 } }));
   assert.equal(rb?.status, 403);
 });
+
+test('apiCore & proxySecurity: wildcard * allowlist allows public hosts without injecting upstream secrets', async () => {
+  const { validateProxyTargetUrl } = await import('../server/proxySecurity.ts');
+  const openDeps = makeDeps({
+    proxy: {
+      allowedHosts: ['*'],
+      hasUpstreamSecret: false,
+      saveKey: 'secret-key',
+      rateLimitPerMin: 30,
+    },
+  });
+  const res = await handleApiRequest(
+    openDeps,
+    makeReq('POST', '/api/proxy', { body: { url: 'https://any-cors-free.example/data' } })
+  );
+  assert.equal(res?.status, 200);
+
+  const vPublic = validateProxyTargetUrl('https://any-cors-free.example/data', { allowedHosts: ['*'] });
+  assert.equal(vPublic.ok, true);
+  if (vPublic.ok) {
+    assert.equal(vPublic.injectSecret, false);
+  }
+  const vLocal = validateProxyTargetUrl('http://127.0.0.1:3000/math/square', { allowedHosts: ['*'] });
+  assert.equal(vLocal.ok, false);
+});

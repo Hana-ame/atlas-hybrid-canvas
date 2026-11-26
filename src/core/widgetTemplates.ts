@@ -5,6 +5,7 @@
  */
 
 import { idbGet, idbSet } from './idbStorage';
+import { forceBackendProxy } from './runtimeConfig';
 import type { BlueprintNode, BlueprintTemplate } from './types';
 
 const CUSTOM_TEMPLATES_KEY = 'atlas-hybrid-custom-templates-v1';
@@ -31,7 +32,7 @@ export const BUILTIN_TEMPLATES: BlueprintTemplate[] = [
         pollMethod: 'GET',
         pollIntervalSec: 10,
         pollJsonPath: '',
-        pollUseProxy: true,
+        pollUseProxy: forceBackendProxy(),
         pollEnabled: false,
         pollLastValue: '',
         pollStatus: '',

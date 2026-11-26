@@ -99,6 +99,7 @@ import {
 import { useBlueprintHistory } from './hooks/useBlueprintHistory';
 import { useOverlaySync } from './hooks/useOverlaySync';
 import { proxyHeaders, waitForAuthSessionReady } from './core/apiClient';
+import { executeHttpButtonAction } from './core/httpButton';
 import { defaultRoomWsUrl, hasBackend } from './core/runtimeConfig';
 import { createSeedBlueprint, spawnStressChunks } from './core/seedBlueprint';
 import {
@@ -804,20 +805,7 @@ function HybridCanvasWorkspace() {
         }
         setStatusLog(res.logs.length > 0 ? `Worker 输出：${res.logs.join(' | ')}` : `已更新本地 vars (${entity.title})`);
       } else if (btn.actionType === 'proxy_http' && btn.proxyUrl) {
-        const resp = await fetch('/api/proxy', {
-          method: 'POST',
-          headers: proxyHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ url: btn.proxyUrl, method: btn.proxyMethod || 'GET' }),
-        });
-        let data: { ok: boolean; status?: number; error?: string };
-        try {
-          data = (await resp.json()) as { ok: boolean; status?: number; error?: string };
-        } catch {
-          data = { ok: false, status: resp.status, error: `HTTP ${resp.status}（响应非 JSON）` };
-        }
-        if (!resp.ok && data.ok !== false) {
-          data = { ok: false, status: resp.status, error: data.error || `HTTP ${resp.status}` };
-        }
+        const data = await executeHttpButtonAction(btn);
         setOverlay((prev) => ({
           ...prev,
           runtimeVars: {
@@ -825,10 +813,15 @@ function HybridCanvasWorkspace() {
             [nodeId]: {
               ...(prev.runtimeVars[nodeId] ?? {}),
               lastHttpStatus: data.ok ? data.status ?? 200 : data.error ?? 'error',
+              ...(data.responseBody !== undefined ? { lastHttpResponse: data.responseBody } : {}),
             },
           },
         }));
-        setStatusLog(data.ok ? `服务端代理请求成功 (HTTP ${data.status})` : `代理被拦截或失败：${data.error}`);
+        setStatusLog(
+          data.ok
+            ? `${data.usedProxy ? '服务端代理' : '直连'}请求成功 (HTTP ${data.status})`
+            : `${data.usedProxy ? '代理' : '直连'}请求失败：${data.error}`
+        );
       }
     } finally {
       setBusyButtonKey(null);

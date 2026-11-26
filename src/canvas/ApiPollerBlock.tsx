@@ -118,7 +118,7 @@ function ApiPollerBlockInner({
     async (overrideUrl?: string) => {
       const targetUrl = (overrideUrl ?? url).trim();
       if (!isSafePollUrl(targetUrl)) {
-        const msg = '仅支持 http/https 外链或同源 /api/ 路径（拒绝 javascript:/data:）';
+        const msg = '仅支持 http/https 外链或同源相对路径（拒绝 // 与 javascript:/data:）';
         setErrorMsg(msg);
         onPollResultRef.current({
           value: lastValueRef.current,
@@ -139,11 +139,12 @@ function ApiPollerBlockInner({
       setErrorMsg('');
 
       try {
-        const isLocalApi = targetUrl.startsWith('/api/');
+        const isSameOrigin = targetUrl.startsWith('/') && !targetUrl.startsWith('//');
+        const isAtlasApi = targetUrl.startsWith('/api/');
         let statusText = '';
         let payload: unknown;
 
-        if (!isLocalApi && useProxy) {
+        if (!isSameOrigin && useProxy) {
           const resp = await fetch('/api/proxy', {
             method: 'POST',
             headers: proxyHeaders({ 'Content-Type': 'application/json' }),
@@ -167,7 +168,7 @@ function ApiPollerBlockInner({
         } else {
           const resp = await fetch(targetUrl, {
             method: safeMethod,
-            headers: isLocalApi ? proxyHeaders() : undefined,
+            headers: isAtlasApi ? proxyHeaders() : undefined,
             signal: controller.signal,
           });
           if (!mountedRef.current || mySeq !== seqRef.current) return false;
@@ -302,9 +303,9 @@ function ApiPollerBlockInner({
           <option value="POST">POST</option>
         </select>
         <input
-          type="url"
+          type="text"
           value={urlDraft}
-          placeholder="https://... 或 /api/proxy/status"
+          placeholder="https://... 或 /math/square"
           style={{ touchAction: 'auto' }}
           onClick={(e) => {
             e.stopPropagation();

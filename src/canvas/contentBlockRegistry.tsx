@@ -10,6 +10,7 @@ import { ImageNodeBlock } from './ImageNodeBlock';
 import { SliderControlBlock } from './SliderControlBlock';
 import { Pad2DControlBlock } from './Pad2DControlBlock';
 import { ImageButtonBlock } from './ImageButtonBlock';
+import { forceBackendProxy } from '../core/runtimeConfig';
 import type { ContentLeafBlock, EffectiveBlueprintNode } from '../core/types';
 
 // 重型控件按需分包，显著压低首屏主 JS 包体积
@@ -237,7 +238,9 @@ export const CONTENT_BLOCK_REGISTRY: {
     const curProxy =
       entity.effectiveVars?.[proxyKey] !== undefined
         ? parseVarBoolean(entity.effectiveVars[proxyKey])
-        : block.useProxy !== false;
+        : block.useProxy !== undefined
+          ? Boolean(block.useProxy)
+          : forceBackendProxy();
     const curEnabled =
       entity.effectiveVars?.[enabledKey] !== undefined
         ? parseVarBoolean(entity.effectiveVars[enabledKey])

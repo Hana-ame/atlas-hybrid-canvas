@@ -148,7 +148,7 @@ export function parseAllowedHosts(raw?: string): string[] {
 export function hostMatchesAllowlist(hostname: string, allowlist: readonly string[]): boolean {
   const host = hostname.trim().toLowerCase();
   if (!host || allowlist.length === 0) return false;
-  return allowlist.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+  return allowlist.some((allowed) => allowed === '*' || host === allowed || host.endsWith(`.${allowed}`));
 }
 
 export interface ProxyTargetValidationResult {
@@ -269,7 +269,7 @@ export function validateProxyTargetUrl(
   // allowedHosts 分支，把密钥重新发给 httpbin.org 这类演示域名 —— 正是要堵的那个洞。
   const injectSecret = upstreamBase
     ? host === upstreamHost // upstreamHost 为空时恒为 false，即配置非法时不向任何主机注入
-    : allowedHosts.length > 0 && hostMatchesAllowlist(host, allowedHosts);
+    : allowedHosts.some((allowed) => allowed !== '*' && (host === allowed || host.endsWith(`.${allowed}`)));
 
   return {
     ok: true,

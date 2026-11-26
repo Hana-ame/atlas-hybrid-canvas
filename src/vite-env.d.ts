@@ -15,6 +15,8 @@ interface ImportMetaEnv {
   readonly VITE_BACKEND_WS_URL?: string;
   // 浏览器模式下的代理白名单与限流（服务端模式读不带 VITE_ 前缀的那组）
   readonly VITE_PROXY_RATE_LIMIT_PER_MIN?: string;
+  // 是否默认强制前端 HTTP 按钮 / ApiPoller 走后端 /api/proxy（默认 true；Docker 等场景可设为 false 以直接走浏览器 CORS/同源请求）
+  readonly VITE_FORCE_BACKEND_PROXY?: string;
 }
 
 interface ImportMeta {

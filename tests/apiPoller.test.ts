@@ -23,10 +23,13 @@ test('normalizePollIntervalSec() clamps zero, negative, NaN, Infinity, and huge 
   assert.equal(normalizePollIntervalSec('15.9'), 15);
 });
 
-test('isSafePollUrl() allows http/https and same-origin /api/ and blocks dangerous schemes', () => {
+test('isSafePollUrl() allows http/https and same-origin / paths and blocks // and dangerous schemes', () => {
   assert.equal(isSafePollUrl('https://httpbin.org/get'), true);
   assert.equal(isSafePollUrl('http://example.com/metrics'), true);
   assert.equal(isSafePollUrl('/api/proxy/status'), true);
+  assert.equal(isSafePollUrl('/math/square'), true);
+  assert.equal(isSafePollUrl('/health'), true);
+  assert.equal(isSafePollUrl('//evil.example/leak'), false);
   assert.equal(isSafePollUrl(''), false);
   assert.equal(isSafePollUrl('javascript:alert(1)'), false);
   assert.equal(isSafePollUrl('data:application/json,{"a":1}'), false);

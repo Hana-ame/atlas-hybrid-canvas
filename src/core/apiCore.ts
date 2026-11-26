@@ -264,7 +264,7 @@ async function handleProxy(deps: ApiDeps, req: ApiRequest): Promise<ApiResult> {
     ? Array.from(new Set([...deps.proxy.allowedHosts, upstreamHost]))
     : deps.proxy.allowedHosts;
   const hostAllowed = effectiveAllowlist.some(
-    (allowed) => hostLower === allowed || hostLower.endsWith(`.${allowed}`)
+    (allowed) => allowed === '*' || hostLower === allowed || hostLower.endsWith(`.${allowed}`)
   );
   if (!hostAllowed) {
     return jsonResult(

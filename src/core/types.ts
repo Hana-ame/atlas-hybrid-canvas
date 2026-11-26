@@ -38,6 +38,8 @@ export interface WidgetButtonSpec {
   code?: string;
   proxyUrl?: string;
   proxyMethod?: 'GET' | 'POST';
+  proxyBody?: string;
+  useProxy?: boolean;
 }
 
 export interface ContentTextBlock {

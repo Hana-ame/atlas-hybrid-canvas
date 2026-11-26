@@ -2,7 +2,7 @@
  * @file apiPoller.ts
  * @description API 轮询抓取纯逻辑工具：
  * - 轮询间隔安全夹紧（2s–3600s，防 0/负数/NaN 刷爆接口）；
- * - 目标 URL 安全校验（仅放行 http/https 外链与同源 /api/ 路径，拒绝 javascript:/data:/file:）；
+ * - 目标 URL 安全校验（仅放行 http/https 外链与同源 `/` 相对路径，拒绝 `//` 及 javascript:/data:/file:）；
  * - 防原型链污染的 JSON 路径提取（支持 dot 路径与数组下标 items[0].name）；
  * - 连续失败指数退避计算（上限 5 分钟，成功后立即恢复原间隔）；
  * - 响应安全格式化与截断。
@@ -28,7 +28,7 @@ export function normalizePollMethod(raw: unknown): 'GET' | 'POST' {
 export function isSafePollUrl(rawUrl: string): boolean {
   const trimmed = rawUrl.trim();
   if (!trimmed) return false;
-  if (trimmed.startsWith('/api/')) return true;
+  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) return true;
   try {
     const parsed = new URL(trimmed);
     return parsed.protocol === 'https:' || parsed.protocol === 'http:';
