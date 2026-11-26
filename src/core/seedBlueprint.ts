@@ -913,9 +913,13 @@ on('enter', (msg) => {
       script: String.raw`const isActive = Boolean(vars.active);
 const visits = Number(vars.visits ?? 1);
 const pendingIn = (vars.input || []).find((e) => e.flag);
-const outStart = (vars.output || []).find((e) => e.tag === 'start') || (vars.output || [])[0];
+// 连线 tag 在「待签收」期间会带后缀，比对时只取事件名前缀
+const tagOf = (e) => String((e && e.tag) || '').split(' · ')[0];
+const outStart = (vars.output || []).find((e) => tagOf(e) === 'start') || (vars.output || [])[0];
 vars.color = isActive ? '#2563EB' : (pendingIn ? '#F59E0B' : '#94A3B8');
-vars.type = isActive ? '● ACTIVE' : (pendingIn ? '● 待签收' : 'IDLE');
+// 徽标同时交代「状态名」与「运行态」，避免未激活时写成 IDLE/RUNNING 被误读成当前状态
+const runtime = isActive ? '激活' : (pendingIn ? '待签收' : '待机');
+vars.type = 'IDLE · ' + runtime;
 
 vars.contents = [
   {
@@ -937,7 +941,7 @@ vars.contents = [
 
 on('sendStart', () => {
   if (!Boolean(vars.active)) return;
-  const edge = (vars.output || []).find((e) => e.tag === 'start') || (vars.output || [])[0];
+  const edge = (vars.output || []).find((e) => tagOf(e) === 'start') || (vars.output || [])[0];
   if (!edge) return;
   vars.active = false;
   edge.msg = { from: 'IDLE', event: 'start', at: lib.now() };
@@ -985,9 +989,12 @@ on('accept', () => {
       script: String.raw`const isActive = Boolean(vars.active);
 const visits = Number(vars.visits ?? 0);
 const pendingIn = (vars.input || []).find((e) => e.flag);
-const pickOut = (tag, idx) => (vars.output || []).find((e) => e.tag === tag) || (vars.output || [])[idx];
+// 连线 tag 在「待签收」期间会带后缀，比对时只取事件名前缀
+const tagOf = (e) => String((e && e.tag) || '').split(' · ')[0];
+const pickOut = (tag, idx) => (vars.output || []).find((e) => tagOf(e) === tag) || (vars.output || [])[idx];
 vars.color = isActive ? '#059669' : (pendingIn ? '#F59E0B' : '#94A3B8');
-vars.type = isActive ? '● ACTIVE' : (pendingIn ? '● 待签收' : 'RUNNING');
+const runtime = isActive ? '激活' : (pendingIn ? '待签收' : '待机');
+vars.type = 'RUNNING · ' + runtime;
 
 vars.contents = [
   {
@@ -1012,6 +1019,9 @@ on('accept', () => {
   if (!edge) return;
   const msg = edge.msg || {};
   edge.flag = false;
+  edge.dashed = false;     // 签收后切回静态实线，别把「待签收」样式留在线
+  edge.color = '';         // 清空覆盖，恢复默认线色
+  edge.tag = msg.event || edge.tag || 'edge';
   vars.active = true;
   vars.visits = Number(vars.visits ?? 0) + 1;
   vars.lastFrom = (msg.from || '上游') + ' (' + (msg.event || edge.tag || 'edge') + ')';
@@ -1024,6 +1034,9 @@ const sendVia = (tag, idx) => {
   vars.active = false;
   edge.msg = { from: 'RUNNING', event: tag, at: lib.now() };
   edge.flag = true;
+  edge.dashed = true;      // 下游连线亮起流动，提示有待签收令牌
+  edge.color = '#F59E0B';
+  edge.tag = tag + ' · 待签收';
 };
 on('finish', () => sendVia('finish', 0));
 on('pause', () => sendVia('pause', 1));
@@ -1050,9 +1063,12 @@ on('cancel', () => sendVia('cancel', 2));`,
       script: String.raw`const isActive = Boolean(vars.active);
 const visits = Number(vars.visits ?? 0);
 const pendingIn = (vars.input || []).find((e) => e.flag);
-const pickOut = (tag, idx) => (vars.output || []).find((e) => e.tag === tag) || (vars.output || [])[idx];
+// 连线 tag 在「待签收」期间会带后缀，比对时只取事件名前缀
+const tagOf = (e) => String((e && e.tag) || '').split(' · ')[0];
+const pickOut = (tag, idx) => (vars.output || []).find((e) => tagOf(e) === tag) || (vars.output || [])[idx];
 vars.color = isActive ? '#D97706' : (pendingIn ? '#F59E0B' : '#94A3B8');
-vars.type = isActive ? '● ACTIVE' : (pendingIn ? '● 待签收' : 'PAUSED');
+const runtime = isActive ? '激活' : (pendingIn ? '待签收' : '待机');
+vars.type = 'PAUSED · ' + runtime;
 
 vars.contents = [
   {
@@ -1076,6 +1092,9 @@ on('accept', () => {
   if (!edge) return;
   const msg = edge.msg || {};
   edge.flag = false;
+  edge.dashed = false;     // 签收后切回静态实线，别把「待签收」样式留在线
+  edge.color = '';         // 清空覆盖，恢复默认线色
+  edge.tag = msg.event || edge.tag || 'edge';
   vars.active = true;
   vars.visits = Number(vars.visits ?? 0) + 1;
   vars.lastFrom = (msg.from || '上游') + ' (' + (msg.event || edge.tag || 'edge') + ')';
@@ -1088,6 +1107,9 @@ const sendVia = (tag, idx) => {
   vars.active = false;
   edge.msg = { from: 'PAUSED', event: tag, at: lib.now() };
   edge.flag = true;
+  edge.dashed = true;      // 下游连线亮起流动，提示有待签收令牌
+  edge.color = '#F59E0B';
+  edge.tag = tag + ' · 待签收';
 };
 on('resume', () => sendVia('resume', 0));
 on('reset', () => sendVia('reset', 1));`,
@@ -1110,9 +1132,10 @@ on('reset', () => sendVia('reset', 1));`,
       script: String.raw`const isActive = Boolean(vars.active);
 const visits = Number(vars.visits ?? 0);
 const pendingIn = (vars.input || []).find((e) => e.flag);
-const outRestart = (vars.output || []).find((e) => e.tag === 'restart') || (vars.output || [])[0];
+const outRestart = (vars.output || []).find((e) => String((e && e.tag) || '').split(' · ')[0] === 'restart') || (vars.output || [])[0];
 vars.color = isActive ? '#7C3AED' : (pendingIn ? '#F59E0B' : '#94A3B8');
-vars.type = isActive ? '● ACTIVE' : (pendingIn ? '● 待签收' : 'DONE');
+const runtime = isActive ? '激活' : (pendingIn ? '待签收' : '待机');
+vars.type = 'DONE · ' + runtime;
 
 vars.contents = [
   {
@@ -1135,6 +1158,9 @@ on('accept', () => {
   if (!edge) return;
   const msg = edge.msg || {};
   edge.flag = false;
+  edge.dashed = false;     // 签收后切回静态实线，别把「待签收」样式留在线
+  edge.color = '';         // 清空覆盖，恢复默认线色
+  edge.tag = msg.event || edge.tag || 'edge';
   vars.active = true;
   vars.visits = Number(vars.visits ?? 0) + 1;
   vars.lastFrom = (msg.from || '上游') + ' (' + (msg.event || edge.tag || 'edge') + ')';
@@ -1142,11 +1168,14 @@ on('accept', () => {
 
 on('restart', () => {
   if (!Boolean(vars.active)) return;
-  const edge = (vars.output || []).find((e) => e.tag === 'restart') || (vars.output || [])[0];
+  const edge = (vars.output || []).find((e) => String((e && e.tag) || '').split(' · ')[0] === 'restart') || (vars.output || [])[0];
   if (!edge) return;
   vars.active = false;
   edge.msg = { from: 'DONE', event: 'restart', at: lib.now() };
   edge.flag = true;
+  edge.dashed = true;      // 闭环回 IDLE 时同样点亮 restart 连线
+  edge.color = '#F59E0B';
+  edge.tag = 'restart · 待签收';
 });`,
       rev: 1,
       cid: 'server-base',
