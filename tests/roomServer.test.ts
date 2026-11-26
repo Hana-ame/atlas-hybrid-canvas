@@ -451,3 +451,81 @@ test('roomServer: 支持 WebRTC 信令定向中继 (rtc_offer / rtc_answer / pee
   assert.equal(offer.from, 'cid-b');
   assert.equal(offer.sdp.sdp, 'mock-sdp');
 });
+
+test('roomServer: rpc_req 强制覆写客户端自报 clientIp，杜绝伪造 IP 绕过限流', async (t) => {
+  const seenIps: string[] = [];
+  const server = http.createServer((_req, res) => res.end('ok'));
+  const handle = attachRoomServer(server, '/ws', async (frame) => {
+    seenIps.push(String(frame.clientIp || ''));
+    return {
+      t: 'rpc_res',
+      id: frame.id,
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ok: true }),
+      bodyEncoding: 'text',
+    };
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const addr = server.address();
+  const port = typeof addr === 'object' && addr ? addr.port : 0;
+  t.after(async () => {
+    await handle.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  const c = await connect(port, '__rpc__', 'cid-spoof');
+  t.after(() => c.close());
+
+  c.send({ t: 'rpc_req', id: 'req-spoof-1', method: 'GET', path: '/api/health', clientIp: '203.0.113.99' });
+  const res = await c.waitFor((m: any) => m.t === 'rpc_res' && m.id === 'req-spoof-1');
+  assert.equal(res.status, 200);
+  assert.equal(seenIps.length, 1);
+  assert.notEqual(seenIps[0], '203.0.113.99');
+  assert.ok(seenIps[0].includes('127.0.0.1') || seenIps[0].includes('::1'));
+});
+
+test('roomServer: flushRoomSnapshot 等待异步磁盘水合完成，不返回空快照遮蔽磁盘数据', async (t) => {
+  const diskBp = {
+    version: 1,
+    chunkSize: 512,
+    nodes: {
+      n1: { id: 'n1', rev: 3, cid: 'disk', title: 'Persisted' },
+    },
+    annotations: {},
+    edges: {},
+  };
+  let releaseRead!: () => void;
+  const readGate = new Promise<void>((r) => { releaseRead = r; });
+  const fakeStore: any = {
+    readRevision: async () => 3,
+    writeRevision: async () => {},
+    readBlueprint: async () => {
+      await readGate;
+      return diskBp;
+    },
+    writeBlueprint: async () => true,
+    recordHistory: async () => null,
+    listHistory: async () => [],
+    rollbackToVersion: async () => ({ ok: false, revision: 3, blueprint: diskBp }),
+  };
+
+  const server = http.createServer((_req, res) => res.end('ok'));
+  const handle = attachRoomServer(server, '/ws', undefined, undefined, undefined, () => fakeStore);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const addr = server.address();
+  const port = typeof addr === 'object' && addr ? addr.port : 0;
+  t.after(async () => {
+    await handle.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  const c = await connect(port, 'hydrate-race-room', 'cid-1');
+  t.after(() => c.close());
+
+  const flushPromise = handle.flushRoomSnapshot('hydrate-race-room');
+  setTimeout(() => releaseRead(), 30);
+  const snap = (await flushPromise) as any;
+  assert.ok(snap && snap.nodes && snap.nodes.n1, 'flushRoomSnapshot must wait for disk hydration');
+  assert.equal(snap.nodes.n1.title, 'Persisted');
+});

@@ -286,6 +286,20 @@ function validateBlocksSafety(blocks: unknown[]): string | null {
   return null;
 }
 
+function validateButtonsSafety(buttons: unknown[]): string | null {
+  for (const rawBtn of buttons) {
+    if (!rawBtn || typeof rawBtn !== 'object') continue;
+    const btn = rawBtn as { actionType?: unknown; code?: unknown; label?: unknown };
+    if (btn.actionType === 'script' && typeof btn.code === 'string' && btn.code.trim()) {
+      const check = validateScriptSafety(btn.code);
+      if (!check.ok) {
+        return `按钮脚本安全校验未通过：${check.reason}`;
+      }
+    }
+  }
+  return null;
+}
+
 function clampDim(val: unknown, fallback: number, min: number, max: number): number {
   const n = Number(val);
   if (!Number.isFinite(n)) return fallback;
@@ -450,6 +464,10 @@ export function applyAgentOperations(
               ? JSON.parse(JSON.stringify(item.defaultVars))
               : {}),
           };
+          if (Array.isArray(mergedVars.contents)) {
+            const contentsErr = validateBlocksSafety(mergedVars.contents);
+            if (contentsErr) return { ok: false, error: contentsErr, failedIndex: i };
+          }
           const node: BlueprintNode = {
             ...preset,
             id,
@@ -532,10 +550,18 @@ export function applyAgentOperations(
           item.defaultVars && typeof item.defaultVars === 'object'
             ? JSON.parse(JSON.stringify(item.defaultVars))
             : {};
+        if (Array.isArray(defaultVars.contents)) {
+          const contentsErr = validateBlocksSafety(defaultVars.contents);
+          if (contentsErr) return { ok: false, error: contentsErr, failedIndex: i };
+        }
         if (Array.isArray(item.blocks)) {
           const blockErr = validateBlocksSafety(item.blocks);
           if (blockErr) return { ok: false, error: blockErr, failedIndex: i };
           defaultVars.contents = JSON.parse(JSON.stringify(item.blocks));
+        }
+        if (Array.isArray(item.buttons)) {
+          const btnErr = validateButtonsSafety(item.buttons);
+          if (btnErr) return { ok: false, error: btnErr, failedIndex: i };
         }
         const node: BlueprintNode = {
           id,
@@ -578,10 +604,18 @@ export function applyAgentOperations(
               ? JSON.parse(JSON.stringify(item.defaultVars))
               : { ...(target.defaultVars || {}), ...JSON.parse(JSON.stringify(item.defaultVars)) }
             : { ...(target.defaultVars || {}) };
+        if (Array.isArray(nextVars.contents)) {
+          const contentsErr = validateBlocksSafety(nextVars.contents);
+          if (contentsErr) return { ok: false, error: contentsErr, failedIndex: i };
+        }
         if (Array.isArray(item.blocks)) {
           const blockErr = validateBlocksSafety(item.blocks);
           if (blockErr) return { ok: false, error: blockErr, failedIndex: i };
           nextVars.contents = JSON.parse(JSON.stringify(item.blocks));
+        }
+        if (Array.isArray(item.buttons)) {
+          const btnErr = validateButtonsSafety(item.buttons);
+          if (btnErr) return { ok: false, error: btnErr, failedIndex: i };
         }
         const updated: BlueprintNode = {
           ...target,

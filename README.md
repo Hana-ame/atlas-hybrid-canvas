@@ -1,4 +1,4 @@
-# Atlas Hybrid Canvas — 混合无限画布蓝图框架（v97）
+# Atlas Hybrid Canvas — 混合无限画布蓝图框架（v98）
 
 **Atlas Hybrid Canvas** 是一套面向**大空间蓝图、策划大地图、知识地图与可编程工作台**的混合渲染无限画布项目。它结合了三套架构的各自长板：
 

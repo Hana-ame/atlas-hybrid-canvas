@@ -5,7 +5,7 @@ const BLOCKED_TOKENS = [
   'setTimeout', 'setInterval', 'localStorage', 'sessionStorage',
   'indexedDB', 'cookie', 'eval', 'Function', 'AsyncFunction', 'Proxy',
   'Reflect', 'fetch', 'XMLHttpRequest', 'WebSocket', 'Worker',
-  'importScripts', 'navigator', 'location', 'history', 'postMessage',
+  'import', 'importScripts', 'navigator', 'location', 'history', 'postMessage',
   '__proto__', 'prototype', 'constructor', 'setPrototypeOf', 'getPrototypeOf',
 ];
 

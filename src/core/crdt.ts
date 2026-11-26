@@ -118,7 +118,8 @@ export function mergeRecordFieldsLWW<T extends VersionedRecord>(
 export function computeRecordDiff<T extends VersionedRecord>(
   before: Record<string, T>,
   after: Record<string, T>,
-  selfCid: string
+  selfCid: string,
+  minBaseRevById?: (id: string) => number
 ): { upserts: T[]; deletes: string[] } {
   const upserts: T[] = [];
   const deletes: string[] = [];
@@ -131,7 +132,8 @@ export function computeRecordDiff<T extends VersionedRecord>(
     const nextEl = after[id];
     const prevEl = before[id];
     if (!prevEl || JSON.stringify(prevEl) !== JSON.stringify(nextEl)) {
-      const nextRev = Math.max(Number(prevEl?.rev) || 0, Number(nextEl?.rev) || 0) + 1;
+      const externalMin = minBaseRevById ? Number(minBaseRevById(id)) || 0 : 0;
+      const nextRev = Math.max(Number(prevEl?.rev) || 0, Number(nextEl?.rev) || 0, externalMin) + 1;
       const nextFieldRevs: Record<string, FieldStamp> = { ...(prevEl?.fieldRevs ?? nextEl.fieldRevs ?? {}) };
       const prevRec = (prevEl ?? {}) as Record<string, unknown>;
       const nextRec = nextEl as Record<string, unknown>;

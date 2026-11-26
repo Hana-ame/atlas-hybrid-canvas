@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSeedBlueprint } from '../src/core/seedBlueprint.ts';
 import { isBoxIntersecting } from '../src/core/viewportCulling.ts';
+import { buildControlPointEdgePath, computeControlPointBezierSegments, evalCubicBezier, resolveNodePortY } from '../src/core/edgePath.ts';
 
 test('createSeedBlueprint() includes default examples for image, video, slider, pad2d, and image_button controls', () => {
   const bp = createSeedBlueprint();
@@ -65,5 +66,58 @@ test('createSeedBlueprint() includes interactive 4-state FSM example (ZONE F) wi
   ];
   for (const eid of fsmEdges) {
     assert.ok(bp.edges[eid], `Missing FSM transition edge: ${eid}`);
+  }
+});
+
+test('ZONE F FSM edges have zero node occlusion and well-separated labels', () => {
+  const bp = createSeedBlueprint();
+  const fsmNodeIds = ['fsm-idle', 'fsm-running', 'fsm-paused', 'fsm-done', 'fsm-monitor'];
+  const fsmEdgeIds = [
+    'edge-fsm-idle-run',
+    'edge-fsm-run-idle',
+    'edge-fsm-run-pause',
+    'edge-fsm-pause-run',
+    'edge-fsm-pause-idle',
+    'edge-fsm-run-done',
+    'edge-fsm-done-idle',
+  ];
+  const boxes = fsmNodeIds.map((id) => ({ id, ...bp.nodes[id] }));
+  const labels: Array<{ id: string; x: number; y: number }> = [];
+
+  for (const eid of fsmEdgeIds) {
+    const edge = bp.edges[eid];
+    const src = bp.nodes[edge.source];
+    const dst = bp.nodes[edge.target];
+    const sx = src.x + src.width;
+    const sy = resolveNodePortY(src, edge.sourceHandle, 'output');
+    const tx = dst.x;
+    const ty = resolveNodePortY(dst, edge.targetHandle, 'input');
+
+    const segs = computeControlPointBezierSegments(sx, sy, tx, ty, edge.controlPoints);
+    for (let si = 0; si < segs.length; si++) {
+      for (let k = 1; k < 24; k++) {
+        const t = k / 24;
+        const pt = evalCubicBezier(segs[si], t);
+        for (const box of boxes) {
+          if ((si === 0 && t < 0.15 && box.id === edge.source) || (si === segs.length - 1 && t > 0.85 && box.id === edge.target)) {
+            continue;
+          }
+          const inside =
+            pt.x > box.x + 2 && pt.x < box.x + box.width - 2 &&
+            pt.y > box.y + 2 && pt.y < box.y + box.height - 2;
+          assert.equal(inside, false, `FSM edge ${eid} occludes node ${box.id} at (${Math.round(pt.x)}, ${Math.round(pt.y)})`);
+        }
+      }
+    }
+
+    const built = buildControlPointEdgePath(sx, sy, tx, ty, edge.controlPoints);
+    labels.push({ id: eid, x: built.labelX, y: built.labelY });
+  }
+
+  for (let i = 0; i < labels.length; i++) {
+    for (let j = i + 1; j < labels.length; j++) {
+      const dist = Math.hypot(labels[i].x - labels[j].x, labels[i].y - labels[j].y);
+      assert.ok(dist >= 36, `FSM edge labels ${labels[i].id} and ${labels[j].id} too close: ${dist.toFixed(1)}px`);
+    }
   }
 });

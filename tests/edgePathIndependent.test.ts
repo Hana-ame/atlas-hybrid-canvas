@@ -243,15 +243,15 @@ test('独立⑥：findBestInsertIndex() 精确命中最近线段（含两端钳�
   assert.equal(degenerate, 0);
 });
 
-test('独立⑦：ZONE F 五条回退连线的控制点全部落在状态卡与横幅矩形之外且互不重合', () => {
+test('独立⑦：ZONE F 五条回退连线的控制点全部落在 5 张状态卡与横幅矩形之外且互不重合', () => {
   const seed = createSeedBlueprint();
   const obstacles = [
-    ...['fsm-idle', 'fsm-running', 'fsm-paused', 'fsm-done'].map((id) => {
+    ...['fsm-idle', 'fsm-running', 'fsm-paused', 'fsm-done', 'fsm-monitor'].map((id) => {
       const n = seed.nodes[id];
       assert.ok(n, `种子缺少节点 ${id}`);
       return { id, x: n.x, y: n.y, w: n.width, h: n.height };
     }),
-    // v93 把 ZONE F 横幅上移到 y=1955..1999，与卡片之间留出净空走廊
+    // v98 把 ZONE F 横幅上移到 y=1945..1989，与 y=2060 的卡片之间留出净空走廊
     (() => {
       const ann = seed.annotations['ann-zone-fsm'];
       assert.ok(ann, '种子缺少 ZONE F 横幅注释 ann-zone-fsm');
@@ -293,20 +293,28 @@ test('独立⑦：ZONE F 五条回退连线的控制点全部落在状态卡与�
     }
   }
 
-  assert.equal(total, 14, 'v91 声明为五条连线共 14 个避让控制点');
+  assert.equal(total, 17, 'v98 声明为五条连线共 17 个避让控制点');
 
-  // cancel 走顶部走廊：全部控制点应位于四张卡片上沿（y=2040）之上
+  // cancel 走顶部走廊：夹在横幅下沿 1989 与卡片上沿 2060 之间
   const cancel = sanitizeControlPoints(seed.edges['edge-fsm-run-idle'].controlPoints);
   for (const cp of cancel) {
-    assert.ok(cp.y < 2040, `cancel 的控制点 y=${cp.y} 应在卡片上沿 2040 之上`);
+    assert.ok(cp.y > 1989 && cp.y < 2060, `cancel 的控制点 y=${cp.y} 应落在横幅与卡片之间的净空走廊`);
   }
 
-  // pause 与 resume 是相反方向的两条平行走廊，走廊 x 不得重合，否则两条线会并线
-  const pauseXs = new Set(sanitizeControlPoints(seed.edges['edge-fsm-run-pause'].controlPoints).map((p) => p.x));
-  const resumeXs = new Set(sanitizeControlPoints(seed.edges['edge-fsm-pause-run'].controlPoints).map((p) => p.x));
-  for (const x of pauseXs) {
-    assert.equal(resumeXs.has(x), false, `pause 与 resume 共用走廊 x=${x}，两条回退线会重叠`);
+  // pause 与 resume 是相反方向的两条平行走廊：v98 允许共用 x=1075 的转向点，
+  // 真正的不变量是两条走廊在纵向上分离，且不存在完全重合的 (x,y) 控制点。
+  const pausePts = sanitizeControlPoints(seed.edges['edge-fsm-run-pause'].controlPoints);
+  const resumePts = sanitizeControlPoints(seed.edges['edge-fsm-pause-run'].controlPoints);
+  const pauseKeys = new Set(pausePts.map((p) => `${p.x},${p.y}`));
+  for (const p of resumePts) {
+    assert.equal(pauseKeys.has(`${p.x},${p.y}`), false, `pause 与 resume 在 (${p.x},${p.y}) 完全重合，两条线会并线`);
   }
+  const pauseMaxY = Math.max(...pausePts.map((p) => p.y));
+  const resumeMinY = Math.min(...resumePts.map((p) => p.y));
+  assert.ok(
+    resumeMinY - pauseMaxY >= 30,
+    `pause 与 resume 走廊纵向间距应 ≥30px，实测 ${resumeMinY - pauseMaxY}px`
+  );
 });
 
 test('独立⑧：agentOps 的 connect_edge 落盘控制点前会 sanitize，且不污染入参蓝图', () => {

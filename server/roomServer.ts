@@ -251,6 +251,7 @@ export function attachRoomServer(
   // 下一个人进来是空的。改为记一个空闲时间戳，由清扫任务在超过 ROOM_IDLE_TTL_MS 后回收。
   const idleSince = new Map<string, number>();
   const hydratedRooms = new Set<string>();
+  const hydrationPromises = new Map<string, Promise<void>>();
   const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   const schedulePersistRoom = (roomName: string) => {
@@ -295,7 +296,7 @@ export function attachRoomServer(
     return room;
   }
 
-  function handleMessage(socket: WebSocket, room: Room, raw: string): void {
+  function handleMessage(socket: WebSocket, room: Room, raw: string, clientIp: string): void {
     let msg: WireMessage;
     try {
       msg = JSON.parse(raw) as WireMessage;
@@ -394,11 +395,13 @@ export function attachRoomServer(
       case 'rpc_req': {
         // 前端的 /api/* 请求在这里下船：整包交给注入的后端处理器，结果按 id 送回去。
         // 注意：这是异步的，但不需要 await——多个请求可以并发在途，各自带 id 配对。
-        const frame = msg as RpcRequestFrame;
-        if (typeof frame.id !== 'string' || !frame.id) {
+        const rawFrame = msg as RpcRequestFrame;
+        if (typeof rawFrame.id !== 'string' || !rawFrame.id) {
           send(socket, { t: 'error', error: 'rpc_req 缺少 id' });
           return;
         }
+        // 强制使用握手期计算的真实客户端 IP，绝不采信客户端 JSON 帧内自报的 clientIp
+        const frame: RpcRequestFrame = { ...rawFrame, clientIp };
         if (!rpcHandler) {
           send(socket, {
             t: 'rpc_res',
@@ -532,27 +535,31 @@ export function attachRoomServer(
       // 新成员立刻拿到全量快照，补齐入房前错过的一切。
       if (state && state.size > 0) {
         send(ws, { t: 'state', blueprint: state.snapshot() });
-      } else if (roomName !== '__rpc__' && !hydratedRooms.has(roomName)) {
-        hydratedRooms.add(roomName);
-        void (async () => {
+      } else if (roomName !== '__rpc__' && !hydratedRooms.has(roomName) && !hydrationPromises.has(roomName)) {
+        const hydrateTask = (async () => {
           const initialBp = getRoomStore ? await getRoomStore(roomName).readBlueprint().catch(() => null) : null;
-          if (!initialBp || typeof initialBp !== 'object' || !state) return;
-          const bpObj = initialBp as Record<string, unknown>;
-          let restored = false;
-          for (const kind of COLLECTIONS) {
-            const col = bpObj[kind];
-            if (!col || typeof col !== 'object') continue;
-            for (const rec of Object.values(col as Record<string, unknown>)) {
-              if (isVersionedRecord(rec) && state.upsert(kind, rec)) restored = true;
+          if (initialBp && typeof initialBp === 'object' && state) {
+            const bpObj = initialBp as Record<string, unknown>;
+            let restored = false;
+            for (const kind of COLLECTIONS) {
+              const col = bpObj[kind];
+              if (!col || typeof col !== 'object') continue;
+              for (const rec of Object.values(col as Record<string, unknown>)) {
+                if (isVersionedRecord(rec) && state.upsert(kind, rec)) restored = true;
+              }
+            }
+            if (restored && state.size > 0) {
+              const snapMsg = { t: 'state', blueprint: state.snapshot() };
+              for (const m of room.members.values()) {
+                send(m.socket, snapMsg);
+              }
             }
           }
-          if (restored && state.size > 0) {
-            const snapMsg = { t: 'state', blueprint: state.snapshot() };
-            for (const m of room.members.values()) {
-              send(m.socket, snapMsg);
-            }
-          }
-        })();
+          hydratedRooms.add(roomName);
+        })().finally(() => {
+          hydrationPromises.delete(roomName);
+        });
+        hydrationPromises.set(roomName, hydrateTask);
       }
       if (room.name !== '__rpc__') {
         const existingPeers = [...room.members.values()]
@@ -586,6 +593,7 @@ export function attachRoomServer(
             headers: (decoded.meta.headers as Record<string, string>) || undefined,
             rawBody: decoded.payload,
             bodyEncoding: 'binary',
+            clientIp,
           };
           if (!binFrame.id) {
             send(ws, { t: 'error', error: 'rpc_req 缺少 id' });
@@ -627,7 +635,7 @@ export function attachRoomServer(
             });
           return;
         }
-        handleMessage(ws, room, String(data));
+        handleMessage(ws, room, String(data), clientIp);
       });
       ws.on('pong', () => {
         const member = room.members.get(ws);
@@ -669,6 +677,7 @@ export function attachRoomServer(
         rooms.delete(room.name);
         states.delete(room.name);
         hydratedRooms.delete(room.name);
+        hydrationPromises.delete(room.name);
         idleSince.delete(room.name);
       }
     }
@@ -682,6 +691,10 @@ export function attachRoomServer(
     }),
     async flushRoomSnapshot(roomName: string): Promise<Record<string, unknown> | null> {
       if (!roomName || roomName === '__rpc__') return null;
+      const pendingHydration = hydrationPromises.get(roomName);
+      if (pendingHydration) {
+        await pendingHydration;
+      }
       const st = states.get(roomName);
       if (!st) return null;
       // 若房间刚创建且尚未完成磁盘水合、也无待落盘 WS 编辑，绝不返回空快照遮蔽磁盘数据
@@ -703,6 +716,11 @@ export function attachRoomServer(
     },
     syncPublishedBlueprint(roomName: string, blueprint: unknown) {
       if (!roomName || roomName === '__rpc__' || !blueprint || typeof blueprint !== 'object') return;
+      const pendingTimer = persistTimers.get(roomName);
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        persistTimers.delete(roomName);
+      }
       let st = states.get(roomName);
       if (!st) {
         st = new RoomState();
@@ -727,7 +745,6 @@ export function attachRoomServer(
           }
         }
         persistTimers.clear();
-        void Promise.all(flushTasks);
         for (const room of rooms.values()) {
           for (const member of room.members.values()) {
             try {
@@ -739,8 +756,12 @@ export function attachRoomServer(
         }
         rooms.clear();
         states.clear();
+        hydratedRooms.clear();
+        hydrationPromises.clear();
         idleSince.clear();
-        wss.close(() => resolve());
+        wss.close(() => {
+          void Promise.allSettled(flushTasks).finally(() => resolve());
+        });
       }),
   };
 }

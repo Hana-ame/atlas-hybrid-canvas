@@ -337,21 +337,19 @@ export function useRoomCollaboration({
       roomClientRef.current.send({ t: 'state', blueprint: base });
       return;
     }
-    const bumpRev = <T extends { id: string; rev: number; cid: string }>(kind: string, rec: T): T => {
-      const k = `${kind}:${rec.id}`;
-      const highest = Math.max(maxSyncedMetaRef.current.get(k)?.rev ?? 0, Number(rec.rev) || 0);
-      const nextRev = highest + 1;
-      maxSyncedMetaRef.current.set(k, { id: rec.id, rev: nextRev, cid: selfCid });
-      return { ...rec, rev: nextRev, cid: selfCid };
+    const getMinRev = (kind: string) => (id: string) => maxSyncedMetaRef.current.get(`${kind}:${id}`)?.rev ?? 0;
+    const trackSent = <T extends { id: string; rev: number; cid: string }>(kind: string, rec: T): T => {
+      maxSyncedMetaRef.current.set(`${kind}:${rec.id}`, { id: rec.id, rev: Number(rec.rev) || 0, cid: selfCid });
+      return rec;
     };
-    const nodeDiff = computeRecordDiff(prev.nodes, base.nodes, selfCid);
-    for (const node of nodeDiff.upserts) roomClientRef.current.send({ t: 'upsert_node', node: bumpRev('node', node) });
+    const nodeDiff = computeRecordDiff(prev.nodes, base.nodes, selfCid, getMinRev('node'));
+    for (const node of nodeDiff.upserts) roomClientRef.current.send({ t: 'upsert_node', node: trackSent('node', node) });
     for (const id of nodeDiff.deletes) roomClientRef.current.send({ t: 'delete_node', id });
-    const annDiff = computeRecordDiff(prev.annotations, base.annotations, selfCid);
-    for (const annotation of annDiff.upserts) roomClientRef.current.send({ t: 'upsert_ann', annotation: bumpRev('ann', annotation) });
+    const annDiff = computeRecordDiff(prev.annotations, base.annotations, selfCid, getMinRev('ann'));
+    for (const annotation of annDiff.upserts) roomClientRef.current.send({ t: 'upsert_ann', annotation: trackSent('ann', annotation) });
     for (const id of annDiff.deletes) roomClientRef.current.send({ t: 'delete_ann', id });
-    const edgeDiff = computeRecordDiff(prev.edges, base.edges, selfCid);
-    for (const edge of edgeDiff.upserts) roomClientRef.current.send({ t: 'upsert_edge', edge: bumpRev('edge', edge) });
+    const edgeDiff = computeRecordDiff(prev.edges, base.edges, selfCid, getMinRev('edge'));
+    for (const edge of edgeDiff.upserts) roomClientRef.current.send({ t: 'upsert_edge', edge: trackSent('edge', edge) });
     for (const id of edgeDiff.deletes) roomClientRef.current.send({ t: 'delete_edge', id });
   }, [base, roomStatus, selfCid]);
 

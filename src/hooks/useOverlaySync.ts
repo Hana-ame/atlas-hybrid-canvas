@@ -37,6 +37,7 @@ export function useOverlaySync(
   // 防抖落盘（300ms 合并高频输入/勾选），切换房间或首次水合仅建立指纹基线，绝不向其他页签广播旧快照
   useEffect(() => {
     if (prevRoomRef.current !== roomPath) {
+      flushLocalOverlaySave();
       prevRoomRef.current = roomPath;
       hydratedInitRef.current = false;
       lastSyncedFingerprintRef.current = '';

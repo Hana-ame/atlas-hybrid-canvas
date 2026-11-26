@@ -696,92 +696,21 @@ async function startServer() {
     };
   };
 
-  const requireClientAuth: express.RequestHandler = (req, res, next) => {
-    const provided = extractRequestProxyToken(req);
-    if (!verifyProxyClientToken(provided)) {
-      res.status(401).json({ ok: false, error: '未授权访问：缺少或无效的会话凭证' });
-      return;
-    }
-    next();
+  const asyncHandler = (
+    fn: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<void>
+  ): express.RequestHandler => (req, res, next) => {
+    void fn(req, res, next).catch(next);
   };
 
-  app.get('/api/room/stats', requireClientAuth, (_req, res) => {
-    if (!roomServer) {
-      res.status(503).json({ ok: false, error: '房间服务尚未就绪' });
-      return;
+  const safeDecodeRoomParam = (raw: string): string | null => {
+    try {
+      return normalizeRoomPath(decodeURIComponent(raw));
+    } catch {
+      return null;
     }
-    res.json({ ok: true, ...roomServer.stats(), rpcForwarded });
-  });
-
-  // 按 path 分房间的蓝图读取与发布接口（启用鉴权时统一受 requireClientAuth 保护）：
-  app.get('/api/rooms', requireClientAuth, async (_req, res) => {
-    const persisted = await listPersistedRooms(DATA_DIR);
-    res.json({
-      ok: true,
-      active: roomServer ? roomServer.stats() : { rooms: 0, clients: 0 },
-      persisted,
-    });
-  });
-
-  app.get(/^\/api\/rooms\/(.+)\/blueprint$/, requireClientAuth, async (req, res) => {
-    const roomPath = normalizeRoomPath(req.params[0]);
-    const apiReq = toApiRequest(req);
-    const result = await handleApiRequest(resolveRoomApiDeps(roomPath), {
-      ...apiReq,
-      path: '/api/blueprint',
-    });
-    if (!result) {
-      res.status(404).json({ ok: false, error: '未实现的蓝图读取接口' });
-      return;
-    }
-    writeApiResult(res, result);
-  });
-
-  app.post(/^\/api\/rooms\/(.+)\/blueprint\/publish$/, requireClientAuth, async (req, res) => {
-    const roomPath = normalizeRoomPath(req.params[0]);
-    const apiReq = toApiRequest(req);
-    const result = await handleApiRequest(resolveRoomApiDeps(roomPath), {
-      ...apiReq,
-      path: '/api/blueprint/publish',
-    });
-    if (!result) {
-      res.status(404).json({ ok: false, error: '未实现的蓝图发布接口' });
-      return;
-    }
-    if (result.status === 200) {
-      const bp = (req.body as { blueprint?: unknown } | undefined)?.blueprint;
-      if (bp) {
-        await roomBlueprintRegistry.getStore(roomPath).recordHistory('publish', {
-          actor: getRealClientIp(req),
-          summary: '管理员发布蓝图',
-          blueprint: bp,
-        });
-        roomServer?.syncPublishedBlueprint(roomPath, bp);
-      }
-    }
-    writeApiResult(res, result);
-  });
-
-  const verifySaveKey = (providedKey: string): boolean => {
-    if (!blueprintSaveKey || !providedKey) return false;
-    const a = Buffer.from(providedKey, 'utf8');
-    const b = Buffer.from(blueprintSaveKey, 'utf8');
-    return a.length === b.length && crypto.timingSafeEqual(a, b);
   };
 
-  app.get(/^\/api\/rooms\/(.+)\/history$/, requireClientAuth, async (req, res) => {
-    const roomPath = normalizeRoomPath(req.params[0]);
-    const entries = await roomBlueprintRegistry.getStore(roomPath).listHistory();
-    res.json({ ok: true, room: roomPath, entries });
-  });
-
-  app.get('/api/history', requireClientAuth, async (req, res) => {
-    const roomPath = normalizeRoomPath(String(req.query.room || req.header('x-room-path') || ''));
-    const entries = await roomBlueprintRegistry.getStore(roomPath).listHistory();
-    res.json({ ok: true, room: roomPath, entries });
-  });
-
-  // 按房间串行化 Agent 写入，避免并发请求互相覆盖
+  // 按房间串行化写入（发布 / Agent ops / 回档共用同一把房间锁），避免并发请求互相覆盖
   const agentRoomQueues = new Map<string, Promise<void>>();
   const runSerializedForRoom = async <T>(roomKey: string, task: () => Promise<T>): Promise<T> => {
     const prev = agentRoomQueues.get(roomKey) ?? Promise.resolve();
@@ -801,6 +730,105 @@ async function startServer() {
       }
     }
   };
+
+  const requireClientAuth: express.RequestHandler = (req, res, next) => {
+    const provided = extractRequestProxyToken(req);
+    if (!verifyProxyClientToken(provided)) {
+      res.status(401).json({ ok: false, error: '未授权访问：缺少或无效的会话凭证' });
+      return;
+    }
+    next();
+  };
+
+  app.get('/api/room/stats', requireClientAuth, (_req, res) => {
+    if (!roomServer) {
+      res.status(503).json({ ok: false, error: '房间服务尚未就绪' });
+      return;
+    }
+    res.json({ ok: true, ...roomServer.stats(), rpcForwarded });
+  });
+
+  // 按 path 分房间的蓝图读取与发布接口（启用鉴权时统一受 requireClientAuth 保护）：
+  app.get('/api/rooms', requireClientAuth, asyncHandler(async (_req, res) => {
+    const persisted = await listPersistedRooms(DATA_DIR);
+    res.json({
+      ok: true,
+      active: roomServer ? roomServer.stats() : { rooms: 0, clients: 0 },
+      persisted,
+    });
+  }));
+
+  app.get(/^\/api\/rooms\/(.+)\/blueprint$/, requireClientAuth, asyncHandler(async (req, res) => {
+    const roomPath = safeDecodeRoomParam(String((req.params as Record<string, string>)[0] || ''));
+    if (!roomPath) {
+      res.status(400).json({ ok: false, error: '非法房间路径编码' });
+      return;
+    }
+    const apiReq = toApiRequest(req);
+    const result = await handleApiRequest(resolveRoomApiDeps(roomPath), {
+      ...apiReq,
+      path: '/api/blueprint',
+    });
+    if (!result) {
+      res.status(404).json({ ok: false, error: '未实现的蓝图读取接口' });
+      return;
+    }
+    writeApiResult(res, result);
+  }));
+
+  app.post(/^\/api\/rooms\/(.+)\/blueprint\/publish$/, requireClientAuth, asyncHandler(async (req, res) => {
+    const roomPath = safeDecodeRoomParam(String((req.params as Record<string, string>)[0] || ''));
+    if (!roomPath) {
+      res.status(400).json({ ok: false, error: '非法房间路径编码' });
+      return;
+    }
+    await runSerializedForRoom(roomPath, async () => {
+      const apiReq = toApiRequest(req);
+      const result = await handleApiRequest(resolveRoomApiDeps(roomPath), {
+        ...apiReq,
+        path: '/api/blueprint/publish',
+      });
+      if (!result) {
+        res.status(404).json({ ok: false, error: '未实现的蓝图发布接口' });
+        return;
+      }
+      if (result.status === 200) {
+        const bp = (req.body as { blueprint?: unknown } | undefined)?.blueprint;
+        if (bp) {
+          await roomBlueprintRegistry.getStore(roomPath).recordHistory('publish', {
+            actor: getRealClientIp(req),
+            summary: '管理员发布蓝图',
+            blueprint: bp,
+          });
+          roomServer?.syncPublishedBlueprint(roomPath, bp);
+        }
+      }
+      writeApiResult(res, result);
+    });
+  }));
+
+  const verifySaveKey = (providedKey: string): boolean => {
+    if (!blueprintSaveKey || !providedKey) return false;
+    const a = Buffer.from(providedKey, 'utf8');
+    const b = Buffer.from(blueprintSaveKey, 'utf8');
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  };
+
+  app.get(/^\/api\/rooms\/(.+)\/history$/, requireClientAuth, asyncHandler(async (req, res) => {
+    const roomPath = safeDecodeRoomParam(String((req.params as Record<string, string>)[0] || ''));
+    if (!roomPath) {
+      res.status(400).json({ ok: false, error: '非法房间路径编码' });
+      return;
+    }
+    const entries = await roomBlueprintRegistry.getStore(roomPath).listHistory();
+    res.json({ ok: true, room: roomPath, entries });
+  }));
+
+  app.get('/api/history', requireClientAuth, asyncHandler(async (req, res) => {
+    const roomPath = normalizeRoomPath(String(req.query.room || req.header('x-room-path') || ''));
+    const entries = await roomBlueprintRegistry.getStore(roomPath).listHistory();
+    res.json({ ok: true, room: roomPath, entries });
+  }));
 
   const verifyAgentRequestAuth = (req: express.Request, res: express.Response): boolean => {
     const clientIp = getRealClientIp(req);
@@ -858,20 +886,12 @@ async function startServer() {
     });
   };
 
-  app.get('/api/agent/state', async (req, res) => {
+  app.get('/api/agent/state', asyncHandler(async (req, res) => {
     const requestedRoom = String(req.query.room || req.header('x-room-path') || DEFAULT_ROOM_PATH).trim();
     await handleAgentStateRequest(requestedRoom, req, res);
-  });
+  }));
 
-  const safeDecodeRoomParam = (raw: string): string | null => {
-    try {
-      return normalizeRoomPath(decodeURIComponent(raw));
-    } catch {
-      return null;
-    }
-  };
-
-  app.get(/^\/api\/rooms\/(.+)\/agent\/state$/, async (req, res) => {
+  app.get(/^\/api\/rooms\/(.+)\/agent\/state$/, asyncHandler(async (req, res) => {
     const raw = (req.params as Record<string, string>)[0] || DEFAULT_ROOM_PATH;
     const roomPath = safeDecodeRoomParam(raw);
     if (!roomPath) {
@@ -879,7 +899,7 @@ async function startServer() {
       return;
     }
     await handleAgentStateRequest(roomPath, req, res);
-  });
+  }));
 
   const handleAgentOpsRequest = async (roomPath: string, req: express.Request, res: express.Response) => {
     if (!verifyAgentRequestAuth(req, res)) return;
@@ -955,12 +975,12 @@ async function startServer() {
     });
   };
 
-  app.post('/api/ops', async (req, res) => {
+  app.post('/api/ops', asyncHandler(async (req, res) => {
     const requestedRoom = String(req.query.room || req.header('x-room-path') || DEFAULT_ROOM_PATH).trim();
     await handleAgentOpsRequest(requestedRoom, req, res);
-  });
+  }));
 
-  app.post(/^\/api\/rooms\/(.+)\/ops$/, async (req, res) => {
+  app.post(/^\/api\/rooms\/(.+)\/ops$/, asyncHandler(async (req, res) => {
     const raw = (req.params as Record<string, string>)[0] || DEFAULT_ROOM_PATH;
     const roomPath = safeDecodeRoomParam(raw);
     if (!roomPath) {
@@ -968,7 +988,7 @@ async function startServer() {
       return;
     }
     await handleAgentOpsRequest(roomPath, req, res);
-  });
+  }));
 
   const handleRollbackRequest = async (roomPath: string, req: express.Request, res: express.Response) => {
     const saveKey = String(req.header('x-blueprint-save-key') || '').trim();
@@ -1008,15 +1028,19 @@ async function startServer() {
     requireClientAuth(req, res, next);
   };
 
-  app.post('/api/rollback', requireSessionOrAgentKey, async (req, res) => {
+  app.post('/api/rollback', requireSessionOrAgentKey, asyncHandler(async (req, res) => {
     const roomPath = normalizeRoomPath(String(req.query.room || req.header('x-room-path') || ''));
     await handleRollbackRequest(roomPath, req, res);
-  });
+  }));
 
-  app.post(/^\/api\/rooms\/(.+)\/rollback$/, requireSessionOrAgentKey, async (req, res) => {
-    const roomPath = normalizeRoomPath(req.params[0]);
+  app.post(/^\/api\/rooms\/(.+)\/rollback$/, requireSessionOrAgentKey, asyncHandler(async (req, res) => {
+    const roomPath = safeDecodeRoomParam(String((req.params as Record<string, string>)[0] || ''));
+    if (!roomPath) {
+      res.status(400).json({ ok: false, error: '非法房间路径编码' });
+      return;
+    }
     await handleRollbackRequest(roomPath, req, res);
-  });
+  }));
 
   for (const routePath of [
     '/api/blueprint',
@@ -1026,31 +1050,38 @@ async function startServer() {
   ]) {
     const authMiddleware: express.RequestHandler =
       routePath === '/api/proxy' ? (_req, _res, next) => next() : requireClientAuth;
-    app.all(routePath, authMiddleware, async (req, res) => {
+    app.all(routePath, authMiddleware, asyncHandler(async (req, res) => {
       const requestedRoom = String(req.query.room || req.header('x-room-path') || '').trim();
-      const deps =
-        (routePath === '/api/blueprint' || routePath === '/api/blueprint/publish') && requestedRoom
-          ? resolveRoomApiDeps(requestedRoom)
-          : apiDeps;
-      const result = await handleApiRequest(deps, toApiRequest(req));
-      if (!result) {
-        res.status(404).json({ ok: false, error: `未实现的接口：${routePath}` });
-        return;
-      }
-      if (routePath === '/api/blueprint/publish' && result.status === 200) {
-        const targetRoom = normalizeRoomPath(requestedRoom);
-        const bp = (req.body as { blueprint?: unknown } | undefined)?.blueprint;
-        if (bp) {
-          await roomBlueprintRegistry.getStore(targetRoom).recordHistory('publish', {
-            actor: getRealClientIp(req),
-            summary: '管理员发布蓝图',
-            blueprint: bp,
-          });
-          roomServer?.syncPublishedBlueprint(targetRoom, bp);
+      const targetRoom = normalizeRoomPath(requestedRoom);
+      const runPublish = async () => {
+        const deps =
+          (routePath === '/api/blueprint' || routePath === '/api/blueprint/publish') && requestedRoom
+            ? resolveRoomApiDeps(requestedRoom)
+            : apiDeps;
+        const result = await handleApiRequest(deps, toApiRequest(req));
+        if (!result) {
+          res.status(404).json({ ok: false, error: `未实现的接口：${routePath}` });
+          return;
         }
+        if (routePath === '/api/blueprint/publish' && result.status === 200) {
+          const bp = (req.body as { blueprint?: unknown } | undefined)?.blueprint;
+          if (bp) {
+            await roomBlueprintRegistry.getStore(targetRoom).recordHistory('publish', {
+              actor: getRealClientIp(req),
+              summary: '管理员发布蓝图',
+              blueprint: bp,
+            });
+            roomServer?.syncPublishedBlueprint(targetRoom, bp);
+          }
+        }
+        writeApiResult(res, result);
+      };
+      if (routePath === '/api/blueprint/publish') {
+        await runSerializedForRoom(targetRoom, runPublish);
+      } else {
+        await runPublish();
       }
-      writeApiResult(res, result);
-    });
+    }));
   }
 
   // 2.5) 二进制 PDF 代理转发与上传托管（复用同套 SSRF、限流与可选令牌鉴权）
@@ -1281,7 +1312,8 @@ async function startServer() {
       res.setHeader('Cache-Control', 'public, max-age=3600');
       res.send(hit.buffer);
     } catch (err) {
-      res.status(502).json({ ok: false, error: err instanceof Error ? err.message : 'PDF 页面渲染失败' });
+      console.error('[Atlas] PDF page render error:', err);
+      res.status(502).json({ ok: false, error: 'PDF 页面渲染失败' });
     }
   });
 

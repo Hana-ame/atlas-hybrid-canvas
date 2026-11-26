@@ -10,6 +10,7 @@
  */
 
 import { DEFAULT_ROOM_PATH, buildBrowserRoomUrl, buildRoomBlueprintPublishUrl, buildRoomBlueprintUrl, buildRoomHistoryUrl, buildRoomRollbackUrl, extractRoomPathFromBrowserLocation } from './core/roomPath';
+import { isSafeImageUrl } from './core/mediaHelper';
 import {
   Suspense,
   lazy,
@@ -729,9 +730,13 @@ function HybridCanvasWorkspace() {
         setOverlay((prev) => {
           const nextAnnOverrides = { ...(prev.annotationOverrides ?? {}) };
           for (const op of res.annotationOps) {
+            const safePatch = { ...op.patch };
+            if (typeof safePatch.imageUrl === 'string' && safePatch.imageUrl.trim() && !isSafeImageUrl(safePatch.imageUrl)) {
+              delete safePatch.imageUrl;
+            }
             nextAnnOverrides[op.id] = {
               ...(nextAnnOverrides[op.id] ?? {}),
-              ...op.patch,
+              ...safePatch,
             };
           }
           return {
@@ -937,7 +942,11 @@ function HybridCanvasWorkspace() {
       setOverlay((prev) => {
         const nextAnnOverrides = { ...(prev.annotationOverrides ?? {}) };
         for (const op of res.annotationOps) {
-          nextAnnOverrides[op.id] = { ...(nextAnnOverrides[op.id] ?? {}), ...op.patch };
+          const safePatch = { ...op.patch };
+          if (typeof safePatch.imageUrl === 'string' && safePatch.imageUrl.trim() && !isSafeImageUrl(safePatch.imageUrl)) {
+            delete safePatch.imageUrl;
+          }
+          nextAnnOverrides[op.id] = { ...(nextAnnOverrides[op.id] ?? {}), ...safePatch };
         }
         return {
           ...prev,

@@ -130,3 +130,29 @@ test('mergeRecordFieldsLWW(): preserves lower-cid non-conflicting new field on e
   assert.equal((res.merged as any).title, 'B');
   assert.equal('deletedField' in res.merged, false);
 });
+
+test('computeRecordDiff() with minBaseRevById keeps fieldRevs in sync with bumped rev', () => {
+  const before = {
+    n1: { id: 'n1', rev: 2, cid: 'client-a', title: 'Old', color: '#111' },
+  };
+  const after = {
+    n1: { id: 'n1', rev: 2, cid: 'client-a', title: 'New', color: '#111' },
+  };
+  const diff = computeRecordDiff(before as any, after as any, 'client-a', () => 10);
+  assert.equal(diff.upserts.length, 1);
+  assert.equal(diff.upserts[0].rev, 11);
+  assert.equal(diff.upserts[0].fieldRevs?.title?.rev, 11);
+
+  const remoteHigher = {
+    id: 'n1',
+    rev: 10,
+    cid: 'client-z',
+    title: 'Remote',
+    color: '#222',
+    fieldRevs: { title: { rev: 10, cid: 'client-z' }, color: { rev: 10, cid: 'client-z' } },
+  };
+  const merged = mergeRecordFieldsLWW(remoteHigher as any, diff.upserts[0] as any);
+  assert.equal(merged.changed, true);
+  assert.equal((merged.merged as any).title, 'New');
+  assert.equal((merged.merged as any).color, '#222');
+});

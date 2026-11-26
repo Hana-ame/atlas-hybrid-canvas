@@ -86,43 +86,59 @@ const MAX_HISTORY_ENTRIES = 50;
 function createSingleFileBlueprintStore(filePath: string, roomPath: string): RoomBlueprintStore {
   const historyPath = filePath.replace(/\.json$/i, '.history.json');
   let loaded = false;
+  let loadPromise: Promise<void> | null = null;
   let revision = 1;
   let blueprint: unknown = null;
   let historyLoaded = false;
+  let historyLoadPromise: Promise<void> | null = null;
   let historyEntries: RoomHistoryEntry[] = [];
   let lastBlueprintJson = '';
   let writeChain: Promise<void> = Promise.resolve();
 
   const ensureLoaded = async (): Promise<void> => {
     if (loaded) return;
-    loaded = true;
-    const saved = await safeReadJson<Partial<PersistedBlueprintFile>>(filePath);
-    if (saved && typeof saved === 'object') {
-      const r = Number(saved.revision);
-      if (Number.isFinite(r) && r >= 1) revision = Math.trunc(r);
-      if (saved.blueprint !== undefined) {
-        blueprint = saved.blueprint;
-        try {
-          lastBlueprintJson = JSON.stringify(blueprint);
-        } catch {
-          lastBlueprintJson = '';
+    if (!loadPromise) {
+      loadPromise = (async () => {
+        const saved = await safeReadJson<Partial<PersistedBlueprintFile>>(filePath);
+        if (saved && typeof saved === 'object') {
+          const r = Number(saved.revision);
+          if (Number.isFinite(r) && r >= 1) revision = Math.trunc(r);
+          if (saved.blueprint !== undefined) {
+            blueprint = saved.blueprint;
+            try {
+              lastBlueprintJson = JSON.stringify(blueprint);
+            } catch {
+              lastBlueprintJson = '';
+            }
+          }
         }
-      }
+        loaded = true;
+      })().finally(() => {
+        loadPromise = null;
+      });
     }
+    await loadPromise;
   };
 
   const ensureHistoryLoaded = async (): Promise<void> => {
     if (historyLoaded) return;
-    historyLoaded = true;
-    const saved = await safeReadJson<RoomHistoryEntry[]>(historyPath);
-    if (Array.isArray(saved)) {
-      historyEntries = saved.filter(
-        (e) => e && typeof e === 'object' && typeof e.version === 'number' && typeof e.ts === 'number'
-      );
-      if (historyEntries.length > MAX_HISTORY_ENTRIES) {
-        historyEntries = historyEntries.slice(-MAX_HISTORY_ENTRIES);
-      }
+    if (!historyLoadPromise) {
+      historyLoadPromise = (async () => {
+        const saved = await safeReadJson<RoomHistoryEntry[]>(historyPath);
+        if (Array.isArray(saved)) {
+          historyEntries = saved.filter(
+            (e) => e && typeof e === 'object' && typeof e.version === 'number' && typeof e.ts === 'number'
+          );
+          if (historyEntries.length > MAX_HISTORY_ENTRIES) {
+            historyEntries = historyEntries.slice(-MAX_HISTORY_ENTRIES);
+          }
+        }
+        historyLoaded = true;
+      })().finally(() => {
+        historyLoadPromise = null;
+      });
     }
+    await historyLoadPromise;
   };
 
   const enqueuePersistMain = (): Promise<void> => {
@@ -134,7 +150,9 @@ function createSingleFileBlueprintStore(filePath: string, roomPath: string): Roo
     };
     writeChain = writeChain
       .then(() => atomicWriteJson(filePath, snap))
-      .catch(() => {});
+      .catch((err) => {
+        console.error('[Atlas] persist blueprint failed:', filePath, err);
+      });
     return writeChain;
   };
 
@@ -142,7 +160,9 @@ function createSingleFileBlueprintStore(filePath: string, roomPath: string): Roo
     const snap = historyEntries.slice(-MAX_HISTORY_ENTRIES);
     writeChain = writeChain
       .then(() => atomicWriteJson(historyPath, snap))
-      .catch(() => {});
+      .catch((err) => {
+        console.error('[Atlas] persist history failed:', historyPath, err);
+      });
     return writeChain;
   };
 

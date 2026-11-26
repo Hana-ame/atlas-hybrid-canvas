@@ -101,3 +101,32 @@ test('createRoomBlueprintStoreRegistry() records modification history, deduplica
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('fileStore concurrent cold-start reads do not bypass initial disk hydration', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'atlas-filestore-race-'));
+  try {
+    const reg1 = createRoomBlueprintStoreRegistry(tmpDir);
+    const s1 = reg1.getStore('race-room');
+    const bp = { version: 1, chunkSize: 512, nodes: { a: { id: 'a' } }, annotations: {}, edges: {} };
+    await s1.writeBlueprint(bp);
+    await s1.writeRevision(7);
+    await s1.recordHistory('publish', { actor: 'admin', summary: 'v1', blueprint: bp });
+
+    const reg2 = createRoomBlueprintStoreRegistry(tmpDir);
+    const s2 = reg2.getStore('race-room');
+    const [b1, b2, rev1, hist1, hist2] = await Promise.all([
+      s2.readBlueprint(),
+      s2.readBlueprint(),
+      s2.readRevision(),
+      s2.listHistory(),
+      s2.listHistory(),
+    ]);
+    assert.deepEqual(b1, bp);
+    assert.deepEqual(b2, bp);
+    assert.equal(rev1, 7);
+    assert.equal(hist1.length, 1);
+    assert.equal(hist2.length, 1);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
