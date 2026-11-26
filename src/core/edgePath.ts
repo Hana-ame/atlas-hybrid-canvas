@@ -2,7 +2,7 @@
  * @file edgePath.ts
  * @description 可控连线（带控制点）的纯几何路径、端口定位与交互拖拽状态机：
  * - 无控制点时生成平滑三次贝塞尔曲线；
- * - 有控制点时使用 Catmull-Rom 转三次贝塞尔样条，平滑穿过全部控制点；
+ * - 有控制点时使用 Centripetal Catmull-Rom（α = 0.5）转三次贝塞尔样条，平滑穿过全部控制点并收敛疏密不均时的过冲；
  * - segmentMidpoints 与 labelX/labelY 均按真实三次贝塞尔曲线 B(t) 采样，贴合曲线本体；
  * - 提供 resolveNodePortY() 与 WidgetNode 多端口纵坐标公式 100% 同源，供全景 Canvas 复用；
  * - 提供纯状态机 createControlPointDragSession()，统一处理左键过滤、4px 抖动阈值、pointerId 隔离、pointercancel 回滚与卸载清理。
@@ -157,18 +157,61 @@ export function computeControlPointBezierSegments(
   ];
 
   const segments: CubicBezierSegment[] = [];
+  const EPS = 1e-6;
+  const knotStep = (a: EdgeControlPoint, b: EdgeControlPoint): number =>
+    Math.sqrt(Math.hypot(b.x - a.x, b.y - a.y));
+
   for (let i = 0; i < pts.length - 1; i++) {
-    const p0 = pts[Math.max(0, i - 1)];
     const p1 = pts[i];
     const p2 = pts[i + 1];
-    const p3 = pts[Math.min(pts.length - 1, i + 2)];
+    const p0 = i > 0 ? pts[i - 1] : { x: 2 * p1.x - p2.x, y: 2 * p1.y - p2.y };
+    const p3 = i + 2 < pts.length ? pts[i + 2] : { x: 2 * p2.x - p1.x, y: 2 * p2.y - p1.y };
+
+    const d1 = knotStep(p0, p1);
+    const d2 = knotStep(p1, p2);
+    const d3 = knotStep(p2, p3);
+
+    let cp1x: number;
+    let cp1y: number;
+    let cp2x: number;
+    let cp2y: number;
+
+    if (d2 < EPS) {
+      cp1x = p1.x;
+      cp1y = p1.y;
+      cp2x = p2.x;
+      cp2y = p2.y;
+    } else {
+      if (d1 < EPS) {
+        cp1x = p1.x + (p2.x - p1.x) / 3;
+        cp1y = p1.y + (p2.y - p1.y) / 3;
+      } else {
+        const d1Sq = d1 * d1;
+        const d2Sq = d2 * d2;
+        const denom1 = 3 * d1 * (d1 + d2);
+        cp1x = p1.x + (d1Sq * (p2.x - p1.x) + d2Sq * (p1.x - p0.x)) / denom1;
+        cp1y = p1.y + (d1Sq * (p2.y - p1.y) + d2Sq * (p1.y - p0.y)) / denom1;
+      }
+
+      if (d3 < EPS) {
+        cp2x = p2.x - (p2.x - p1.x) / 3;
+        cp2y = p2.y - (p2.y - p1.y) / 3;
+      } else {
+        const d2Sq = d2 * d2;
+        const d3Sq = d3 * d3;
+        const denom2 = 3 * d3 * (d3 + d2);
+        cp2x = p2.x - (d3Sq * (p2.x - p1.x) + d2Sq * (p3.x - p2.x)) / denom2;
+        cp2y = p2.y - (d3Sq * (p2.y - p1.y) + d2Sq * (p3.y - p2.y)) / denom2;
+      }
+    }
+
     segments.push({
       x0: p1.x,
       y0: p1.y,
-      cp1x: p1.x + (p2.x - p0.x) / 6,
-      cp1y: p1.y + (p2.y - p0.y) / 6,
-      cp2x: p2.x - (p3.x - p1.x) / 6,
-      cp2y: p2.y - (p3.y - p1.y) / 6,
+      cp1x,
+      cp1y,
+      cp2x,
+      cp2y,
       x: p2.x,
       y: p2.y,
     });

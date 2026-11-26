@@ -10,8 +10,8 @@
  *    本文件按种子数据里的真实卡片矩形做**几何避让断言**（控制点不得落在任何状态卡内部）；
  * 3. 补充入参不可变性、上限饱和、索引钳位、findBestInsertIndex 精确命中、
  *    agentOps 端到端 sanitize 等自带测试未覆盖的边界；
- * 4. 独立⑩⑪ 为 v91 审查发现、v92/v95 已修复缺陷的正向回归（拒绝非 number 坐标、
- *    段中点落在曲线上）；独立⑫ 锁定仍未收敛的遗留行为（uniform Catmull-Rom 过冲）。
+ * 4. 独立⑩⑪⑫ 为正向回归（拒绝非 number 坐标、段中点落在曲线上、
+ *    Centripetal Catmull-Rom α=0.5 收敛疏密不均控制点过冲）。
  */
 
 import test from 'node:test';
@@ -355,8 +355,8 @@ test('独立⑨：上限 12 时路径段数与控制点数仍自洽，且标签�
 });
 
 /* ------------------------------------------------------------------ *
- * 独立⑩⑪ 是 v91 审查（见 changelog/v91-review-02.md）发现、v92/v95 已修复
- * 缺陷的正向回归；独立⑫ 锁定仍未收敛的遗留行为。
+ * 独立⑩⑪⑫ 为正向回归（拒绝非 number 坐标、段中点贴合曲线、
+ * Centripetal Catmull-Rom α=0.5 收敛疏密不均控制点过冲）。
  * ------------------------------------------------------------------ */
 
 test('独立⑩[已修复回归]：sanitize 拒绝 null / 空串 / 布尔等非 number 坐标', () => {
@@ -385,10 +385,9 @@ test('独立⑪[已修复回归]：段中点「+」手柄落在渲染曲线上�
   assert.ok(Math.hypot(onCurve.x - 0, onCurve.y - 100) > 15, '该用例的曲线中点应明显偏离弦中点');
 });
 
-test('独立⑫[遗留行为锁定]：uniform Catmull-Rom 在疏密不均控制点下仍会冲出包围盒', () => {
-  // computeControlPointBezierSegments() 使用 (p2 - p0) / 6 的 uniform 参数化，
-  // 相邻间距悬殊时切线被放大。此处 5px 与 300px 相距悬殊，曲线向上过冲约 22px。
-  // 说明：v95 已删除文件头「Centripetal」表述，故这只是尚未收敛的几何行为，不再是注释与实现不符。
+test('独立⑫[已修复回归]：Centripetal Catmull-Rom（α=0.5）收敛疏密不均控制点的过冲', () => {
+  // computeControlPointBezierSegments() 已升级为 Centripetal Catmull-Rom（α=0.5），
+  // 在 5px 与 300px 间距悬殊的极端拐点下不再冲出包围盒 ~22px，过冲收敛至 1px 以内（约 -0.66px）。
   const { path } = buildControlPointEdgePath(0, 0, 5, 300, [{ x: 5, y: 0 }]);
   const { cubics } = parsePath(path);
 
@@ -399,7 +398,5 @@ test('独立⑫[遗留行为锁定]：uniform Catmull-Rom 在疏密不均控制�
     }
   }
 
-  // 控制点包围盒上界为 y=0，当前会过冲到约 y=-22.2；若将来改用 centripetal 参数化，
-  // 该断言会失败，届时请把阈值改为「不低于 -2」并同步 changelog。
-  assert.ok(minY < -15, `当前应出现明显过冲，实测最低点 y=${minY.toFixed(2)}`);
+  assert.ok(minY >= -2, `Centripetal 参数化应将过冲收敛在不低于 -2px，实测最低点 y=${minY.toFixed(2)}`);
 });
