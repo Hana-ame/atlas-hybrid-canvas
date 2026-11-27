@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyOverlayToBase, clearConflictingRuntimeVars, createEmptyOverlay, resolveEffectiveAnnotations, resolveEffectiveNodes, sanitizeEphemeralBlobVars } from '../src/core/layeredStore.ts';
+import {
+  applyInteractiveNodePatches,
+  applyOverlayToBase,
+  clearConflictingRuntimeVars,
+  createEmptyOverlay,
+  pickLocalNodePatch,
+  resolveEffectiveAnnotations,
+  resolveEffectiveNodes,
+  sanitizeEphemeralBlobVars,
+} from '../src/core/layeredStore.ts';
 import { createSeedBlueprint } from '../src/core/seedBlueprint.ts';
 
 test('resolveEffectiveNodes() lets vars control type, title, color, width, height, and pos/x/y', () => {
@@ -107,4 +116,66 @@ test('sanitizeEphemeralBlobVars() strips stale blob: pdfUrl across page reloads 
   assert.equal(cleaned.a.pdfTotalPages, 0);
   assert.equal(cleaned.b.pdfUrl, '/api/pdf/abc123');
   assert.equal(cleaned.c.pdfUrl, 'https://example.com/paper.pdf');
+});
+
+test('pickLocalNodePatch() filters out non-patch runtime keys', () => {
+  const dirtyPatch = {
+    title: 'New Title',
+    script: 'return 1;',
+    effectiveVars: { foo: 'bar' },
+    hasLocalOverride: true,
+    hasRuntimeVars: true,
+  } as Record<string, unknown>;
+  const picked = pickLocalNodePatch(dirtyPatch);
+  assert.deepEqual(picked, { title: 'New Title', script: 'return 1;' });
+});
+
+test('applyInteractiveNodePatches() keeps solo edits in overlay when offline, and promotes edits to base + strips shadowing overlay when collaborative', () => {
+  const base = createSeedBlueprint();
+  const initialRev = base.nodes['node-world-hub'].rev;
+  const overlay = createEmptyOverlay();
+  overlay.nodePatches['node-world-hub'] = { x: 111, title: 'Old Offline Title' };
+  overlay.runtimeVars['node-world-hub'] = { pos: { x: 222, y: 333 }, keepMe: 'ok' };
+
+  const offline = applyInteractiveNodePatches(
+    { base, overlay },
+    { 'node-world-hub': { x: 450, y: 550 } },
+    { collaborative: false, selfCid: 'browser-1' }
+  );
+  assert.equal(offline.base, base);
+  assert.equal(offline.overlay.nodePatches['node-world-hub']?.x, 450);
+  assert.equal(offline.overlay.nodePatches['node-world-hub']?.y, 550);
+  assert.equal(offline.overlay.nodePatches['node-world-hub']?.title, 'Old Offline Title');
+  assert.deepEqual(offline.overlay.runtimeVars['node-world-hub'], { keepMe: 'ok' });
+
+  const collab = applyInteractiveNodePatches(
+    offline,
+    { 'node-world-hub': { x: 700, y: 800, title: 'Collab Title' } },
+    { collaborative: true, selfCid: 'browser-1' }
+  );
+  assert.equal(collab.base.version, base.version + 1);
+  assert.equal(collab.base.nodes['node-world-hub'].x, 700);
+  assert.equal(collab.base.nodes['node-world-hub'].y, 800);
+  assert.equal(collab.base.nodes['node-world-hub'].title, 'Collab Title');
+  assert.equal(collab.base.nodes['node-world-hub'].rev, initialRev + 1);
+  assert.equal(collab.base.nodes['node-world-hub'].cid, 'browser-1');
+  assert.equal(collab.overlay.nodePatches['node-world-hub'], undefined);
+
+  const afterMcpUpdate = {
+    ...collab.base,
+    version: collab.base.version + 1,
+    nodes: {
+      ...collab.base.nodes,
+      'node-world-hub': {
+        ...collab.base.nodes['node-world-hub'],
+        x: 910,
+        title: 'MCP Updated Title',
+        rev: collab.base.nodes['node-world-hub'].rev + 1,
+        cid: 'mcp-agent',
+      },
+    },
+  };
+  const resolved = resolveEffectiveNodes(afterMcpUpdate, collab.overlay)['node-world-hub'];
+  assert.equal(resolved.x, 910);
+  assert.equal(resolved.title, 'MCP Updated Title');
 });

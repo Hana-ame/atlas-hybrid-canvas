@@ -271,6 +271,133 @@ export function clearConflictingRuntimeVars(
   return changed ? next : rtVars;
 }
 
+/**
+ * 从组件/检查器传入的节点补丁中提取受控字段，避免带入 runtime 派生字段。
+ */
+export function pickLocalNodePatch(patch: Partial<EffectiveBlueprintNode>): LocalNodePatch {
+  const out: LocalNodePatch = {};
+  if (patch.title !== undefined) out.title = patch.title;
+  if (patch.body !== undefined) out.body = patch.body;
+  if (patch.category !== undefined) out.category = patch.category;
+  if (patch.color !== undefined) out.color = patch.color;
+  if (patch.x !== undefined) out.x = patch.x;
+  if (patch.y !== undefined) out.y = patch.y;
+  if (patch.width !== undefined) out.width = patch.width;
+  if (patch.height !== undefined) out.height = patch.height;
+  if (patch.buttons !== undefined) out.buttons = patch.buttons;
+  if (patch.script !== undefined) out.script = patch.script;
+  if (patch.locked !== undefined) out.locked = patch.locked;
+  if (patch.inputPorts !== undefined) out.inputPorts = patch.inputPorts;
+  if (patch.outputPorts !== undefined) out.outputPorts = patch.outputPorts;
+  return out;
+}
+
+/**
+ * 将节点补丁直接写入权威底座 BaseBlueprint（用于协同房间联机编辑，以便通过 WS upsert_node 同步给 MCP 与协作者）。
+ */
+export function applyNodePatchesToBase(
+  base: BaseBlueprint,
+  patches: Record<string, LocalNodePatch>,
+  selfCid: string
+): BaseBlueprint {
+  let nextNodes: Record<string, BaseBlueprint['nodes'][string]> | null = null;
+  for (const [nodeId, patch] of Object.entries(patches)) {
+    const cur = (nextNodes ?? base.nodes)[nodeId];
+    if (!cur || Object.keys(patch).length === 0) continue;
+    if (!nextNodes) nextNodes = { ...base.nodes };
+    nextNodes[nodeId] = {
+      ...cur,
+      ...patch,
+      rev: cur.rev + 1,
+      cid: selfCid,
+    };
+  }
+  if (!nextNodes) return base;
+  return {
+    ...base,
+    version: base.version + 1,
+    nodes: nextNodes,
+  };
+}
+
+/**
+ * 更新本地 overlay：
+ * - `stripOverlay=false`（离线单机）：把补丁写入 overlay.nodePatches 并清理冲突 runtimeVars；
+ * - `stripOverlay=true`（联机协同）：剥离已被权威底座吸收的同名覆盖键，防止本地旧补丁遮蔽远端/MCP 更新。
+ */
+export function applyNodePatchesToOverlay(
+  overlay: LocalOverlayState,
+  patches: Record<string, LocalNodePatch>,
+  stripOverlay: boolean
+): LocalOverlayState {
+  let nextRuntimeVars = overlay.runtimeVars;
+  let nextNodePatches = overlay.nodePatches;
+  for (const [nodeId, patch] of Object.entries(patches)) {
+    const patchKeys = Object.keys(patch);
+    if (patchKeys.length === 0) continue;
+
+    const cleanedRt = clearConflictingRuntimeVars(nextRuntimeVars[nodeId], patch);
+    if (cleanedRt !== nextRuntimeVars[nodeId]) {
+      if (nextRuntimeVars === overlay.runtimeVars) nextRuntimeVars = { ...overlay.runtimeVars };
+      nextRuntimeVars[nodeId] = cleanedRt!;
+    }
+
+    if (stripOverlay) {
+      const existingPatch = nextNodePatches[nodeId];
+      if (!existingPatch) continue;
+      let trimmed: LocalNodePatch | null = null;
+      for (const key of patchKeys) {
+        if (key in existingPatch) {
+          if (!trimmed) trimmed = { ...existingPatch };
+          delete trimmed[key as keyof LocalNodePatch];
+        }
+      }
+      if (trimmed) {
+        if (nextNodePatches === overlay.nodePatches) nextNodePatches = { ...overlay.nodePatches };
+        if (Object.keys(trimmed).length === 0) {
+          delete nextNodePatches[nodeId];
+        } else {
+          nextNodePatches[nodeId] = trimmed;
+        }
+      }
+    } else {
+      if (nextNodePatches === overlay.nodePatches) nextNodePatches = { ...overlay.nodePatches };
+      nextNodePatches[nodeId] = {
+        ...(nextNodePatches[nodeId] ?? {}),
+        ...patch,
+      };
+    }
+  }
+  if (nextRuntimeVars === overlay.runtimeVars && nextNodePatches === overlay.nodePatches) {
+    return overlay;
+  }
+  return {
+    ...overlay,
+    runtimeVars: nextRuntimeVars,
+    nodePatches: nextNodePatches,
+  };
+}
+
+/**
+ * 统一分派交互式节点修改：联机写入 base（触发 WS 协同同步）并剥离遮蔽补丁，单机仅写入 overlay。
+ */
+export function applyInteractiveNodePatches(
+  state: { base: BaseBlueprint; overlay: LocalOverlayState },
+  patches: Record<string, LocalNodePatch>,
+  options: { collaborative: boolean; selfCid: string }
+): { base: BaseBlueprint; overlay: LocalOverlayState } {
+  if (options.collaborative) {
+    return {
+      base: applyNodePatchesToBase(state.base, patches, options.selfCid),
+      overlay: applyNodePatchesToOverlay(state.overlay, patches, true),
+    };
+  }
+  return {
+    base: state.base,
+    overlay: applyNodePatchesToOverlay(state.overlay, patches, false),
+  };
+}
+
 export function resolveEffectiveNodes(
   base: BaseBlueprint,
   overlay: LocalOverlayState

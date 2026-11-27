@@ -89,11 +89,13 @@ import { findNonOverlappingPosition, type RectBox } from './core/placement';
 import { ChunkTileCache } from './core/chunkTileCache';
 import { computeThreeRingBounds, filterVisibleEdges, isBoxIntersecting } from './core/viewportCulling';
 import {
+  applyNodePatchesToBase,
+  applyNodePatchesToOverlay,
   applyOverlayToBase,
-  clearConflictingRuntimeVars,
   createEmptyOverlay,
   flushLocalOverlaySave,
   loadLocalOverlay,
+  pickLocalNodePatch,
   resolveEffectiveAnnotations,
   resolveEffectiveNodes,
 } from './core/layeredStore';
@@ -124,6 +126,7 @@ import type {
   BlueprintTemplate,
   CanvasAnnotation,
   EffectiveBlueprintNode,
+  LocalNodePatch,
   LocalOverlayState,
   LODLevel,
   WidgetButtonSpec,
@@ -343,6 +346,8 @@ function HybridCanvasWorkspace() {
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
   const [roomStatus, setRoomStatus] = useState<RoomStatus>('disconnected');
+  const roomStatusRef = useRef<RoomStatus>(roomStatus);
+  roomStatusRef.current = roomStatus;
   const [statusLog, setStatusLog] = useState<string>('');
   const [scriptLogsByNode, setScriptLogsByNode] = useState<Record<string, ScriptConsoleEntry[]>>({});
 
@@ -1505,29 +1510,23 @@ function HybridCanvasWorkspace() {
     [executeUnifiedWidgetScript]
   );
 
+  const commitInteractiveNodePatches = useCallback((patches: Record<string, LocalNodePatch>) => {
+    const collaborative = roomStatusRef.current === 'connected';
+    if (collaborative) {
+      setBase((prev) => applyNodePatchesToBase(prev, patches, SELF_CID));
+    }
+    setOverlay((prev) => applyNodePatchesToOverlay(prev, patches, collaborative));
+  }, []);
+
   const handleToggleLock = useCallback((nodeId: string) => {
     const cur = effectiveNodesRef.current[nodeId];
     if (!cur) return;
     pushHistory();
     const nextLocked = !cur.locked;
-    setOverlay((prev) => {
-      const cleanedRt = clearConflictingRuntimeVars(prev.runtimeVars[nodeId], { locked: nextLocked });
-      const nextRuntimeVars =
-        cleanedRt !== prev.runtimeVars[nodeId]
-          ? { ...prev.runtimeVars, [nodeId]: cleanedRt! }
-          : prev.runtimeVars;
-      return {
-        ...prev,
-        runtimeVars: nextRuntimeVars,
-        nodePatches: {
-          ...prev.nodePatches,
-          [nodeId]: { ...(prev.nodePatches[nodeId] ?? {}), locked: nextLocked },
-        },
-      };
-    });
+    commitInteractiveNodePatches({ [nodeId]: { locked: nextLocked } });
     setChunkSyncTick((t) => t + 1);
     setStatusLog(nextLocked ? `已锁定「${cur.title}」（防误拖，按钮与输入框仍可操作）` : `已解锁「${cur.title}」`);
-  }, [pushHistory]);
+  }, [commitInteractiveNodePatches, pushHistory]);
 
   const handleRunScriptRefresh = useCallback(
     (nodeId: string) => {
@@ -1570,50 +1569,23 @@ function HybridCanvasWorkspace() {
   }, [executeUnifiedWidgetScript]);
 
   const handlePatchNode = useCallback((nodeId: string, patch: Partial<EffectiveBlueprintNode>) => {
+    const cleanPatch = pickLocalNodePatch(patch);
+    if (Object.keys(cleanPatch).length === 0) return;
     pushHistory();
-    setOverlay((prev) => {
-      const cleanedRt = clearConflictingRuntimeVars(prev.runtimeVars[nodeId], patch);
-      const nextRuntimeVars =
-        cleanedRt !== prev.runtimeVars[nodeId]
-          ? { ...prev.runtimeVars, [nodeId]: cleanedRt! }
-          : prev.runtimeVars;
-      return {
-        ...prev,
-        runtimeVars: nextRuntimeVars,
-        nodePatches: {
-          ...prev.nodePatches,
-          [nodeId]: {
-            ...(prev.nodePatches[nodeId] ?? {}),
-            ...(patch.title !== undefined ? { title: patch.title } : {}),
-            ...(patch.body !== undefined ? { body: patch.body } : {}),
-            ...(patch.category !== undefined ? { category: patch.category } : {}),
-            ...(patch.color !== undefined ? { color: patch.color } : {}),
-            ...(patch.x !== undefined ? { x: patch.x } : {}),
-            ...(patch.y !== undefined ? { y: patch.y } : {}),
-            ...(patch.width !== undefined ? { width: patch.width } : {}),
-            ...(patch.height !== undefined ? { height: patch.height } : {}),
-            ...(patch.buttons !== undefined ? { buttons: patch.buttons } : {}),
-            ...(patch.script !== undefined ? { script: patch.script } : {}),
-            ...(patch.locked !== undefined ? { locked: patch.locked } : {}),
-            ...(patch.inputPorts !== undefined ? { inputPorts: patch.inputPorts } : {}),
-            ...(patch.outputPorts !== undefined ? { outputPorts: patch.outputPorts } : {}),
-          },
-        },
-      };
-    });
+    commitInteractiveNodePatches({ [nodeId]: cleanPatch });
     if (
-      patch.x !== undefined ||
-      patch.y !== undefined ||
-      patch.width !== undefined ||
-      patch.height !== undefined ||
-      patch.title !== undefined ||
-      patch.color !== undefined ||
-      patch.category !== undefined ||
-      patch.locked !== undefined
+      cleanPatch.x !== undefined ||
+      cleanPatch.y !== undefined ||
+      cleanPatch.width !== undefined ||
+      cleanPatch.height !== undefined ||
+      cleanPatch.title !== undefined ||
+      cleanPatch.color !== undefined ||
+      cleanPatch.category !== undefined ||
+      cleanPatch.locked !== undefined
     ) {
       setChunkSyncTick((t) => t + 1);
     }
-  }, [pushHistory]);
+  }, [commitInteractiveNodePatches, pushHistory]);
 
   const handleEditTitle = useCallback(
     (nodeId: string, nextTitle: string) => {
@@ -2348,19 +2320,11 @@ function HybridCanvasWorkspace() {
     }
 
     if (widgetFinals.length > 0) {
-      setOverlay((o) => {
-        const nextPatches = { ...o.nodePatches };
-        let nextRuntimeVars = o.runtimeVars;
-        for (const u of widgetFinals) {
-          nextPatches[u.id] = { ...(nextPatches[u.id] ?? {}), x: u.x, y: u.y };
-          const cleanedRt = clearConflictingRuntimeVars(nextRuntimeVars[u.id], { x: u.x, y: u.y });
-          if (cleanedRt !== nextRuntimeVars[u.id]) {
-            if (nextRuntimeVars === o.runtimeVars) nextRuntimeVars = { ...o.runtimeVars };
-            nextRuntimeVars[u.id] = cleanedRt!;
-          }
-        }
-        return { ...o, runtimeVars: nextRuntimeVars, nodePatches: nextPatches };
-      });
+      const dragPatches: Record<string, LocalNodePatch> = {};
+      for (const u of widgetFinals) {
+        dragPatches[u.id] = { x: u.x, y: u.y };
+      }
+      commitInteractiveNodePatches(dragPatches);
       setChunkSyncTick((t) => t + 1);
     }
 
@@ -2375,7 +2339,7 @@ function HybridCanvasWorkspace() {
       });
       setChunkSyncTick((t) => t + 1);
     }
-  }, [pushHistory, handleDeleteNode, handleDeleteAnnotation]);
+  }, [commitInteractiveNodePatches, pushHistory, handleDeleteNode, handleDeleteAnnotation]);
 
   // 由起点/终点控件自带脚本（onValidateConnect）决定是否放行连线；未注册钩子时默认允许自由拓扑（含环路）
   const validateConnectionByWidgets = useCallback(
