@@ -7,6 +7,7 @@ import {
   hasBackend,
   defaultRoomWsUrl,
   parseForceBackendProxy,
+  parseEnableWebRtcP2p,
   shouldUseBackendProxy,
 } from '../src/core/runtimeConfig.ts';
 import { executeHttpButtonAction } from '../src/core/httpButton.ts';
@@ -306,4 +307,13 @@ test('httpButton: executeHttpButtonAction supports direct CORS/same-origin fetch
     fakeFetch
   );
   assert.equal(blockedRes.ok, false);
+});
+
+test('runtimeConfig: parseEnableWebRtcP2p toggles optional WebRTC P2P mesh cleanly', () => {
+  assert.equal(parseEnableWebRtcP2p(undefined), true);
+  assert.equal(parseEnableWebRtcP2p(''), true);
+  assert.equal(parseEnableWebRtcP2p('true'), true);
+  assert.equal(parseEnableWebRtcP2p('false'), false);
+  assert.equal(parseEnableWebRtcP2p('0'), false);
+  assert.equal(parseEnableWebRtcP2p('off'), false);
 });

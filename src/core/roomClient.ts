@@ -1,5 +1,6 @@
 import { appendProxyTokenQuery, buildWsAuthProtocols } from './apiClient';
 import { buildRoomWsUrl, normalizeRoomPath } from './roomPath';
+import { enableWebRtcP2p } from './runtimeConfig';
 import { RoomWebRtcMesh, type RtcSignalMessage } from './webrtcMesh';
 /**
  * @file roomClient.ts
@@ -131,21 +132,23 @@ export class CollaborativeRoomClient {
       };
 
       this.rtcMesh?.closeAll();
-      this.rtcMesh = new RoomWebRtcMesh({
-        selfCid: this.cid,
-        sendSignal: (sig) => this.sendImmediate(ws, sig),
-        onDataMessage: (raw) => {
-          if (this.isDuplicateFrame(raw)) return;
-          try {
-            const p2pMsg = JSON.parse(raw) as RoomWireMessage;
-            if (p2pMsg && typeof p2pMsg === 'object' && typeof p2pMsg.t === 'string') {
-              this.onRemoteMessage(p2pMsg);
-            }
-          } catch {
-            // ignore malformed P2P frame
-          }
-        },
-      });
+      this.rtcMesh = enableWebRtcP2p()
+        ? new RoomWebRtcMesh({
+            selfCid: this.cid,
+            sendSignal: (sig) => this.sendImmediate(ws, sig),
+            onDataMessage: (raw) => {
+              if (this.isDuplicateFrame(raw)) return;
+              try {
+                const p2pMsg = JSON.parse(raw) as RoomWireMessage;
+                if (p2pMsg && typeof p2pMsg === 'object' && typeof p2pMsg.t === 'string') {
+                  this.onRemoteMessage(p2pMsg);
+                }
+              } catch {
+                // ignore malformed P2P frame
+              }
+            },
+          })
+        : null;
 
       ws.onmessage = (ev) => {
         if (this.ws !== ws) return;

@@ -20,6 +20,9 @@ const RAW_BACKEND_WS_URL = String((import.meta.env ?? {} as Record<string, strin
 const RAW_FORCE_BACKEND_PROXY = String(
   (import.meta.env ?? {} as Record<string, string | undefined>).VITE_FORCE_BACKEND_PROXY ?? ''
 ).trim();
+const RAW_ENABLE_WEBRTC_P2P = String(
+  (import.meta.env ?? {} as Record<string, string | undefined>).VITE_ENABLE_WEBRTC_P2P ?? ''
+).trim();
 
 /** 解析是否强制走后端 /api/proxy 的配置值；默认 true，设为 false/0/off/no 时放行直接 CORS/同源请求。 */
 export function parseForceBackendProxy(raw: string | undefined): boolean {
@@ -38,6 +41,20 @@ export function forceBackendProxy(): boolean {
 /** 结合单项显式覆盖与全局默认值，判定本次请求是否应走 /api/proxy。 */
 export function shouldUseBackendProxy(explicit?: boolean): boolean {
   return explicit !== undefined ? Boolean(explicit) : forceBackendProxy();
+}
+
+/** 解析是否启用 WebRTC P2P DataChannel 辅助通道；默认 true（设为 false/0/off/no 时关闭，纯走 WS 服务端协同）。 */
+export function parseEnableWebRtcP2p(raw: string | undefined): boolean {
+  const norm = String(raw ?? '').trim().toLowerCase();
+  if (norm === 'false' || norm === '0' || norm === 'off' || norm === 'no') {
+    return false;
+  }
+  return true;
+}
+
+/** 当前构建是否启用 WebRTC P2P 网格（Docker 部署默认关闭，仅使用 WS 服务端中继）。 */
+export function enableWebRtcP2p(): boolean {
+  return parseEnableWebRtcP2p(RAW_ENABLE_WEBRTC_P2P);
 }
 
 export interface RuntimeLocationLike {
