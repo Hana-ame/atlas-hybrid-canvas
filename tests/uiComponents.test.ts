@@ -12,6 +12,8 @@ import { NodeInspectorPanel } from '../src/components/NodeInspectorPanel.tsx';
 import { VersionHistoryDrawer } from '../src/components/VersionHistoryDrawer.tsx';
 import { WidgetHistoryPopover } from '../src/components/WidgetHistoryPopover.tsx';
 import { EdgeInspectorPanel } from '../src/components/EdgeInspectorPanel.tsx';
+import { ElyfnRunnerBlock } from '../src/canvas/ElyfnRunnerBlock.tsx';
+import { GitGatewayBlock } from '../src/canvas/GitGatewayBlock.tsx';
 import { buildControlPointEdgePath, resolveEdgeStrokeDasharray } from '../src/core/edgePath.ts';
 import { ImageNodeBlock } from '../src/canvas/ImageNodeBlock.tsx';
 import { VideoNodeBlock } from '../src/canvas/VideoNodeBlock.tsx';
@@ -572,4 +574,43 @@ test('Edge styles (pathType, strokeStyle, strokeWidth) and EdgeInspectorPanel re
   assert.ok(panelHtml.includes('平滑曲线') && panelHtml.includes('直线') && panelHtml.includes('直角折线'), 'panel should list path types');
   assert.ok(panelHtml.includes('实线') && panelHtml.includes('虚线') && panelHtml.includes('点线'), 'panel should list stroke styles');
   assert.ok(panelHtml.includes('流动动画') && panelHtml.includes('单线双向连线'), 'panel should expose animation and bidirectional toggles');
+});
+
+test('ElyfnRunnerBlock and GitGatewayBlock render controls and last state cleanly', () => {
+  const noop = () => {};
+  const elyfnHtml = renderToStaticMarkup(
+    React.createElement(ElyfnRunnerBlock, {
+      baseUrl: '',
+      selectedFn: 'demo/square',
+      payloadText: '{"x":5}',
+      autoRefreshSec: 30,
+      lastStatus: '200 OK',
+      lastResult: '{"square":25}',
+      lastUpdatedAt: '12:00:00',
+      mediaActive: false,
+      onChangeBaseUrl: noop,
+      onChangeSelectedFn: noop,
+      onChangePayload: noop,
+      onRunResult: noop,
+    })
+  );
+  assert.ok(elyfnHtml.includes('demo/square'), 'ElyfnRunnerBlock should show selected function');
+  assert.ok(elyfnHtml.includes('200 OK'), 'ElyfnRunnerBlock should show last status');
+  assert.ok(elyfnHtml.includes('30s'), 'ElyfnRunnerBlock should expose auto-refresh interval options');
+
+  const ggHtml = renderToStaticMarkup(
+    React.createElement(GitGatewayBlock, {
+      baseUrl: '',
+      selectedRepo: 'Hana-ame/elyfn',
+      activeTab: 'prs',
+      autoRefreshSec: 60,
+      mediaActive: false,
+      onChangeBaseUrl: noop,
+      onChangeSelectedRepo: noop,
+      onChangeActiveTab: noop,
+      onSyncState: noop,
+    })
+  );
+  assert.ok(ggHtml.includes('PRs') || ggHtml.includes('TODO'), 'GitGatewayBlock should show PRs / TODO tabs');
+  assert.ok(ggHtml.includes('60s'), 'GitGatewayBlock should expose auto-refresh interval options');
 });

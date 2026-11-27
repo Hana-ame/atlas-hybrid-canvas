@@ -220,3 +220,42 @@ test('applyAgentOperations() blocks unsafe URLs in defaultVars.contents and unsa
   ]);
   assert.equal(r2.ok, false);
 });
+
+test('connect_edge and summarizeBlueprintForAgent support strokeStyle, strokeWidth, pathType, and animated', () => {
+  const res = applyAgentOperations(null, [
+    { op: 'create_widget', id: 'n-src', title: 'Source' },
+    { op: 'create_widget', id: 'n-dst', title: 'Target' },
+    {
+      op: 'connect_edge',
+      id: 'e-custom-style',
+      source: 'n-src',
+      target: 'n-dst',
+      label: 'Styled',
+      color: '#059669',
+      strokeStyle: 'dotted',
+      strokeWidth: 3.5,
+      pathType: 'step',
+      animated: true,
+    },
+  ]);
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  const edge = res.blueprint.edges['e-custom-style'];
+  assert.equal(edge.strokeStyle, 'dotted');
+  assert.equal(edge.strokeWidth, 3.5);
+  assert.equal(edge.pathType, 'step');
+  assert.equal(edge.animated, true);
+  assert.equal(edge.dashed, true);
+
+  const summary = summarizeBlueprintForAgent(res.blueprint);
+  assert.equal(summary.edges[0].strokeStyle, 'dotted');
+  assert.equal(summary.edges[0].pathType, 'step');
+  assert.equal(summary.edges[0].strokeWidth, 3.5);
+  assert.equal(summary.edges[0].animated, true);
+
+  const schema = getAgentToolSchema();
+  const opsTool = schema.find((t) => t.name === 'atlas_canvas_ops') as any;
+  const props = opsTool.parameters.properties.ops.items.properties;
+  assert.deepEqual(props.strokeStyle.enum, ['solid', 'dashed', 'dotted']);
+  assert.deepEqual(props.pathType.enum, ['smooth', 'straight', 'step']);
+});

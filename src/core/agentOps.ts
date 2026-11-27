@@ -22,6 +22,8 @@ import type {
   BlueprintNode,
   CanvasAnnotation,
   ContentFlowItem,
+  EdgePathType,
+  EdgeStrokeStyle,
   NodePortSpec,
   WidgetButtonSpec,
 } from './types';
@@ -149,6 +151,10 @@ export interface ConnectEdgeOp {
   label?: string;
   color?: string;
   dashed?: boolean;
+  strokeStyle?: EdgeStrokeStyle;
+  strokeWidth?: number;
+  pathType?: EdgePathType;
+  animated?: boolean;
   bidirectional?: boolean;
   controlPoints?: Array<{ x: number; y: number }>;
 }
@@ -223,6 +229,10 @@ export interface AgentBlueprintSummary {
     source: string;
     target: string;
     label?: string;
+    strokeStyle?: EdgeStrokeStyle;
+    strokeWidth?: number;
+    pathType?: EdgePathType;
+    animated?: boolean;
     bidirectional?: boolean;
     controlPoints?: Array<{ x: number; y: number }>;
   }>;
@@ -386,6 +396,10 @@ export function summarizeBlueprintForAgent(raw: unknown): AgentBlueprintSummary 
       source: e.source,
       target: e.target,
       label: e.label,
+      ...(e.strokeStyle ? { strokeStyle: e.strokeStyle } : {}),
+      ...(typeof e.strokeWidth === 'number' ? { strokeWidth: e.strokeWidth } : {}),
+      ...(e.pathType ? { pathType: e.pathType } : {}),
+      ...(e.animated !== undefined ? { animated: e.animated } : {}),
       bidirectional: e.bidirectional,
       ...(cleanCps.length > 0 ? { controlPoints: cleanCps } : {}),
     };
@@ -754,6 +768,18 @@ export function applyAgentOperations(
           return { ok: false, error: `连线终点节点不存在：${String(item.target || '')}`, failedIndex: i };
         }
         const id = sanitizeId(item.id, 'agent-edge', next.edges);
+        const validStrokeStyle =
+          item.strokeStyle === 'solid' || item.strokeStyle === 'dashed' || item.strokeStyle === 'dotted'
+            ? item.strokeStyle
+            : undefined;
+        const validPathType =
+          item.pathType === 'smooth' || item.pathType === 'straight' || item.pathType === 'step'
+            ? item.pathType
+            : undefined;
+        const validStrokeWidth =
+          typeof item.strokeWidth === 'number' && Number.isFinite(item.strokeWidth)
+            ? Math.max(1, Math.min(8, item.strokeWidth))
+            : undefined;
         const edge: BlueprintEdge = {
           id,
           source: item.source,
@@ -762,7 +788,11 @@ export function applyAgentOperations(
           targetHandle: typeof item.targetHandle === 'string' ? item.targetHandle : undefined,
           label: typeof item.label === 'string' ? item.label.slice(0, 60) : undefined,
           color: typeof item.color === 'string' && item.color.trim() ? item.color.trim() : undefined,
-          dashed: Boolean(item.dashed),
+          dashed: validStrokeStyle ? validStrokeStyle !== 'solid' : Boolean(item.dashed),
+          ...(validStrokeStyle ? { strokeStyle: validStrokeStyle } : {}),
+          ...(validStrokeWidth !== undefined ? { strokeWidth: validStrokeWidth } : {}),
+          ...(validPathType ? { pathType: validPathType } : {}),
+          ...(typeof item.animated === 'boolean' ? { animated: item.animated } : {}),
           bidirectional: Boolean(item.bidirectional),
           controlPoints: (() => {
             const cps = item.controlPoints ? sanitizeControlPoints(item.controlPoints) : [];
@@ -886,6 +916,10 @@ export function getAgentToolSchema() {
                 mergeVars: { type: 'boolean' },
                 source: { type: 'string' },
                 target: { type: 'string' },
+                strokeStyle: { type: 'string', enum: ['solid', 'dashed', 'dotted'] },
+                strokeWidth: { type: 'number' },
+                pathType: { type: 'string', enum: ['smooth', 'straight', 'step'] },
+                animated: { type: 'boolean' },
                 bidirectional: { type: 'boolean' },
                 controlPoints: {
                   type: 'array',
