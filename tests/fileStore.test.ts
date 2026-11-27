@@ -97,6 +97,22 @@ test('createRoomBlueprintStoreRegistry() records modification history, deduplica
     const listAfter = await store2.listHistory();
     assert.equal(listAfter[0].action, 'rollback');
     assert.equal(listAfter[0].version, 3);
+
+    const n1Hist = await store2.listHistory({ nodeId: 'n1' });
+    assert.deepEqual(
+      n1Hist.map((e) => e.version),
+      [3, 2, 1],
+      'n1 was created in v1, title updated in v2, and rolled back in v3'
+    );
+    assert.ok(n1Hist[1].summary.includes('标题'), 'per-node history should summarize changed fields');
+
+    const n2Hist = await store2.listHistory({ nodeId: 'n2' });
+    assert.deepEqual(
+      n2Hist.map((e) => e.version),
+      [3, 2],
+      'n2 only existed in v2 and was deleted on rollback to v1 in v3'
+    );
+    assert.ok(n2Hist[0].summary.includes('删除控件'));
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }

@@ -189,10 +189,12 @@ export interface ContentElyfnRunnerBlock {
   selectedFn?: string;
   payloadText?: string;
   autoRefreshSec?: number;
+  asyncMode?: boolean;
   bindBaseUrl?: string;
   bindSelectedFn?: string;
   bindPayload?: string;
   bindAutoRefresh?: string;
+  bindAsyncMode?: string;
 }
 
 export interface ContentGitGatewayBlock {

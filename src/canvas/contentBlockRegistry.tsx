@@ -509,10 +509,15 @@ export const CONTENT_BLOCK_REGISTRY: {
     const fnKey = block.bindSelectedFn || 'fnSelected';
     const payloadKey = block.bindPayload || 'fnPayload';
     const refreshKey = block.bindAutoRefresh || 'fnAutoRefreshSec';
+    const asyncKey = block.bindAsyncMode || 'fnAsyncMode';
     const curRefresh =
       entity.effectiveVars?.[refreshKey] !== undefined
         ? Number(entity.effectiveVars[refreshKey]) || 0
         : Number(block.autoRefreshSec) || 0;
+    const curAsync =
+      entity.effectiveVars?.[asyncKey] !== undefined
+        ? parseVarBoolean(entity.effectiveVars[asyncKey])
+        : Boolean(block.asyncMode);
     const curBase =
       entity.effectiveVars?.[baseKey] !== undefined
         ? String(entity.effectiveVars[baseKey])
@@ -532,6 +537,7 @@ export const CONTENT_BLOCK_REGISTRY: {
           selectedFn={curFn}
           payloadText={curPayload}
           autoRefreshSec={curRefresh}
+          asyncMode={curAsync}
           lastStatus={entity.effectiveVars?.fnLastStatus !== undefined ? String(entity.effectiveVars.fnLastStatus) : ''}
           lastResult={entity.effectiveVars?.fnLastResult !== undefined ? String(entity.effectiveVars.fnLastResult) : ''}
           lastUpdatedAt={entity.effectiveVars?.fnUpdatedAt !== undefined ? String(entity.effectiveVars.fnUpdatedAt) : ''}
@@ -540,6 +546,7 @@ export const CONTENT_BLOCK_REGISTRY: {
           onChangeSelectedFn={(next) => onScriptInputChange(entity.id, fnKey, next)}
           onChangePayload={(next) => onScriptInputChange(entity.id, payloadKey, next)}
           onChangeAutoRefreshSec={(nextSec) => onScriptInputChange(entity.id, refreshKey, String(nextSec))}
+          onChangeAsyncMode={(next) => onScriptInputChange(entity.id, asyncKey, String(next))}
           onRunResult={({ selectedFn, status, result, updatedAt, error }) => {
             const patch = {
               [fnKey]: selectedFn,

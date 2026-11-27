@@ -486,6 +486,8 @@ test('WidgetNode exposes always-visible history button and WidgetHistoryPopover 
   );
 
   assert.ok(widgetHtml.includes('title="查看控件版本历史"'), 'widget card should expose always-visible history button');
+  assert.ok(widgetHtml.includes('right-12'), 'hover bar must shift right-12 so it does not cover permanent History + Lock buttons');
+  assert.ok(widgetHtml.includes('aria-pressed="true"'), 'history button should reflect active open state');
   assert.ok(widgetHtml.includes('aria-label="History Visible Card 变更历史"'), 'widget should render WidgetHistoryPopover when open');
   assert.ok(widgetHtml.includes('v2') && widgetHtml.includes('v1'), 'popover should display version entries');
 
@@ -608,6 +610,7 @@ test('ElyfnRunnerBlock and GitGatewayBlock render controls and last state cleanl
       selectedFn: 'demo/square',
       payloadText: '{"x":5}',
       autoRefreshSec: 30,
+      asyncMode: true,
       lastStatus: '200 OK',
       lastResult: '{"square":25}',
       lastUpdatedAt: '12:00:00',
@@ -621,6 +624,7 @@ test('ElyfnRunnerBlock and GitGatewayBlock render controls and last state cleanl
   assert.ok(elyfnHtml.includes('demo/square'), 'ElyfnRunnerBlock should show selected function');
   assert.ok(elyfnHtml.includes('200 OK'), 'ElyfnRunnerBlock should show last status');
   assert.ok(elyfnHtml.includes('30s'), 'ElyfnRunnerBlock should expose auto-refresh interval options');
+  assert.ok(elyfnHtml.includes('异步'), 'ElyfnRunnerBlock should expose async background execution toggle');
 
   const ggHtml = renderToStaticMarkup(
     React.createElement(GitGatewayBlock, {

@@ -74,7 +74,7 @@ export interface RoomBlueprintStore extends BlueprintStore {
     action: RoomHistoryAction,
     opts?: { actor?: string; summary?: string; blueprint?: unknown }
   ) => Promise<RoomHistoryMeta | null>;
-  listHistory: () => Promise<RoomHistoryMeta[]>;
+  listHistory: (opts?: { nodeId?: string }) => Promise<RoomHistoryMeta[]>;
   rollbackToVersion: (
     version: number,
     actor?: string
@@ -82,6 +82,48 @@ export interface RoomBlueprintStore extends BlueprintStore {
 }
 
 const MAX_HISTORY_ENTRIES = 50;
+
+function extractSnapshotNode(blueprint: unknown, nodeId: string): Record<string, unknown> | null {
+  if (!blueprint || typeof blueprint !== 'object') return null;
+  const nodes = (blueprint as { nodes?: unknown }).nodes;
+  if (!nodes || typeof nodes !== 'object') return null;
+  const node = (nodes as Record<string, unknown>)[nodeId];
+  return node && typeof node === 'object' ? (node as Record<string, unknown>) : null;
+}
+
+function summarizeNodeDiff(
+  prevNode: Record<string, unknown> | null,
+  curNode: Record<string, unknown> | null
+): string | null {
+  if (!prevNode && !curNode) return null;
+  if (!prevNode && curNode) {
+    const title = typeof curNode.title === 'string' && curNode.title.trim() ? `「${curNode.title.trim()}」` : '';
+    return `创建控件${title}`;
+  }
+  if (prevNode && !curNode) {
+    return '删除控件';
+  }
+  if (JSON.stringify(prevNode) === JSON.stringify(curNode)) return null;
+
+  const p = prevNode!;
+  const c = curNode!;
+  const changed: string[] = [];
+  if (p.title !== c.title) changed.push('标题');
+  if (p.body !== c.body) changed.push('正文');
+  if (p.x !== c.x || p.y !== c.y || p.width !== c.width || p.height !== c.height) changed.push('位置/尺寸');
+  if (JSON.stringify(p.defaultVars ?? {}) !== JSON.stringify(c.defaultVars ?? {})) changed.push('变量');
+  if (JSON.stringify(p.buttons ?? []) !== JSON.stringify(c.buttons ?? [])) changed.push('按钮');
+  if (p.script !== c.script) changed.push('脚本');
+  if (p.locked !== c.locked) changed.push('锁定');
+  if (p.color !== c.color || p.category !== c.category) changed.push('外观');
+  if (
+    JSON.stringify(p.inputPorts ?? []) !== JSON.stringify(c.inputPorts ?? []) ||
+    JSON.stringify(p.outputPorts ?? []) !== JSON.stringify(c.outputPorts ?? [])
+  ) {
+    changed.push('端口');
+  }
+  return changed.length > 0 ? `修改：${changed.join('、')}` : '更新控件属性';
+}
 
 function createSingleFileBlueprintStore(filePath: string, roomPath: string): RoomBlueprintStore {
   const historyPath = filePath.replace(/\.json$/i, '.history.json');
@@ -235,18 +277,38 @@ function createSingleFileBlueprintStore(filePath: string, roomPath: string): Roo
         summary: entry.summary,
       };
     },
-    async listHistory() {
+    async listHistory(opts) {
       await ensureHistoryLoaded();
-      return historyEntries
-        .slice()
-        .reverse()
-        .map(({ version, ts, action, actor, summary }) => ({
-          version,
-          ts,
-          action,
-          actor,
-          summary,
-        }));
+      const targetNodeId = opts?.nodeId?.trim();
+      if (!targetNodeId) {
+        return historyEntries
+          .slice()
+          .reverse()
+          .map(({ version, ts, action, actor, summary }) => ({
+            version,
+            ts,
+            action,
+            actor,
+            summary,
+          }));
+      }
+      const filtered: RoomHistoryMeta[] = [];
+      let prevNode: Record<string, unknown> | null = null;
+      for (const entry of historyEntries) {
+        const curNode = extractSnapshotNode(entry.blueprint, targetNodeId);
+        const diffSummary = summarizeNodeDiff(prevNode, curNode);
+        if (diffSummary !== null) {
+          filtered.push({
+            version: entry.version,
+            ts: entry.ts,
+            action: entry.action,
+            actor: entry.actor,
+            summary: entry.action === 'rollback' ? `${entry.summary}（${diffSummary}）` : diffSummary,
+          });
+        }
+        prevNode = curNode;
+      }
+      return filtered.reverse();
     },
     async rollbackToVersion(version, actor = 'admin') {
       await ensureLoaded();

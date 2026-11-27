@@ -187,35 +187,58 @@ function HybridCanvasWorkspace() {
   const [roomHistory, setRoomHistory] = useState<RoomHistoryEntryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const historyReqSeqRef = useRef(0);
+  const [widgetHistory, setWidgetHistory] = useState<RoomHistoryEntryItem[]>([]);
+  const [widgetHistoryLoading, setWidgetHistoryLoading] = useState(false);
+  const widgetHistoryReqSeqRef = useRef(0);
+
+  const fetchHistoryEntries = useCallback(async (nodeId?: string): Promise<RoomHistoryEntryItem[] | null> => {
+    try {
+      const resp = await fetch(buildRoomHistoryUrl(roomNameRef.current, nodeId), {
+        headers: proxyHeaders(),
+        credentials: 'same-origin',
+      });
+      if (!resp.ok) return null;
+      const json = (await resp.json()) as { ok?: boolean; entries?: RoomHistoryEntryItem[] };
+      return json.ok && Array.isArray(json.entries) ? json.entries : null;
+    } catch {
+      return null;
+    }
+  }, []);
 
   const loadRoomHistory = useCallback(async () => {
     const seq = ++historyReqSeqRef.current;
     setHistoryLoading(true);
     try {
-      const resp = await fetch(buildRoomHistoryUrl(roomNameRef.current), {
-        headers: proxyHeaders(),
-        credentials: 'same-origin',
-      });
-      if (seq !== historyReqSeqRef.current) return;
-      if (resp.ok) {
-        const json = (await resp.json()) as {
-          ok?: boolean;
-          entries?: RoomHistoryEntryItem[];
-        };
-        if (seq === historyReqSeqRef.current && json.ok && Array.isArray(json.entries)) {
-          setRoomHistory(json.entries);
-        }
+      const entries = await fetchHistoryEntries();
+      if (seq === historyReqSeqRef.current && entries) {
+        setRoomHistory(entries);
       }
-    } catch {
-      // 静态模式下忽略
     } finally {
       if (seq === historyReqSeqRef.current) setHistoryLoading(false);
     }
-  }, []);
+  }, [fetchHistoryEntries]);
+
+  const loadWidgetHistory = useCallback(async (nodeId: string) => {
+    const seq = ++widgetHistoryReqSeqRef.current;
+    setWidgetHistoryLoading(true);
+    setWidgetHistory([]);
+    try {
+      const entries = await fetchHistoryEntries(nodeId);
+      if (seq === widgetHistoryReqSeqRef.current && entries) {
+        setWidgetHistory(entries);
+      }
+    } finally {
+      if (seq === widgetHistoryReqSeqRef.current) setWidgetHistoryLoading(false);
+    }
+  }, [fetchHistoryEntries]);
 
   useEffect(() => {
-    if (historyDrawerOpen || widgetHistoryNodeId) void loadRoomHistory();
-  }, [historyDrawerOpen, widgetHistoryNodeId, loadRoomHistory]);
+    if (historyDrawerOpen) void loadRoomHistory();
+  }, [historyDrawerOpen, loadRoomHistory]);
+
+  useEffect(() => {
+    if (widgetHistoryNodeId) void loadWidgetHistory(widgetHistoryNodeId);
+  }, [widgetHistoryNodeId, loadWidgetHistory]);
 
   useEffect(() => {
     if (inspectingNodeId) {
@@ -2007,8 +2030,8 @@ function HybridCanvasWorkspace() {
             onDeleteNode: handleDeleteNode,
             onOpenWidgetHistory: handleOpenWidgetHistory,
             widgetHistoryOpen: widgetHistoryNodeId === entity.id,
-            widgetHistoryEntries: roomHistory,
-            widgetHistoryLoading: historyLoading,
+            widgetHistoryEntries: widgetHistoryNodeId === entity.id ? widgetHistory : [],
+            widgetHistoryLoading: widgetHistoryNodeId === entity.id ? widgetHistoryLoading : false,
             busyButtonKey,
             mediaActive: isBoxIntersecting(
               { minX: entity.x, minY: entity.y, maxX: entity.x + entity.width, maxY: entity.y + entity.height },
@@ -2045,8 +2068,8 @@ function HybridCanvasWorkspace() {
     handleDeleteNode,
     handleOpenWidgetHistory,
     widgetHistoryNodeId,
-    roomHistory,
-    historyLoading,
+    widgetHistory,
+    widgetHistoryLoading,
     handleUpdateAnnotation,
     handleDeleteAnnotation,
     busyButtonKey,

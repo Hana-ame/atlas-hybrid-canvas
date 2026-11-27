@@ -264,10 +264,10 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
           )}
         </div>
 
-        {/* 平时右上角只固定留一个 Lock 按钮；z-[25] 高于缩放角点热区(z-20)避免选中态遮挡锁按钮 */}
-        <div className="nodrag nopan relative z-[25] flex shrink-0 items-center">
+        {/* 平时右上角固定保留 History 与 Lock 两个常驻按钮；z-[25] 高于缩放角点热区(z-20) */}
+        <div className="nodrag nopan relative z-[25] flex shrink-0 items-center gap-0.5">
           <div
-            className={`absolute right-6 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 bg-gradient-to-r from-transparent via-white via-20% to-white pl-3 pr-0.5 transition-opacity ${
+            className={`absolute right-12 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 bg-gradient-to-r from-transparent via-white via-20% to-white pl-3 pr-0.5 transition-opacity ${
               selected
                 ? 'pointer-events-auto opacity-100'
                 : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100'
@@ -325,12 +325,17 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
 
           <button
             type="button"
+            aria-pressed={Boolean(widgetHistoryOpen)}
             title="查看控件版本历史"
             onClick={(e) => {
               e.stopPropagation();
               onOpenWidgetHistory(entity.id);
             }}
-            className="rounded p-1 text-slate-400 hover:bg-blue-50 hover:text-blue-700"
+            className={`rounded p-1 ${
+              widgetHistoryOpen
+                ? 'bg-blue-50 text-blue-700'
+                : 'text-slate-400 hover:bg-blue-50 hover:text-blue-700'
+            }`}
           >
             <History className="h-3.5 w-3.5" />
           </button>

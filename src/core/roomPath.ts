@@ -170,8 +170,9 @@ export function buildRoomBlueprintPublishUrl(roomPath: string): string {
   return `/api/rooms/${encodeRoomPathForUrl(roomPath)}/blueprint/publish`;
 }
 
-export function buildRoomHistoryUrl(roomPath: string): string {
-  return `/api/rooms/${encodeRoomPathForUrl(roomPath)}/history`;
+export function buildRoomHistoryUrl(roomPath: string, nodeId?: string): string {
+  const base = `/api/rooms/${encodeRoomPathForUrl(roomPath)}/history`;
+  return nodeId ? `${base}?nodeId=${encodeURIComponent(nodeId)}` : base;
 }
 
 export function buildRoomRollbackUrl(roomPath: string): string {

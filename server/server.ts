@@ -820,13 +820,15 @@ async function startServer() {
       res.status(400).json({ ok: false, error: '非法房间路径编码' });
       return;
     }
-    const entries = await roomBlueprintRegistry.getStore(roomPath).listHistory();
+    const nodeId = typeof req.query.nodeId === 'string' && req.query.nodeId.trim() ? req.query.nodeId.trim() : undefined;
+    const entries = await roomBlueprintRegistry.getStore(roomPath).listHistory(nodeId ? { nodeId } : undefined);
     res.json({ ok: true, room: roomPath, entries });
   }));
 
   app.get('/api/history', requireClientAuth, asyncHandler(async (req, res) => {
     const roomPath = normalizeRoomPath(String(req.query.room || req.header('x-room-path') || ''));
-    const entries = await roomBlueprintRegistry.getStore(roomPath).listHistory();
+    const nodeId = typeof req.query.nodeId === 'string' && req.query.nodeId.trim() ? req.query.nodeId.trim() : undefined;
+    const entries = await roomBlueprintRegistry.getStore(roomPath).listHistory(nodeId ? { nodeId } : undefined);
     res.json({ ok: true, room: roomPath, entries });
   }));
 

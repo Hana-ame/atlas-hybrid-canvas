@@ -163,6 +163,17 @@ test('E2E live server (dist-server/server.mjs): auth session, Origin check, room
     [2, 1]
   );
 
+  const n2HistRes = await fetch(`${baseUrl}/api/rooms/team/e2e/history?nodeId=n2`, {
+    headers: { Cookie: cookieHeader },
+  });
+  assert.equal(n2HistRes.status, 200);
+  const n2HistJson = (await n2HistRes.json()) as { ok: boolean; entries: Array<{ version: number; summary: string }> };
+  assert.deepEqual(
+    n2HistJson.entries.map((e) => e.version),
+    [2]
+  );
+  assert.ok(n2HistJson.entries[0].summary.includes('创建控件'));
+
   // 8) Rollback to v1 -> verify REST returns v1 AND WS client receives replace: true without n2
   wsFrames.length = 0;
   const rbRes = await fetch(`${baseUrl}/api/rooms/team/e2e/rollback`, {

@@ -22,6 +22,7 @@ export interface ElyfnRunnerBlockProps {
   selectedFn?: string;
   payloadText?: string;
   autoRefreshSec?: number;
+  asyncMode?: boolean;
   lastStatus?: string;
   lastResult?: string;
   lastUpdatedAt?: string;
@@ -30,6 +31,7 @@ export interface ElyfnRunnerBlockProps {
   onChangeSelectedFn: (next: string) => void;
   onChangePayload: (next: string) => void;
   onChangeAutoRefreshSec?: (nextSec: number) => void;
+  onChangeAsyncMode?: (next: boolean) => void;
   onRunResult: (result: {
     selectedFn: string;
     status: string;
@@ -92,6 +94,7 @@ function ElyfnRunnerBlockInner({
   selectedFn = '',
   payloadText = '{}',
   autoRefreshSec = 0,
+  asyncMode = false,
   lastStatus = '',
   lastResult = '',
   lastUpdatedAt = '',
@@ -100,12 +103,15 @@ function ElyfnRunnerBlockInner({
   onChangeSelectedFn,
   onChangePayload,
   onChangeAutoRefreshSec,
+  onChangeAsyncMode,
   onRunResult,
 }: ElyfnRunnerBlockProps) {
   const [baseDraft, setBaseDraft] = useState(baseUrl);
   const [fnDraft, setFnDraft] = useState(selectedFn);
   const [payloadDraft, setPayloadDraft] = useState(payloadText || '{}');
   const [refreshSec, setRefreshSec] = useState(() => normalizeRefreshSec(autoRefreshSec));
+  const [asyncDraft, setAsyncDraft] = useState(Boolean(asyncMode));
+  const [livePollHint, setLivePollHint] = useState('');
   const [execKey, setExecKey] = useState('');
   const [showKeyInput, setShowKeyInput] = useState(false);
   const [pageVisible, setPageVisible] = useState(
@@ -120,11 +126,14 @@ function ElyfnRunnerBlockInner({
   const mountedRef = useRef(true);
   const catalogAbortRef = useRef<AbortController | null>(null);
   const catalogSeqRef = useRef(0);
+  const runAbortRef = useRef<AbortController | null>(null);
+  const runSeqRef = useRef(0);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       catalogAbortRef.current?.abort();
+      runAbortRef.current?.abort();
     };
   }, []);
 
@@ -221,8 +230,14 @@ function ElyfnRunnerBlockInner({
       }
     }
 
+    const seq = ++runSeqRef.current;
+    runAbortRef.current?.abort();
+    const ac = new AbortController();
+    runAbortRef.current = ac;
+
     setRunning(true);
     setErrorMsg('');
+    setLivePollHint('');
     const t0 = Date.now();
     try {
       const prefix = normalizeBaseUrl(baseDraft);
@@ -233,22 +248,79 @@ function ElyfnRunnerBlockInner({
       if (execKey.trim()) {
         headers.Authorization = `Bearer ${execKey.trim()}`;
       }
-      const res = await fetch(`${prefix}/${target}`, {
+      const url = asyncDraft ? `${prefix}/${target}?async=1` : `${prefix}/${target}`;
+      const res = await fetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(parsedPayload),
+        signal: ac.signal,
       });
-      const elapsed = Date.now() - t0;
       const text = await res.text();
+      let parsedJson: Record<string, unknown> | null = null;
       let formatted = text;
       try {
-        formatted = JSON.stringify(JSON.parse(text), null, 2);
+        const obj = JSON.parse(text);
+        if (obj && typeof obj === 'object') parsedJson = obj as Record<string, unknown>;
+        formatted = JSON.stringify(obj, null, 2);
       } catch {
         // 保留原始文本
       }
+
+      // 后台异步挂起 + GET /jobs/:id 轮询闭环
+      if (res.status === 202 && parsedJson?.async && typeof parsedJson.jobId === 'string') {
+        const jobId = parsedJson.jobId;
+        const jobUrl = `${prefix}${typeof parsedJson.statusUrl === 'string' && parsedJson.statusUrl.startsWith('/') ? parsedJson.statusUrl : `/jobs/${jobId}`}`;
+        const pollHeaders: Record<string, string> = { Accept: 'application/json' };
+        if (execKey.trim()) pollHeaders.Authorization = `Bearer ${execKey.trim()}`;
+
+        const deadline = Date.now() + 310_000;
+        let finalJob: Record<string, unknown> | null = null;
+        while (Date.now() < deadline && !ac.signal.aborted && seq === runSeqRef.current) {
+          const elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
+          if (mountedRef.current) setLivePollHint(`202 后台运行中 (${elapsedSec}s)…`);
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, 1000);
+            ac.signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+          });
+          if (ac.signal.aborted || !mountedRef.current || seq !== runSeqRef.current) return;
+
+          const pollRes = await fetch(jobUrl, { headers: pollHeaders, signal: ac.signal });
+          if (!pollRes.ok) {
+            throw new Error(`轮询任务状态失败 (HTTP ${pollRes.status})`);
+          }
+          const jobJson = (await pollRes.json()) as Record<string, unknown>;
+          if (jobJson.status === 'completed' || jobJson.status === 'failed') {
+            finalJob = jobJson;
+            break;
+          }
+        }
+
+        if (!mountedRef.current || seq !== runSeqRef.current) return;
+        const elapsed = Date.now() - t0;
+        if (!finalJob) {
+          throw new Error('后台任务轮询超时');
+        }
+        const ok = finalJob.status === 'completed';
+        const outRaw = ok ? finalJob.result : { error: finalJob.error || 'Async job failed' };
+        const outFormatted = JSON.stringify(outRaw, null, 2);
+        const statusText = ok ? `200 async (${elapsed}ms)` : `ERR async (${elapsed}ms)`;
+        const updatedAt = new Date().toLocaleTimeString();
+        setLivePollHint('');
+        if (!ok) setErrorMsg(`后台执行失败：${String(finalJob.error || 'Async job failed')}`);
+        onRunResult({
+          selectedFn: target,
+          status: statusText,
+          result: outFormatted.slice(0, 4000),
+          updatedAt,
+          error: ok ? '' : String(finalJob.error || 'Async job failed').slice(0, 500),
+        });
+        return;
+      }
+
+      const elapsed = Date.now() - t0;
       const statusText = `${res.status} (${elapsed}ms)`;
       const updatedAt = new Date().toLocaleTimeString();
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || seq !== runSeqRef.current) return;
       if (!res.ok) {
         setErrorMsg(`执行失败 ${statusText}`);
       }
@@ -260,8 +332,10 @@ function ElyfnRunnerBlockInner({
         error: res.ok ? '' : formatted.slice(0, 500),
       });
     } catch (err) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || seq !== runSeqRef.current) return;
+      if (err instanceof Error && err.name === 'AbortError') return;
       const msg = err instanceof Error ? err.message : String(err);
+      setLivePollHint('');
       setErrorMsg(`调用失败：${msg}`);
       onRunResult({
         selectedFn: target,
@@ -271,9 +345,9 @@ function ElyfnRunnerBlockInner({
         error: msg,
       });
     } finally {
-      if (mountedRef.current) setRunning(false);
+      if (mountedRef.current && seq === runSeqRef.current) setRunning(false);
     }
-  }, [baseDraft, execKey, fnDraft, onRunResult, payloadDraft]);
+  }, [asyncDraft, baseDraft, execKey, fnDraft, onRunResult, payloadDraft]);
 
   return (
     <div
@@ -356,6 +430,22 @@ function ElyfnRunnerBlockInner({
           onBlur={() => onChangeSelectedFn(fnDraft.trim())}
           className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 py-1 font-mono text-[11px] outline-none focus:border-violet-500"
         />
+        <label
+          title="开启 ?async=1 后台挂起执行并轮询 /jobs/:id（适合长耗时任务）"
+          className="inline-flex shrink-0 cursor-pointer select-none items-center gap-1 rounded border border-slate-300 bg-white px-1.5 py-1 text-[10px] text-slate-700 hover:bg-slate-50"
+        >
+          <input
+            type="checkbox"
+            checked={asyncDraft}
+            onChange={(e) => {
+              const next = e.target.checked;
+              setAsyncDraft(next);
+              onChangeAsyncMode?.(next);
+            }}
+            className="h-3 w-3 rounded border-slate-300 text-violet-700"
+          />
+          <span>异步</span>
+        </label>
         <button
           type="button"
           disabled={running}
@@ -402,7 +492,7 @@ function ElyfnRunnerBlockInner({
         <div className="rounded bg-rose-50 px-2 py-1 text-[11px] text-rose-700">{errorMsg}</div>
       )}
       <div className="flex items-center justify-between text-[10px] text-slate-500">
-        <span>状态：{lastStatus || '未调用'}</span>
+        <span>状态：{livePollHint || lastStatus || '未调用'}</span>
         <span>{lastUpdatedAt ? `更新于 ${lastUpdatedAt}` : ''}</span>
       </div>
       {lastResult && (

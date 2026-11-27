@@ -114,7 +114,7 @@ export function WidgetHistoryPopover({
           <div className="py-4 text-center text-[11px] text-slate-400">加载中…</div>
         ) : sortedEntries.length === 0 ? (
           <div className="rounded border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-center text-[11px] leading-relaxed text-slate-500">
-            暂无服务端历史记录
+            暂无此控件的后端历史记录
           </div>
         ) : (
           <div className="space-y-1.5">
@@ -151,7 +151,7 @@ export function WidgetHistoryPopover({
 
       {/* 底部提示 */}
       <div className="border-t border-slate-100 px-3 py-1.5 text-[10px] text-slate-400">
-        房间级快照 · 回档请使用工具栏「版本历史」
+        当前控件变更记录 · 回档请使用顶栏「版本历史」
       </div>
     </div>
   );
