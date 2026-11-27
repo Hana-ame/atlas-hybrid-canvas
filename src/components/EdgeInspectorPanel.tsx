@@ -53,7 +53,8 @@ export function EdgeInspectorPanel({
   const currentPathType: EdgePathType = edge.pathType ?? 'smooth';
   const currentWidth = typeof edge.strokeWidth === 'number' ? edge.strokeWidth : 2.2;
   const currentColor = edge.color || '#64748B';
-  const currentAnimated = edge.animated !== undefined ? edge.animated : Boolean(edge.dashed);
+  const currentAnimated =
+    edge.animated !== undefined ? edge.animated : (edge.strokeStyle ? false : Boolean(edge.dashed));
 
   return (
     <aside
@@ -133,6 +134,7 @@ export function EdgeInspectorPanel({
                     onUpdateEdge(edge.id, {
                       strokeStyle: opt.value,
                       dashed: opt.value !== 'solid',
+                      ...(edge.animated === undefined ? { animated: currentAnimated } : {}),
                     })
                   }
                   className={`flex flex-col items-center gap-1 rounded-md border px-2 py-1.5 text-[11px] font-medium transition-colors ${

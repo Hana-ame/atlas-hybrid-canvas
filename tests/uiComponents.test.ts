@@ -574,6 +574,30 @@ test('Edge styles (pathType, strokeStyle, strokeWidth) and EdgeInspectorPanel re
   assert.ok(panelHtml.includes('平滑曲线') && panelHtml.includes('直线') && panelHtml.includes('直角折线'), 'panel should list path types');
   assert.ok(panelHtml.includes('实线') && panelHtml.includes('虚线') && panelHtml.includes('点线'), 'panel should list stroke styles');
   assert.ok(panelHtml.includes('流动动画') && panelHtml.includes('单线双向连线'), 'panel should expose animation and bidirectional toggles');
+
+  // Verify explicit strokeStyle does not implicitly enable animated when animated is undefined
+  const staticDashedHtml = renderToStaticMarkup(
+    React.createElement(EdgeInspectorPanel, {
+      edge: {
+        id: 'e-static-dashed',
+        source: 'n1',
+        target: 'n2',
+        strokeStyle: 'dashed',
+        dashed: true,
+        rev: 1,
+        cid: 'test',
+      },
+      sourceTitle: 'Node A',
+      targetTitle: 'Node B',
+      onUpdateEdge: () => {},
+      onDeleteEdge: () => {},
+      onClose: () => {},
+    })
+  );
+  // 流动动画 checkbox should NOT be checked when strokeStyle is set explicitly and animated is undefined
+  const animLabelIdx = staticDashedHtml.indexOf('流动动画');
+  const animInputSlice = staticDashedHtml.slice(animLabelIdx, animLabelIdx + 220);
+  assert.equal(animInputSlice.includes('checked=""') || animInputSlice.includes('checked '), false, 'explicit strokeStyle should not implicitly toggle animated');
 });
 
 test('ElyfnRunnerBlock and GitGatewayBlock render controls and last state cleanly', () => {

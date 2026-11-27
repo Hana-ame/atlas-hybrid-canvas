@@ -1979,7 +1979,7 @@ function HybridCanvasWorkspace() {
           draggable: !entity.locked,
           // 拖动过程中绝对保留 React Flow 自己的 position 与 measured，彻底杜绝闪烁消失！
           position: isDragging && existing ? existing.position : { x: entity.x, y: entity.y },
-          zIndex: 10,
+          zIndex: widgetHistoryNodeId === entity.id ? 60 : 10,
           data: {
             entity,
             onRunButton: handleRunButton,
@@ -2193,7 +2193,7 @@ function HybridCanvasWorkspace() {
           ? e.animated
           : rt?.dashed !== undefined
             ? Boolean(rt.dashed)
-            : Boolean(e.dashed) || hasFlag;
+            : (e.strokeStyle !== undefined ? false : Boolean(e.dashed)) || hasFlag;
       const stroke = (rt?.color && rt.color.trim()) ? rt.color.trim() : (hasFlag ? '#F59E0B' : (e.color || '#64748B'));
       const effectiveWidth =
         typeof rt?.width === 'number'

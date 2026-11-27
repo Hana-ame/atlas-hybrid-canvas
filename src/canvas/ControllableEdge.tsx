@@ -474,6 +474,7 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
                   title="设置连线样式"
                   onMouseDown={stopCanvasPanPropagation}
                   onPointerDown={(ev) => ev.stopPropagation()}
+                  onDoubleClick={(ev) => ev.stopPropagation()}
                   onClick={(ev) => {
                     ev.stopPropagation();
                     onOpenSettings(id);
