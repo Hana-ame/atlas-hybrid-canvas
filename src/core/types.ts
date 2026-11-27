@@ -182,6 +182,28 @@ export interface ContentImageButtonBlock {
   showStateBadge?: boolean;
 }
 
+export interface ContentElyfnRunnerBlock {
+  type: 'elyfn_runner';
+  id: string;
+  baseUrl?: string;
+  selectedFn?: string;
+  payloadText?: string;
+  bindBaseUrl?: string;
+  bindSelectedFn?: string;
+  bindPayload?: string;
+}
+
+export interface ContentGitGatewayBlock {
+  type: 'git_gateway';
+  id: string;
+  baseUrl?: string;
+  selectedRepo?: string;
+  activeTab?: 'prs' | 'todo';
+  bindBaseUrl?: string;
+  bindSelectedRepo?: string;
+  bindTab?: string;
+}
+
 export type ContentLeafBlock =
   | ContentTextBlock
   | ContentButtonBlock
@@ -192,7 +214,9 @@ export type ContentLeafBlock =
   | ContentVideoBlock
   | ContentSliderBlock
   | ContentPad2DBlock
-  | ContentImageButtonBlock;
+  | ContentImageButtonBlock
+  | ContentElyfnRunnerBlock
+  | ContentGitGatewayBlock;
 export type ContentFlowItem = ContentLeafBlock | ContentLeafBlock[];
 
 export interface BlueprintNode {

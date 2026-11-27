@@ -257,6 +257,12 @@ function validateLeafBlockSafety(block: unknown): string | null {
         return `api_poller 积木包含不安全的 url：${b.url}`;
       }
       break;
+    case 'elyfn_runner':
+    case 'git_gateway':
+      if (typeof b.baseUrl === 'string' && b.baseUrl.trim() && !isSafePollUrl(b.baseUrl)) {
+        return `${String(b.type)} 积木包含不安全的 baseUrl：${b.baseUrl}`;
+      }
+      break;
     case 'image_button':
       for (const field of ['offImage', 'onImage', 'hoverImage', 'clickImage']) {
         const v = b[field];

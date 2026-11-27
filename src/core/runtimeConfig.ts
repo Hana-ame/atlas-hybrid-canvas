@@ -4,8 +4,9 @@
  *
  * 规则只有一条，其余模块都从这里读，不要各自去摸 import.meta.env：
  *
- *   VITE_BACKEND_WS_URL 未配置  →  纯静态模式：/api/* 由浏览器内 mock 处理，无协同房间
- *   VITE_BACKEND_WS_URL 已配置  →  连后端模式：协同房间连这个地址
+ *   VITE_BACKEND_WS_URL 未配置              →  纯静态模式：/api/* 由浏览器内 mock 处理，无协同房间
+ *   VITE_BACKEND_WS_URL = "/ws" 或 "auto"   →  同源连后端模式：运行时按 window.location 自动拼 ws(s)://<host>/ws
+ *   VITE_BACKEND_WS_URL = "wss://..."       →  指定外部后端模式：协同房间连这个地址
  *
  * 为什么不给个 localhost 默认值：GitHub Pages 是静态托管，任何写死的 localhost
  * 在线上都指向"访问者自己的电脑"，必然连不上。与其给个看着能用、实际永远失败的
@@ -39,10 +40,45 @@ export function shouldUseBackendProxy(explicit?: boolean): boolean {
   return explicit !== undefined ? Boolean(explicit) : forceBackendProxy();
 }
 
-/** 把用户填的地址规整成合法的 ws:// 或 wss:// URL；不合法返回 null。 */
-export function normalizeWsUrl(raw: string): string | null {
+export interface RuntimeLocationLike {
+  protocol?: string;
+  host?: string;
+}
+
+function getRuntimeLocation(override?: RuntimeLocationLike | null): RuntimeLocationLike | null {
+  if (override !== undefined) return override;
+  if (typeof window !== 'undefined' && window.location && window.location.host) {
+    return window.location;
+  }
+  return null;
+}
+
+/**
+ * 把用户填的地址规整成合法的 ws:// 或 wss:// URL；不合法返回 null。
+ * 额外支持相对路径（如 `/ws`）与关键词 `auto` / `same-origin`，
+ * 在浏览器运行时按当前页面协议与主机自动解析为 `ws(s)://<host><path>`，实现镜像一次构建、任意域名/HTTPS 运行。
+ */
+export function normalizeWsUrl(raw: string, locOverride?: RuntimeLocationLike | null): string | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
+
+  const lower = trimmed.toLowerCase();
+  if (lower === 'auto' || lower === 'same-origin' || trimmed.startsWith('/')) {
+    // 拦截协议相对地址 `//evil.com`
+    if (trimmed.startsWith('//')) return null;
+    const path = lower === 'auto' || lower === 'same-origin' ? '/ws' : trimmed === '/' ? '/ws' : trimmed;
+    const loc = getRuntimeLocation(locOverride);
+    if (loc && loc.host) {
+      const wsProto = String(loc.protocol || '').toLowerCase() === 'https:' ? 'wss:' : 'ws:';
+      try {
+        return new URL(path, `${wsProto}//${loc.host}`).toString();
+      } catch {
+        return null;
+      }
+    }
+    return path;
+  }
+
   // 允许只填域名，自动补 wss://，减少填错概率
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed) && !/^wss?:\/\//i.test(trimmed)) {
     return null;
@@ -58,7 +94,7 @@ export function normalizeWsUrl(raw: string): string | null {
   }
 }
 
-/** 是否配置了外部后端。所有"要不要走真服务端"的判断都用这个，不要重复判断字符串。 */
+/** 是否配置了外部或同源后端。所有"要不要走真服务端"的判断都用这个，不要重复判断字符串。 */
 export function hasBackend(): boolean {
   return normalizeWsUrl(RAW_BACKEND_WS_URL) !== null;
 }
@@ -66,7 +102,7 @@ export function hasBackend(): boolean {
 /**
  * 协同房间的默认地址。
  *
- * - 配置了 VITE_BACKEND_WS_URL：用它。
+ * - 配置了 VITE_BACKEND_WS_URL（含 `/ws`、`auto` 或完整 `ws(s)://`）：按规则解析并使用。
  * - 没配置但处于开发态：回落到 ws://localhost:8787/ws —— 此时 npm run dev 起的
  *   同一个进程就带着房间服务，开箱即用。
  * - 没配置且是生产构建：返回空字符串，UI 应显示"演示模式，协同不可用"。

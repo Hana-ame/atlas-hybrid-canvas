@@ -23,6 +23,12 @@ const VideoNodeBlock = lazy(() =>
 const ApiPollerBlock = lazy(() =>
   import('./ApiPollerBlock').then((m) => ({ default: m.ApiPollerBlock }))
 );
+const ElyfnRunnerBlock = lazy(() =>
+  import('./ElyfnRunnerBlock').then((m) => ({ default: m.ElyfnRunnerBlock }))
+);
+const GitGatewayBlock = lazy(() =>
+  import('./GitGatewayBlock').then((m) => ({ default: m.GitGatewayBlock }))
+);
 
 const VARIANT_CLASSES: Record<string, string> = {
   primary: 'bg-slate-900 text-white hover:bg-slate-700',
@@ -495,6 +501,97 @@ export const CONTENT_BLOCK_REGISTRY: {
           onScriptInputChange(entity.id, targetKey, nextUrl);
         }}
       />
+    );
+  },
+
+  elyfn_runner: (block, { entity, idx, mediaActive, onScriptInputChange, onBatchUpdateVars }) => {
+    const baseKey = block.bindBaseUrl || 'fnBaseUrl';
+    const fnKey = block.bindSelectedFn || 'fnSelected';
+    const payloadKey = block.bindPayload || 'fnPayload';
+    const curBase =
+      entity.effectiveVars?.[baseKey] !== undefined
+        ? String(entity.effectiveVars[baseKey])
+        : String(block.baseUrl ?? '');
+    const curFn =
+      entity.effectiveVars?.[fnKey] !== undefined
+        ? String(entity.effectiveVars[fnKey])
+        : String(block.selectedFn ?? '');
+    const curPayload =
+      entity.effectiveVars?.[payloadKey] !== undefined
+        ? String(entity.effectiveVars[payloadKey])
+        : String(block.payloadText ?? '{}');
+    return (
+      <Suspense key={`elyfn-${block.id}-${idx}`} fallback={LazyFallback}>
+        <ElyfnRunnerBlock
+          baseUrl={curBase}
+          selectedFn={curFn}
+          payloadText={curPayload}
+          lastStatus={entity.effectiveVars?.fnLastStatus !== undefined ? String(entity.effectiveVars.fnLastStatus) : ''}
+          lastResult={entity.effectiveVars?.fnLastResult !== undefined ? String(entity.effectiveVars.fnLastResult) : ''}
+          lastUpdatedAt={entity.effectiveVars?.fnUpdatedAt !== undefined ? String(entity.effectiveVars.fnUpdatedAt) : ''}
+          mediaActive={mediaActive}
+          onChangeBaseUrl={(next) => onScriptInputChange(entity.id, baseKey, next)}
+          onChangeSelectedFn={(next) => onScriptInputChange(entity.id, fnKey, next)}
+          onChangePayload={(next) => onScriptInputChange(entity.id, payloadKey, next)}
+          onRunResult={({ selectedFn, status, result, updatedAt, error }) => {
+            const patch = {
+              [fnKey]: selectedFn,
+              fnLastStatus: status,
+              fnLastResult: result,
+              fnUpdatedAt: updatedAt,
+              fnError: error,
+            };
+            if (onBatchUpdateVars) {
+              onBatchUpdateVars(entity.id, patch, true);
+            } else {
+              for (const [k, v] of Object.entries(patch)) {
+                onScriptInputChange(entity.id, k, String(v));
+              }
+            }
+          }}
+        />
+      </Suspense>
+    );
+  },
+
+  git_gateway: (block, { entity, idx, mediaActive, onScriptInputChange, onBatchUpdateVars }) => {
+    const baseKey = block.bindBaseUrl || 'gitBaseUrl';
+    const repoKey = block.bindSelectedRepo || 'gitRepo';
+    const tabKey = block.bindTab || 'gitTab';
+    const curBase =
+      entity.effectiveVars?.[baseKey] !== undefined
+        ? String(entity.effectiveVars[baseKey])
+        : String(block.baseUrl ?? '');
+    const curRepo =
+      entity.effectiveVars?.[repoKey] !== undefined
+        ? String(entity.effectiveVars[repoKey])
+        : String(block.selectedRepo ?? '');
+    const rawTab =
+      entity.effectiveVars?.[tabKey] !== undefined
+        ? String(entity.effectiveVars[tabKey])
+        : String(block.activeTab ?? 'prs');
+    const curTab: 'prs' | 'todo' = rawTab === 'todo' ? 'todo' : 'prs';
+    return (
+      <Suspense key={`gitgw-${block.id}-${idx}`} fallback={LazyFallback}>
+        <GitGatewayBlock
+          baseUrl={curBase}
+          selectedRepo={curRepo}
+          activeTab={curTab}
+          mediaActive={mediaActive}
+          onChangeBaseUrl={(next) => onScriptInputChange(entity.id, baseKey, next)}
+          onChangeSelectedRepo={(next) => onScriptInputChange(entity.id, repoKey, next)}
+          onChangeActiveTab={(next) => onScriptInputChange(entity.id, tabKey, next)}
+          onSyncState={(patch) => {
+            if (onBatchUpdateVars) {
+              onBatchUpdateVars(entity.id, patch, true);
+            } else {
+              for (const [k, v] of Object.entries(patch)) {
+                onScriptInputChange(entity.id, k, String(v));
+              }
+            }
+          }}
+        />
+      </Suspense>
     );
   },
 };

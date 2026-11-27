@@ -12,6 +12,75 @@ const CUSTOM_TEMPLATES_KEY = 'atlas-hybrid-custom-templates-v1';
 
 export const BUILTIN_TEMPLATES: BlueprintTemplate[] = [
   {
+    id: 'tpl-elyfn-runner',
+    name: 'elyfn 函数调用卡',
+    description: '自动拉取 /catalog 只读函数目录、选择函数、传 JSON 入参一键执行并将结果输出给下游节点',
+    group: '工程与运维',
+    kind: 'node',
+    color: '#7C3AED',
+    nodePreset: {
+      width: 390,
+      height: 360,
+      title: 'elyfn 函数调用卡',
+      body: '',
+      category: 'FaaS',
+      color: '#7C3AED',
+      inputPorts: [{ id: 'in-1', label: '触发 / 入参' }],
+      outputPorts: [{ id: 'out-1', label: '返回结果输出' }],
+      defaultVars: {
+        fnBaseUrl: '',
+        fnSelected: '',
+        fnPayload: '{"x": 5}',
+        fnLastStatus: '',
+        fnLastResult: '',
+        fnUpdatedAt: '',
+      },
+      script: String.raw`vars.contents = [
+  {
+    type: 'elyfn_runner',
+    id: 'elyfnRunner',
+    bindBaseUrl: 'fnBaseUrl',
+    bindSelectedFn: 'fnSelected',
+    bindPayload: 'fnPayload'
+  }
+];`,
+    },
+  },
+  {
+    id: 'tpl-git-gateway',
+    name: 'git-gateway 仓库看板',
+    description: '自动拉取 /repos 仓库目录，实时浏览各仓库 Open PR、CI 状态/失败日志与 TODO 列表',
+    group: '工程与运维',
+    kind: 'node',
+    color: '#059669',
+    nodePreset: {
+      width: 410,
+      height: 390,
+      title: 'git-gateway 仓库看板',
+      body: '',
+      category: 'Git',
+      color: '#059669',
+      outputPorts: [{ id: 'out-1', label: '看板状态输出' }],
+      defaultVars: {
+        gitBaseUrl: '',
+        gitRepo: '',
+        gitTab: 'prs',
+        gitOpenPrCount: 0,
+        gitTodoPreview: '',
+        gitUpdatedAt: '',
+      },
+      script: String.raw`vars.contents = [
+  {
+    type: 'git_gateway',
+    id: 'gitGatewayBoard',
+    bindBaseUrl: 'gitBaseUrl',
+    bindSelectedRepo: 'gitRepo',
+    bindTab: 'gitTab'
+  }
+];`,
+    },
+  },
+  {
     id: 'tpl-api-poller',
     name: 'API 轮询抓取器',
     description: '定时轮询抓取接口数据、JSON 路径提取、指数退避与离屏自动暂停',

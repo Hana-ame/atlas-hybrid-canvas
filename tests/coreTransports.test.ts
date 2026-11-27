@@ -22,6 +22,12 @@ test('runtimeConfig: normalizeWsUrl handles ws/wss/http/https and rejects invali
   assert.equal(normalizeWsUrl('http://localhost:8787/ws'), null);
   assert.equal(normalizeWsUrl('javascript:alert(1)'), null);
   assert.equal(normalizeWsUrl('   '), null);
+  assert.equal(normalizeWsUrl('/ws', { protocol: 'http:', host: '127.0.0.1:8080' }), 'ws://127.0.0.1:8080/ws');
+  assert.equal(normalizeWsUrl('/ws', { protocol: 'https:', host: 'canvas.example.com' }), 'wss://canvas.example.com/ws');
+  assert.equal(normalizeWsUrl('auto', { protocol: 'https:', host: 'canvas.example.com:8443' }), 'wss://canvas.example.com:8443/ws');
+  assert.equal(normalizeWsUrl('same-origin', { protocol: 'http:', host: 'localhost:8080' }), 'ws://localhost:8080/ws');
+  assert.equal(normalizeWsUrl('/ws', null), '/ws');
+  assert.equal(normalizeWsUrl('//evil.com/ws', { protocol: 'https:', host: 'canvas.example.com' }), null);
   assert.equal(typeof hasBackend(), 'boolean');
   assert.equal(typeof defaultRoomWsUrl(), 'string');
 });
