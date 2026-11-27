@@ -95,10 +95,13 @@ function GitGatewayBlockInner({
   const [errorMsg, setErrorMsg] = useState('');
 
   const mountedRef = useRef(true);
+  const detailAbortRef = useRef<AbortController | null>(null);
+  const detailSeqRef = useRef(0);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      detailAbortRef.current?.abort();
     };
   }, []);
 
@@ -129,6 +132,10 @@ function GitGatewayBlockInner({
     async (targetRepo: string) => {
       const cleaned = targetRepo.trim().replace(/^\/+|\/+$/g, '');
       if (!cleaned) return;
+      detailAbortRef.current?.abort();
+      const ctrl = new AbortController();
+      detailAbortRef.current = ctrl;
+      const seq = ++detailSeqRef.current;
       setLoadingDetail(true);
       setErrorMsg('');
       setCiLogs('');
@@ -137,9 +144,11 @@ function GitGatewayBlockInner({
         const [prsRes, todoRes] = await Promise.all([
           fetch(`${prefix}/${cleaned}/prs?state=open&limit=20`, {
             headers: { Accept: 'application/json' },
+            signal: ctrl.signal,
           }),
           fetch(`${prefix}/${cleaned}/todo?format=json`, {
             headers: { Accept: 'application/json' },
+            signal: ctrl.signal,
           }),
         ]);
 
@@ -155,7 +164,7 @@ function GitGatewayBlockInner({
           const tdData = (await todoRes.json().catch(() => ({}))) as Record<string, unknown>;
           nextTodo = String(tdData.content ?? tdData.todo ?? '');
         }
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || seq !== detailSeqRef.current) return;
         setPrs(nextPrs);
         setTodoText(nextTodo);
         if (!prsRes.ok && !todoRes.ok) {
@@ -168,10 +177,11 @@ function GitGatewayBlockInner({
           gitUpdatedAt: new Date().toLocaleTimeString(),
         });
       } catch (err) {
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || seq !== detailSeqRef.current) return;
+        if (err instanceof Error && err.name === 'AbortError') return;
         setErrorMsg(`请求异常：${err instanceof Error ? err.message : String(err)}`);
       } finally {
-        if (mountedRef.current) setLoadingDetail(false);
+        if (mountedRef.current && seq === detailSeqRef.current) setLoadingDetail(false);
       }
     },
     [baseDraft, onSyncState]

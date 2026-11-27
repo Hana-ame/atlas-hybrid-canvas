@@ -118,10 +118,13 @@ function ElyfnRunnerBlockInner({
   const [errorMsg, setErrorMsg] = useState('');
 
   const mountedRef = useRef(true);
+  const catalogAbortRef = useRef<AbortController | null>(null);
+  const catalogSeqRef = useRef(0);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      catalogAbortRef.current?.abort();
     };
   }, []);
 
@@ -149,6 +152,10 @@ function ElyfnRunnerBlockInner({
   }, [autoRefreshSec]);
 
   const fetchCatalog = useCallback(async () => {
+    catalogAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    catalogAbortRef.current = ctrl;
+    const seq = ++catalogSeqRef.current;
     setLoadingCatalog(true);
     setErrorMsg('');
     try {
@@ -157,9 +164,9 @@ function ElyfnRunnerBlockInner({
       if (execKey.trim()) {
         headers.Authorization = `Bearer ${execKey.trim()}`;
       }
-      const res = await fetch(`${prefix}/catalog`, { method: 'GET', headers });
+      const res = await fetch(`${prefix}/catalog`, { method: 'GET', headers, signal: ctrl.signal });
       const data = await res.json().catch(() => ({}));
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || seq !== catalogSeqRef.current) return;
       if (!res.ok) {
         const msg = (data as Record<string, unknown>)?.error
           ? String((data as Record<string, unknown>).error)
@@ -174,10 +181,11 @@ function ElyfnRunnerBlockInner({
         onChangeSelectedFn(items[0].id);
       }
     } catch (err) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || seq !== catalogSeqRef.current) return;
+      if (err instanceof Error && err.name === 'AbortError') return;
       setErrorMsg(`目录请求异常：${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      if (mountedRef.current) setLoadingCatalog(false);
+      if (mountedRef.current && seq === catalogSeqRef.current) setLoadingCatalog(false);
     }
   }, [baseDraft, execKey, fnDraft, onChangeSelectedFn]);
 
