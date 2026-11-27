@@ -11,11 +11,13 @@ import { memo, useEffect, useRef, useState } from 'react';
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import { SmartNodeResizer } from './SmartNodeResizer';
 import { CanvasErrorBoundary } from '../components/CanvasErrorBoundary';
-import { Copy, Globe, Loader2, Lock, Play, RotateCcw, Settings2, Trash2, Unlock } from 'lucide-react';
+import { Copy, Globe, History, Loader2, Lock, Play, RotateCcw, Settings2, Trash2, Unlock } from 'lucide-react';
 import { RESERVED_WIDGET_PROP_VARS } from '../core/layeredStore';
 import { parseTaskLine, toggleTaskLine } from '../core/taskList';
 import { DEFAULT_INPUT_PORTS, DEFAULT_OUTPUT_PORTS } from '../core/edgePath';
 import { IMMERSIVE_BLOCK_TYPES, renderContentBlock } from './contentBlockRegistry';
+import { WidgetHistoryPopover } from '../components/WidgetHistoryPopover';
+import type { RoomHistoryEntryItem } from '../components/VersionHistoryDrawer';
 import type {
   ContentFlowItem,
   ContentLeafBlock,
@@ -43,6 +45,10 @@ export interface WidgetNodeData extends Record<string, unknown> {
   onOpenInspector: (nodeId: string) => void;
   onDuplicateNode: (nodeId: string) => void;
   onDeleteNode: (nodeId: string) => void;
+  onOpenWidgetHistory: (nodeId: string) => void;
+  widgetHistoryOpen: boolean;
+  widgetHistoryEntries: RoomHistoryEntryItem[];
+  widgetHistoryLoading: boolean;
   busyButtonKey: string | null;
   mediaActive?: boolean;
 }
@@ -84,6 +90,10 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
     onOpenInspector,
     onDuplicateNode,
     onDeleteNode,
+    onOpenWidgetHistory,
+    widgetHistoryOpen,
+    widgetHistoryEntries,
+    widgetHistoryLoading,
     busyButtonKey,
     mediaActive = true,
   } = data as WidgetNodeData;
@@ -313,6 +323,17 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
             </button>
           </div>
 
+          <button
+            type="button"
+            title="查看控件版本历史"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenWidgetHistory(entity.id);
+            }}
+            className="rounded p-1 text-slate-400 hover:bg-blue-50 hover:text-blue-700"
+          >
+            <History className="h-3.5 w-3.5" />
+          </button>
           <button
             type="button"
             title={entity.locked ? '已锁定位置（点此解锁拖动）' : '锁定控件位置（防止误拖）'}
@@ -547,6 +568,16 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
           )}
         </div>
       )}
+
+      {/* 控件级版本历史浮窗（常驻 History 按钮触发，锚定在卡片右侧） */}
+      <WidgetHistoryPopover
+        open={widgetHistoryOpen}
+        nodeId={entity.id}
+        nodeTitle={entity.title}
+        entries={widgetHistoryEntries}
+        loading={widgetHistoryLoading}
+        onClose={() => onOpenWidgetHistory(entity.id)}
+      />
     </div>
   );
 }

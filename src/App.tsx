@@ -175,6 +175,7 @@ function HybridCanvasWorkspace() {
   const [busyButtonKey, setBusyButtonKey] = useState<string | null>(null);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
+  const [widgetHistoryNodeId, setWidgetHistoryNodeId] = useState<string | null>(null);
   const [saveKeyInput, setSaveKeyInput] = useState('');
   const [saveKeyError, setSaveKeyError] = useState<string | null>(null);
   const [rollbackError, setRollbackError] = useState<string | null>(null);
@@ -209,11 +210,14 @@ function HybridCanvasWorkspace() {
   }, []);
 
   useEffect(() => {
-    if (historyDrawerOpen) void loadRoomHistory();
-  }, [historyDrawerOpen, loadRoomHistory]);
+    if (historyDrawerOpen || widgetHistoryNodeId) void loadRoomHistory();
+  }, [historyDrawerOpen, widgetHistoryNodeId, loadRoomHistory]);
 
   useEffect(() => {
-    if (inspectingNodeId) setHistoryDrawerOpen(false);
+    if (inspectingNodeId) {
+      setHistoryDrawerOpen(false);
+      setWidgetHistoryNodeId(null);
+    }
   }, [inspectingNodeId]);
 
   const handleRollbackVersion = async (version: number): Promise<boolean> => {
@@ -256,6 +260,10 @@ function HybridCanvasWorkspace() {
       setIsSavingBase(false);
     }
   };
+
+  const handleOpenWidgetHistory = useCallback((nodeId: string) => {
+    setWidgetHistoryNodeId((prev) => (prev === nodeId ? null : nodeId));
+  }, []);
 
   // 1) IndexedDB 恢复就绪标记（驱动 useOverlaySync 防抖与跨页签同步）
   const [overlayHydrated, setOverlayHydrated] = useState(false);
@@ -1992,6 +2000,10 @@ function HybridCanvasWorkspace() {
             },
             onDuplicateNode: handleDuplicateNode,
             onDeleteNode: handleDeleteNode,
+            onOpenWidgetHistory: handleOpenWidgetHistory,
+            widgetHistoryOpen: widgetHistoryNodeId === entity.id,
+            widgetHistoryEntries: roomHistory,
+            widgetHistoryLoading: historyLoading,
             busyButtonKey,
             mediaActive: isBoxIntersecting(
               { minX: entity.x, minY: entity.y, maxX: entity.x + entity.width, maxY: entity.y + entity.height },
@@ -2026,6 +2038,10 @@ function HybridCanvasWorkspace() {
     handleResizeNode,
     handleDuplicateNode,
     handleDeleteNode,
+    handleOpenWidgetHistory,
+    widgetHistoryNodeId,
+    roomHistory,
+    historyLoading,
     handleUpdateAnnotation,
     handleDeleteAnnotation,
     busyButtonKey,

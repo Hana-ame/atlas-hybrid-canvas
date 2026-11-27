@@ -10,6 +10,7 @@ import { SearchJumpModal } from '../src/components/SearchJumpModal.tsx';
 import { ScriptTrustModal } from '../src/components/ScriptTrustModal.tsx';
 import { NodeInspectorPanel } from '../src/components/NodeInspectorPanel.tsx';
 import { VersionHistoryDrawer } from '../src/components/VersionHistoryDrawer.tsx';
+import { WidgetHistoryPopover } from '../src/components/WidgetHistoryPopover.tsx';
 import { ImageNodeBlock } from '../src/canvas/ImageNodeBlock.tsx';
 import { VideoNodeBlock } from '../src/canvas/VideoNodeBlock.tsx';
 import { SliderControlBlock } from '../src/canvas/SliderControlBlock.tsx';
@@ -345,6 +346,10 @@ test('WidgetNode & button blocks prevent layout shift and render vars as a fixed
             onOpenInspector: noop,
             onDuplicateNode: noop,
             onDeleteNode: noop,
+            onOpenWidgetHistory: noop,
+            widgetHistoryOpen: false,
+            widgetHistoryEntries: [],
+            widgetHistoryLoading: false,
             busyButtonKey,
           },
         })
@@ -425,4 +430,71 @@ test('VersionHistoryDrawer renders chronological timeline with current version b
   const v2Pos = html.indexOf('v2');
   const v1Pos = html.indexOf('v1');
   assert.ok(v3Pos > -1 && v2Pos > -1 && v1Pos > -1 && v3Pos < v2Pos && v2Pos < v1Pos, 'versions must be ordered newest-first');
+});
+
+test('WidgetNode exposes always-visible history button and WidgetHistoryPopover renders entries', () => {
+  const seed = createSeedBlueprint();
+  const baseNode = Object.values(seed.nodes)[0];
+  const entity = {
+    ...baseNode,
+    id: 'node-hist-check',
+    title: 'History Visible Card',
+    defaultVars: {},
+    effectiveVars: {},
+    hasLocalOverride: false,
+    hasRuntimeVars: false,
+  } as any;
+  const noop = () => {};
+  const entries = [
+    { version: 1, ts: 1732650000000, action: 'publish', actor: 'admin', summary: '管理员发布蓝图' },
+    { version: 2, ts: 1732650600000, action: 'agent', actor: 'agent:172.18.0.1', summary: 'Update widget' },
+  ];
+
+  const widgetHtml = renderToStaticMarkup(
+    React.createElement(
+      ReactFlowProvider,
+      null,
+      React.createElement(WidgetNode as any, {
+        id: entity.id,
+        selected: false,
+        data: {
+          entity,
+          onRunButton: noop,
+          onRunScriptClick: noop,
+          onScriptInputChange: noop,
+          onScriptInputSubmit: noop,
+          onToggleLock: noop,
+          onResetLocal: noop,
+          onEditTitle: noop,
+          onEditBody: noop,
+          onResizeNode: noop,
+          onOpenInspector: noop,
+          onDuplicateNode: noop,
+          onDeleteNode: noop,
+          onOpenWidgetHistory: noop,
+          widgetHistoryOpen: true,
+          widgetHistoryEntries: entries,
+          widgetHistoryLoading: false,
+          busyButtonKey: null,
+        },
+      })
+    )
+  );
+
+  assert.ok(widgetHtml.includes('title="查看控件版本历史"'), 'widget card should expose always-visible history button');
+  assert.ok(widgetHtml.includes('aria-label="History Visible Card 变更历史"'), 'widget should render WidgetHistoryPopover when open');
+  assert.ok(widgetHtml.includes('v2') && widgetHtml.includes('v1'), 'popover should display version entries');
+
+  const popoverHtml = renderToStaticMarkup(
+    React.createElement(WidgetHistoryPopover, {
+      open: true,
+      nodeId: 'node-hist-check',
+      nodeTitle: 'History Visible Card',
+      entries,
+      loading: false,
+      onClose: noop,
+    })
+  );
+  assert.ok(popoverHtml.includes('2 条'), 'popover should show entry count');
+  assert.ok(popoverHtml.indexOf('v2') < popoverHtml.indexOf('v1'), 'popover entries should be ordered newest-first');
 });
