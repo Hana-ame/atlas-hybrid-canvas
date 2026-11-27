@@ -11,6 +11,8 @@ import { ScriptTrustModal } from '../src/components/ScriptTrustModal.tsx';
 import { NodeInspectorPanel } from '../src/components/NodeInspectorPanel.tsx';
 import { VersionHistoryDrawer } from '../src/components/VersionHistoryDrawer.tsx';
 import { WidgetHistoryPopover } from '../src/components/WidgetHistoryPopover.tsx';
+import { EdgeInspectorPanel } from '../src/components/EdgeInspectorPanel.tsx';
+import { buildControlPointEdgePath, resolveEdgeStrokeDasharray } from '../src/core/edgePath.ts';
 import { ImageNodeBlock } from '../src/canvas/ImageNodeBlock.tsx';
 import { VideoNodeBlock } from '../src/canvas/VideoNodeBlock.tsx';
 import { SliderControlBlock } from '../src/canvas/SliderControlBlock.tsx';
@@ -497,4 +499,77 @@ test('WidgetNode exposes always-visible history button and WidgetHistoryPopover 
   );
   assert.ok(popoverHtml.includes('2 条'), 'popover should show entry count');
   assert.ok(popoverHtml.indexOf('v2') < popoverHtml.indexOf('v1'), 'popover entries should be ordered newest-first');
+});
+
+test('Edge styles (pathType, strokeStyle, strokeWidth) and EdgeInspectorPanel render and resolve properly', () => {
+  assert.equal(resolveEdgeStrokeDasharray('solid', true), undefined);
+  assert.equal(resolveEdgeStrokeDasharray('dashed', false), '7 4');
+  assert.equal(resolveEdgeStrokeDasharray('dotted', false), '2 4');
+  assert.equal(resolveEdgeStrokeDasharray(undefined, true), '7 4');
+
+  const straightRes = buildControlPointEdgePath(0, 0, 100, 100, [], 'straight');
+  assert.ok(straightRes.path.startsWith('M 0 0 L 100.0 100.0'), 'straight path should emit L command');
+  assert.equal(straightRes.labelX, 50);
+  assert.equal(straightRes.labelY, 50);
+
+  const stepRes = buildControlPointEdgePath(0, 0, 100, 100, [], 'step');
+  assert.ok(stepRes.path.includes('L 50.0 0.0 L 50.0 100.0 L 100.0 100.0'), 'step path should emit orthogonal segments');
+
+  const edgeHtml = renderToStaticMarkup(
+    React.createElement(
+      ReactFlowProvider,
+      null,
+      React.createElement('svg', null,
+        React.createElement(ControllableEdge as any, {
+          id: 'e-styled',
+          source: 'n1',
+          target: 'n2',
+          sourceX: 0,
+          sourceY: 0,
+          targetX: 120,
+          targetY: 80,
+          sourcePosition: 'right',
+          targetPosition: 'left',
+          selected: true,
+          label: 'Styled Edge',
+          style: { stroke: '#2563EB', strokeWidth: 3, strokeDasharray: '2 4' },
+          data: {
+            pathType: 'step',
+            onOpenSettings: () => {},
+          },
+        })
+      )
+    )
+  );
+  assert.ok(edgeHtml.includes('M 0 0 L 60.0 0.0 L 60.0 80.0 L 120.0 80.0'), 'edge should render step path');
+  assert.ok(edgeHtml.includes('stroke="#2563EB"') || edgeHtml.includes('stroke:#2563EB'), 'edge should apply custom color');
+  assert.ok(edgeHtml.includes('stroke-dasharray="2 4"') || edgeHtml.includes('stroke-dasharray:2 4'), 'edge should apply dotted strokeDasharray');
+
+  const panelHtml = renderToStaticMarkup(
+    React.createElement(EdgeInspectorPanel, {
+      edge: {
+        id: 'e-styled',
+        source: 'n1',
+        target: 'n2',
+        label: 'Styled Edge',
+        color: '#2563EB',
+        strokeStyle: 'dotted',
+        strokeWidth: 3,
+        pathType: 'step',
+        animated: true,
+        bidirectional: true,
+        rev: 1,
+        cid: 'test',
+      },
+      sourceTitle: 'Node A',
+      targetTitle: 'Node B',
+      onUpdateEdge: () => {},
+      onDeleteEdge: () => {},
+      onClose: () => {},
+    })
+  );
+  assert.ok(panelHtml.includes('连线样式设置'), 'panel should display title');
+  assert.ok(panelHtml.includes('平滑曲线') && panelHtml.includes('直线') && panelHtml.includes('直角折线'), 'panel should list path types');
+  assert.ok(panelHtml.includes('实线') && panelHtml.includes('虚线') && panelHtml.includes('点线'), 'panel should list stroke styles');
+  assert.ok(panelHtml.includes('流动动画') && panelHtml.includes('单线双向连线'), 'panel should expose animation and bidirectional toggles');
 });

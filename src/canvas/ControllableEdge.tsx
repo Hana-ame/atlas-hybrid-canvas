@@ -9,7 +9,8 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { BaseEdge, EdgeLabelRenderer, useReactFlow, type EdgeProps } from '@xyflow/react';
-import type { EdgeControlPoint } from '../core/types';
+import { Settings2 } from 'lucide-react';
+import type { EdgeControlPoint, EdgePathType } from '../core/types';
 import {
   buildControlPointEdgePath,
   createControlPointDragSession,
@@ -23,6 +24,7 @@ import {
 
 export interface ControllableEdgeData extends Record<string, unknown> {
   controlPoints?: EdgeControlPoint[];
+  pathType?: EdgePathType;
   sourceTitle?: string;
   targetTitle?: string;
   isEditingLabel?: boolean;
@@ -32,6 +34,7 @@ export interface ControllableEdgeData extends Record<string, unknown> {
   onEditLabel?: (edgeId: string) => void;
   onCommitLabel?: (edgeId: string, nextLabel: string) => void;
   onCancelEditLabel?: (edgeId: string) => void;
+  onOpenSettings?: (edgeId: string) => void;
 }
 
 const HOVER_LEAVE_DELAY_MS = 120;
@@ -60,6 +63,7 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
   const onEditLabel = edgeData.onEditLabel;
   const onCommitLabel = edgeData.onCommitLabel;
   const onCancelEditLabel = edgeData.onCancelEditLabel;
+  const onOpenSettings = edgeData.onOpenSettings;
   const isEditingLabel = Boolean(edgeData.isEditingLabel);
   const edgeFlag = Boolean(edgeData.edgeFlag);
   const edgeMsgPreview =
@@ -80,6 +84,7 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
 
   const activePoints = draftPoints ?? committedPoints;
   const stroke = String((style as React.CSSProperties | undefined)?.stroke || '#64748B');
+  const baseStrokeWidth = Number((style as React.CSSProperties | undefined)?.strokeWidth) || 2.2;
   const isActive = Boolean(selected || hovered || dragging || draftPoints !== null || isEditingLabel);
 
   const { path, labelX, labelY, segmentMidpoints } = buildControlPointEdgePath(
@@ -87,7 +92,8 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
     sourceY,
     targetX,
     targetY,
-    activePoints
+    activePoints,
+    edgeData.pathType
   );
 
   const handleMouseEnter = useCallback(() => {
@@ -286,7 +292,7 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
         style={{
           ...style,
           stroke,
-          strokeWidth: isActive ? 3 : 2.2,
+          strokeWidth: isActive ? baseStrokeWidth + 0.8 : baseStrokeWidth,
         }}
       />
 
@@ -392,8 +398,8 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
           );
         })}
 
-      {/* 连线标签 / 未读消息胶囊 / 画布内联标签输入框 */}
-      {(isEditingLabel || Boolean(label) || edgeFlag) && (
+      {/* 连线标签 / 未读消息胶囊 / 样式设置按钮 / 画布内联标签输入框 */}
+      {(isEditingLabel || Boolean(label) || edgeFlag || (Boolean(selected) && Boolean(onOpenSettings))) && (
         <EdgeLabelRenderer>
           {isEditingLabel ? (
             <div
@@ -456,11 +462,26 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
               className="nodrag nopan inline-flex select-none items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold shadow-sm transition-colors"
             >
               {edgeFlag && <span className="inline-block h-2 w-2 rounded-full bg-amber-500 animate-pulse" />}
-              <span>{label ? String(label) : 'NEW'}</span>
+              {(Boolean(label) || edgeFlag) && <span>{label ? String(label) : 'NEW'}</span>}
               {edgeFlag && edgeMsgPreview && (
                 <span className="max-w-[110px] truncate font-mono text-[10px] font-normal text-amber-800">
                   {edgeMsgPreview}
                 </span>
+              )}
+              {selected && onOpenSettings && (
+                <button
+                  type="button"
+                  title="设置连线样式"
+                  onMouseDown={stopCanvasPanPropagation}
+                  onPointerDown={(ev) => ev.stopPropagation()}
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    onOpenSettings(id);
+                  }}
+                  className="ml-0.5 inline-flex items-center justify-center rounded-full p-0.5 text-slate-500 hover:bg-blue-50 hover:text-blue-700"
+                >
+                  <Settings2 className="h-3 w-3" />
+                </button>
               )}
             </div>
           )}

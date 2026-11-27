@@ -271,6 +271,9 @@ export interface EdgeControlPoint {
   y: number;
 }
 
+export type EdgeStrokeStyle = 'solid' | 'dashed' | 'dotted';
+export type EdgePathType = 'smooth' | 'straight' | 'step';
+
 export interface BlueprintEdge {
   id: string;
   source: string;
@@ -280,6 +283,14 @@ export interface BlueprintEdge {
   label?: string;
   color?: string;
   dashed?: boolean;
+  /** 线型：实线 / 虚线 / 点线 */
+  strokeStyle?: EdgeStrokeStyle;
+  /** 线宽（px，默认 2.2） */
+  strokeWidth?: number;
+  /** 路径形状：平滑曲线 / 直线 / 折线 */
+  pathType?: EdgePathType;
+  /** 是否开启流动动画 */
+  animated?: boolean;
   /** 是否为单线双向连线（双头箭头 <——>，任一端变更自动通知对端） */
   bidirectional?: boolean;
   /** 可选自定义路径控制点（按顺序平滑穿过，避让节点卡片） */

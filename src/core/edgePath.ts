@@ -8,7 +8,18 @@
  * - 提供纯状态机 createControlPointDragSession()，统一处理左键过滤、4px 抖动阈值、pointerId 隔离、pointercancel 回滚与卸载清理。
  */
 
-import type { EdgeControlPoint, NodePortSpec } from './types';
+import type { EdgeControlPoint, EdgePathType, EdgeStrokeStyle, NodePortSpec } from './types';
+
+/** Resolves SVG strokeDasharray for an edge based on strokeStyle and legacy dashed flag. */
+export function resolveEdgeStrokeDasharray(
+  strokeStyle?: EdgeStrokeStyle,
+  dashed?: boolean
+): string | undefined {
+  if (strokeStyle === 'dashed') return '7 4';
+  if (strokeStyle === 'dotted') return '2 4';
+  if (strokeStyle === 'solid') return undefined;
+  return dashed ? '7 4' : undefined;
+}
 
 export const MAX_EDGE_CONTROL_POINTS = 12;
 export const CONTROL_POINT_DRAG_THRESHOLD_PX = 4;
@@ -227,9 +238,88 @@ export function buildControlPointEdgePath(
   sourceY: number,
   targetX: number,
   targetY: number,
-  controlPoints?: EdgeControlPoint[]
+  controlPoints?: EdgeControlPoint[],
+  pathType: EdgePathType = 'smooth'
 ): { path: string; labelX: number; labelY: number; segmentMidpoints: Array<{ x: number; y: number; insertIndex: number }> } {
   const cps = sanitizeControlPoints(controlPoints);
+
+  if (pathType === 'straight' || pathType === 'step') {
+    const pts: EdgeControlPoint[] = [{ x: sourceX, y: sourceY }, ...cps, { x: targetX, y: targetY }];
+    const parts: string[] = [`M ${sourceX} ${sourceY}`];
+    const segmentMidpoints: Array<{ x: number; y: number; insertIndex: number }> = [];
+    const segLengths: number[] = [];
+    let totalLen = 0;
+
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      if (pathType === 'straight') {
+        parts.push(`L ${b.x.toFixed(1)} ${b.y.toFixed(1)}`);
+        segmentMidpoints.push({
+          x: Math.round((a.x + b.x) / 2),
+          y: Math.round((a.y + b.y) / 2),
+          insertIndex: i,
+        });
+        const len = Math.hypot(b.x - a.x, b.y - a.y);
+        segLengths.push(len);
+        totalLen += len;
+      } else {
+        const midX = (a.x + b.x) / 2;
+        parts.push(`L ${midX.toFixed(1)} ${a.y.toFixed(1)} L ${midX.toFixed(1)} ${b.y.toFixed(1)} L ${b.x.toFixed(1)} ${b.y.toFixed(1)}`);
+        segmentMidpoints.push({
+          x: Math.round(midX),
+          y: Math.round((a.y + b.y) / 2),
+          insertIndex: i,
+        });
+        const len = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+        segLengths.push(len);
+        totalLen += len;
+      }
+    }
+
+    let labelX = Math.round((sourceX + targetX) / 2);
+    let labelY = Math.round((sourceY + targetY) / 2);
+    if (totalLen > 0) {
+      let acc = 0;
+      const half = totalLen / 2;
+      for (let i = 0; i < pts.length - 1; i++) {
+        if (acc + segLengths[i] >= half && segLengths[i] > 0) {
+          const a = pts[i];
+          const b = pts[i + 1];
+          const t = Math.max(0, Math.min(1, (half - acc) / segLengths[i]));
+          if (pathType === 'straight') {
+            labelX = Math.round(a.x + (b.x - a.x) * t);
+            labelY = Math.round(a.y + (b.y - a.y) * t);
+          } else {
+            const midX = (a.x + b.x) / 2;
+            const dx1 = Math.abs(midX - a.x);
+            const dy = Math.abs(b.y - a.y);
+            const dist = t * segLengths[i];
+            if (dist <= dx1) {
+              labelX = Math.round(a.x + Math.sign(midX - a.x) * dist);
+              labelY = Math.round(a.y);
+            } else if (dist <= dx1 + dy) {
+              labelX = Math.round(midX);
+              labelY = Math.round(a.y + Math.sign(b.y - a.y) * (dist - dx1));
+            } else {
+              labelX = Math.round(midX + Math.sign(b.x - midX) * (dist - dx1 - dy));
+              labelY = Math.round(b.y);
+            }
+          }
+          break;
+        }
+        acc += segLengths[i];
+      }
+    }
+
+    return {
+      path: parts.join(' '),
+      labelX,
+      labelY,
+      segmentMidpoints,
+    };
+  }
+
   const segments = computeControlPointBezierSegments(sourceX, sourceY, targetX, targetY, cps);
 
   if (cps.length === 0) {

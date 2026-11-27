@@ -55,7 +55,7 @@ import {
 } from 'lucide-react';
 import { AnnotationNode, type AnnotationNodeData } from './canvas/AnnotationNode';
 import { ControllableEdge } from './canvas/ControllableEdge';
-import { areControlPointsEqual, sanitizeControlPoints } from './core/edgePath';
+import { areControlPointsEqual, resolveEdgeStrokeDasharray, sanitizeControlPoints } from './core/edgePath';
 import { ChunkUnderlayCanvas } from './canvas/ChunkUnderlayCanvas';
 import { WidgetNode, type WidgetNodeData } from './canvas/WidgetNode';
 import type { ScriptConsoleEntry } from './components/NodeInspectorPanel';
@@ -78,6 +78,9 @@ const ScriptTrustModal = lazy(() =>
 );
 const VersionHistoryDrawer = lazy(() =>
   import('./components/VersionHistoryDrawer').then((m) => ({ default: m.VersionHistoryDrawer }))
+);
+const EdgeInspectorPanel = lazy(() =>
+  import('./components/EdgeInspectorPanel').then((m) => ({ default: m.EdgeInspectorPanel }))
 );
 import type { RoomStatus } from './core/roomClient';
 import { TEMPLATE_DRAG_MIME, TemplateDrawer } from './components/TemplateDrawer';
@@ -172,6 +175,7 @@ function HybridCanvasWorkspace() {
   const [annotationEditMode, setAnnotationEditMode] = useState(false);
   const [templateDrawerOpen, setTemplateDrawerOpen] = useState(() => (typeof window !== 'undefined' ? window.innerWidth >= 768 : true));
   const [inspectingNodeId, setInspectingNodeId] = useState<string | null>(null);
+  const [inspectingEdgeId, setInspectingEdgeId] = useState<string | null>(null);
   const [busyButtonKey, setBusyButtonKey] = useState<string | null>(null);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
@@ -217,6 +221,7 @@ function HybridCanvasWorkspace() {
     if (inspectingNodeId) {
       setHistoryDrawerOpen(false);
       setWidgetHistoryNodeId(null);
+      setInspectingEdgeId(null);
     }
   }, [inspectingNodeId]);
 
@@ -2120,6 +2125,62 @@ function HybridCanvasWorkspace() {
     setEditingEdgeLabelId((cur) => (cur === edgeId ? null : cur));
   }, []);
 
+  const handleOpenEdgeSettings = useCallback((edgeId: string) => {
+    setInspectingNodeId(null);
+    setHistoryDrawerOpen(false);
+    setWidgetHistoryNodeId(null);
+    setInspectingEdgeId((cur) => (cur === edgeId ? null : edgeId));
+  }, []);
+
+  const handleUpdateEdge = useCallback(
+    (edgeId: string, patch: Partial<BlueprintEdge>) => {
+      if (!baseRef.current.edges[edgeId]) return;
+      pushHistory();
+      setBase((prev) => {
+        const cur = prev.edges[edgeId];
+        if (!cur) return prev;
+        const nextEdge: BlueprintEdge = {
+          ...cur,
+          ...patch,
+          rev: cur.rev + 1,
+          cid: SELF_CID,
+        };
+        if (patch.label !== undefined && !patch.label.trim()) {
+          delete nextEdge.label;
+        }
+        return {
+          ...prev,
+          version: prev.version + 1,
+          edges: {
+            ...prev.edges,
+            [edgeId]: nextEdge,
+          },
+        };
+      });
+    },
+    [pushHistory]
+  );
+
+  const handleDeleteEdgeById = useCallback(
+    (edgeId: string) => {
+      if (!baseRef.current.edges[edgeId]) return;
+      pushHistory();
+      setBase((prev) => {
+        if (!prev.edges[edgeId]) return prev;
+        const nextEdges = { ...prev.edges };
+        delete nextEdges[edgeId];
+        return {
+          ...prev,
+          version: prev.version + 1,
+          edges: nextEdges,
+        };
+      });
+      setInspectingEdgeId((cur) => (cur === edgeId ? null : cur));
+      setStatusLog('已删除连线');
+    },
+    [pushHistory]
+  );
+
   const rfEdges: Edge[] = useMemo(() => {
     if (lod === 'macro') return [];
     const edgeRuntimeMap = overlay.edgeRuntime ?? {};
@@ -2127,9 +2188,25 @@ function HybridCanvasWorkspace() {
       const rt = edgeRuntimeMap[e.id];
       const hasFlag = Boolean(rt?.flag);
       const effectiveLabel = rt?.tag !== undefined ? (rt.tag || undefined) : e.label;
-      const effectiveAnimated = rt?.dashed !== undefined ? Boolean(rt.dashed) : (Boolean(e.dashed) || hasFlag);
+      const effectiveAnimated =
+        e.animated !== undefined
+          ? e.animated
+          : rt?.dashed !== undefined
+            ? Boolean(rt.dashed)
+            : Boolean(e.dashed) || hasFlag;
       const stroke = (rt?.color && rt.color.trim()) ? rt.color.trim() : (hasFlag ? '#F59E0B' : (e.color || '#64748B'));
-      const effectiveWidth = typeof rt?.width === 'number' ? Math.max(1, Math.min(8, rt.width)) : (hasFlag ? 3.2 : 2.2);
+      const effectiveWidth =
+        typeof rt?.width === 'number'
+          ? Math.max(1, Math.min(8, rt.width))
+          : typeof e.strokeWidth === 'number'
+            ? Math.max(1, Math.min(8, e.strokeWidth))
+            : hasFlag
+              ? 3.2
+              : 2.2;
+      const strokeDasharray = resolveEdgeStrokeDasharray(
+        e.strokeStyle,
+        rt?.dashed !== undefined ? Boolean(rt.dashed) : e.dashed
+      );
       return {
         id: e.id,
         type: 'controllable',
@@ -2140,9 +2217,14 @@ function HybridCanvasWorkspace() {
         selected: selectedEdgeIds.has(e.id),
         label: effectiveLabel,
         animated: effectiveAnimated,
-        style: { stroke, strokeWidth: effectiveWidth },
+        style: {
+          stroke,
+          strokeWidth: effectiveWidth,
+          ...(strokeDasharray ? { strokeDasharray } : {}),
+        },
         data: {
           controlPoints: e.controlPoints,
+          pathType: e.pathType,
           sourceTitle: base.nodes[e.source]?.title,
           targetTitle: base.nodes[e.target]?.title,
           isEditingLabel: editingEdgeLabelId === e.id,
@@ -2152,6 +2234,7 @@ function HybridCanvasWorkspace() {
           onEditLabel: handleEditEdgeLabel,
           onCommitLabel: handleCommitEdgeLabel,
           onCancelEditLabel: handleCancelEditEdgeLabel,
+          onOpenSettings: handleOpenEdgeSettings,
         },
         ...(e.bidirectional
           ? {
@@ -2183,6 +2266,7 @@ function HybridCanvasWorkspace() {
     handleEditEdgeLabel,
     handleCommitEdgeLabel,
     handleCancelEditEdgeLabel,
+    handleOpenEdgeSettings,
   ]);
 
   // 关键修复：onNodesChange 直接交给 applyNodeChanges 处理拖动/测量/选中，
@@ -2763,6 +2847,20 @@ function HybridCanvasWorkspace() {
         </Suspense>
       )}
 
+      {/* 右侧连线样式设置面板 */}
+      {inspectingEdgeId && base.edges[inspectingEdgeId] && (
+        <Suspense fallback={null}>
+          <EdgeInspectorPanel
+            edge={base.edges[inspectingEdgeId]}
+            sourceTitle={base.nodes[base.edges[inspectingEdgeId].source]?.title || base.edges[inspectingEdgeId].source}
+            targetTitle={base.nodes[base.edges[inspectingEdgeId].target]?.title || base.edges[inspectingEdgeId].target}
+            onUpdateEdge={handleUpdateEdge}
+            onDeleteEdge={handleDeleteEdgeById}
+            onClose={() => setInspectingEdgeId(null)}
+          />
+        </Suspense>
+      )}
+
       {/* 浮动通知位（仅在有通知消息时弹出，3.5 秒后自动收起） */}
       {statusLog && (
         <div
@@ -2811,6 +2909,7 @@ function HybridCanvasWorkspace() {
         }}
         onPaneClick={() => {
           setInspectingNodeId(null);
+          setInspectingEdgeId(null);
           setEditingEdgeLabelId(null);
         }}
         selectionKeyCode="Shift"
