@@ -2,12 +2,13 @@
  * @file GitGatewayBlock.tsx
  * @description git-gateway 仓库看板控件：
  * - 自动从 `GET <baseUrl>/repos` 拉取白名单仓库与别名目录；
+ * - 支持定时自动刷新仓库目录、Open PR 与 TODO（离屏与后台页签自动休眠）；
  * - 支持一键切换仓库，实时浏览 Open PR 列表、按 PR 查询 CI 状态与失败日志，以及查看仓库 TODO；
  * - 将仓库摘要同步写回节点 vars，可供下游连线节点消费。
  */
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { ExternalLink, FileText, GitPullRequest, Loader2, RefreshCw } from 'lucide-react';
+import { Clock, ExternalLink, FileText, GitPullRequest, Loader2, RefreshCw } from 'lucide-react';
 
 export interface GitGatewayRepoItem {
   id: string;
@@ -30,10 +31,12 @@ export interface GitGatewayBlockProps {
   baseUrl?: string;
   selectedRepo?: string;
   activeTab?: 'prs' | 'todo';
+  autoRefreshSec?: number;
   mediaActive?: boolean;
   onChangeBaseUrl: (next: string) => void;
   onChangeSelectedRepo: (next: string) => void;
   onChangeActiveTab: (next: 'prs' | 'todo') => void;
+  onChangeAutoRefreshSec?: (nextSec: number) => void;
   onSyncState: (patch: {
     gitRepo: string;
     gitOpenPrCount: number;
@@ -42,24 +45,44 @@ export interface GitGatewayBlockProps {
   }) => void;
 }
 
+const REFRESH_OPTIONS = [
+  { label: '关', value: 0 },
+  { label: '15s', value: 15 },
+  { label: '30s', value: 30 },
+  { label: '60s', value: 60 },
+  { label: '5m', value: 300 },
+];
+
 function normalizeBaseUrl(raw: string): string {
   return raw.trim().replace(/\/+$/, '');
+}
+
+function normalizeRefreshSec(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.max(5, Math.min(3600, Math.floor(n)));
 }
 
 function GitGatewayBlockInner({
   baseUrl = '',
   selectedRepo = '',
   activeTab = 'prs',
+  autoRefreshSec = 0,
   mediaActive = true,
   onChangeBaseUrl,
   onChangeSelectedRepo,
   onChangeActiveTab,
+  onChangeAutoRefreshSec,
   onSyncState,
 }: GitGatewayBlockProps) {
   const [baseDraft, setBaseDraft] = useState(baseUrl);
   const [repoDraft, setRepoDraft] = useState(selectedRepo);
   const [tab, setTab] = useState<'prs' | 'todo'>(activeTab === 'todo' ? 'todo' : 'prs');
+  const [refreshSec, setRefreshSec] = useState(() => normalizeRefreshSec(autoRefreshSec));
   const [showBaseInput, setShowBaseInput] = useState(false);
+  const [pageVisible, setPageVisible] = useState(
+    typeof document === 'undefined' ? true : document.visibilityState !== 'hidden'
+  );
 
   const [repos, setRepos] = useState<GitGatewayRepoItem[]>([]);
   const [prs, setPrs] = useState<GitPrItem[]>([]);
@@ -80,6 +103,13 @@ function GitGatewayBlockInner({
   }, []);
 
   useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const onVis = () => setPageVisible(document.visibilityState !== 'hidden');
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, []);
+
+  useEffect(() => {
     setBaseDraft(baseUrl);
   }, [baseUrl]);
 
@@ -90,6 +120,10 @@ function GitGatewayBlockInner({
   useEffect(() => {
     setTab(activeTab === 'todo' ? 'todo' : 'prs');
   }, [activeTab]);
+
+  useEffect(() => {
+    setRefreshSec(normalizeRefreshSec(autoRefreshSec));
+  }, [autoRefreshSec]);
 
   const fetchRepoDetail = useCallback(
     async (targetRepo: string) => {
@@ -179,6 +213,15 @@ function GitGatewayBlockInner({
     void fetchRepos();
   }, [mediaActive, fetchRepos]);
 
+  // 定时自动刷新仓库目录、PR 与 TODO（离屏或后台页签自动休眠）
+  useEffect(() => {
+    if (!mediaActive || !pageVisible || refreshSec <= 0) return;
+    const timer = setInterval(() => {
+      void fetchRepos();
+    }, refreshSec * 1000);
+    return () => clearInterval(timer);
+  }, [mediaActive, pageVisible, refreshSec, fetchRepos]);
+
   const inspectPrCi = useCallback(
     async (prNumber: number) => {
       const cleaned = repoDraft.trim().replace(/^\/+|\/+$/g, '');
@@ -215,8 +258,8 @@ function GitGatewayBlockInner({
       onMouseDown={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      {/* 仓库选择与刷新 */}
-      <div className="flex items-center gap-1.5">
+      {/* 仓库选择 + 定时刷新 + 立即刷新 */}
+      <div className="flex items-center gap-1">
         <GitPullRequest className="h-3.5 w-3.5 shrink-0 text-emerald-700" />
         <select
           value={repos.some((r) => (r.path || r.id) === repoDraft) ? repoDraft : ''}
@@ -240,9 +283,32 @@ function GitGatewayBlockInner({
             );
           })}
         </select>
+        <div
+          title="定时自动刷新看板间隔（离屏/后台自动暂停）"
+          className={`inline-flex items-center rounded border px-1 py-0.5 text-[10px] ${
+            refreshSec > 0 ? 'border-emerald-400 bg-emerald-100 text-emerald-800' : 'border-slate-300 bg-white text-slate-600'
+          }`}
+        >
+          <Clock className="mr-0.5 h-3 w-3 shrink-0" />
+          <select
+            value={refreshSec}
+            onChange={(e) => {
+              const next = normalizeRefreshSec(e.target.value);
+              setRefreshSec(next);
+              onChangeAutoRefreshSec?.(next);
+            }}
+            className="bg-transparent text-[10px] outline-none"
+          >
+            {REFRESH_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
         <button
           type="button"
-          title="刷新仓库目录与看板"
+          title="立即刷新仓库目录与看板"
           disabled={loadingRepos || loadingDetail}
           onClick={() => void fetchRepos()}
           className="inline-flex items-center justify-center rounded border border-slate-300 bg-white p-1.5 text-slate-700 hover:bg-slate-100 disabled:opacity-50"

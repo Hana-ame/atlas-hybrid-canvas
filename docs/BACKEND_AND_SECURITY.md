@@ -94,3 +94,8 @@ npm run dev          # 同时启动 API 与协同房间，默认端口 8787
 1. **远端脚本信任门禁**：从协同房间同步来的 `entity.script` 或按钮 `code` 变更，不得自动静默执行，必须默认锁定并由本地用户人工审阅或校验管理员签名后放行（`App.tsx` 中 `msg.t === 'state'` 分支已接入 `auditBlueprintScripts`）。
 2. **当前无鉴权**：房间名即凭据，知道房间名即可加入。**不要用于公网开放场景**，或在外层加反向代理鉴权。
 3. **纯内存**：房间状态不落盘，进程重启即丢失。生产环境建议补 SQLite/PostgreSQL WAL 持久化，并将插图上传至对象存储（S3/MinIO）只同步 URL。
+
+
+## 同源相对 WebSocket 路径（v102）
+
+`VITE_BACKEND_WS_URL` 支持相对路径 `/ws` 以及关键词 `auto` / `same-origin`：浏览器运行时会根据 `window.location.protocol`（`https:` → `wss:`，其余 `ws:`）与 `window.location.host` 自动拼接 WebSocket 地址，避免在 Docker / HTTPS 反代 / Cloud Shell 场景下因域名变更重新构建前端镜像。协议相对地址（`//...`）会被显式拒绝。

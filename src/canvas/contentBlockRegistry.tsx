@@ -508,6 +508,11 @@ export const CONTENT_BLOCK_REGISTRY: {
     const baseKey = block.bindBaseUrl || 'fnBaseUrl';
     const fnKey = block.bindSelectedFn || 'fnSelected';
     const payloadKey = block.bindPayload || 'fnPayload';
+    const refreshKey = block.bindAutoRefresh || 'fnAutoRefreshSec';
+    const curRefresh =
+      entity.effectiveVars?.[refreshKey] !== undefined
+        ? Number(entity.effectiveVars[refreshKey]) || 0
+        : Number(block.autoRefreshSec) || 0;
     const curBase =
       entity.effectiveVars?.[baseKey] !== undefined
         ? String(entity.effectiveVars[baseKey])
@@ -526,6 +531,7 @@ export const CONTENT_BLOCK_REGISTRY: {
           baseUrl={curBase}
           selectedFn={curFn}
           payloadText={curPayload}
+          autoRefreshSec={curRefresh}
           lastStatus={entity.effectiveVars?.fnLastStatus !== undefined ? String(entity.effectiveVars.fnLastStatus) : ''}
           lastResult={entity.effectiveVars?.fnLastResult !== undefined ? String(entity.effectiveVars.fnLastResult) : ''}
           lastUpdatedAt={entity.effectiveVars?.fnUpdatedAt !== undefined ? String(entity.effectiveVars.fnUpdatedAt) : ''}
@@ -533,6 +539,7 @@ export const CONTENT_BLOCK_REGISTRY: {
           onChangeBaseUrl={(next) => onScriptInputChange(entity.id, baseKey, next)}
           onChangeSelectedFn={(next) => onScriptInputChange(entity.id, fnKey, next)}
           onChangePayload={(next) => onScriptInputChange(entity.id, payloadKey, next)}
+          onChangeAutoRefreshSec={(nextSec) => onScriptInputChange(entity.id, refreshKey, String(nextSec))}
           onRunResult={({ selectedFn, status, result, updatedAt, error }) => {
             const patch = {
               [fnKey]: selectedFn,
@@ -558,6 +565,11 @@ export const CONTENT_BLOCK_REGISTRY: {
     const baseKey = block.bindBaseUrl || 'gitBaseUrl';
     const repoKey = block.bindSelectedRepo || 'gitRepo';
     const tabKey = block.bindTab || 'gitTab';
+    const refreshKey = block.bindAutoRefresh || 'gitAutoRefreshSec';
+    const curRefresh =
+      entity.effectiveVars?.[refreshKey] !== undefined
+        ? Number(entity.effectiveVars[refreshKey]) || 0
+        : Number(block.autoRefreshSec) || 0;
     const curBase =
       entity.effectiveVars?.[baseKey] !== undefined
         ? String(entity.effectiveVars[baseKey])
@@ -577,10 +589,12 @@ export const CONTENT_BLOCK_REGISTRY: {
           baseUrl={curBase}
           selectedRepo={curRepo}
           activeTab={curTab}
+          autoRefreshSec={curRefresh}
           mediaActive={mediaActive}
           onChangeBaseUrl={(next) => onScriptInputChange(entity.id, baseKey, next)}
           onChangeSelectedRepo={(next) => onScriptInputChange(entity.id, repoKey, next)}
           onChangeActiveTab={(next) => onScriptInputChange(entity.id, tabKey, next)}
+          onChangeAutoRefreshSec={(nextSec) => onScriptInputChange(entity.id, refreshKey, String(nextSec))}
           onSyncState={(patch) => {
             if (onBatchUpdateVars) {
               onBatchUpdateVars(entity.id, patch, true);

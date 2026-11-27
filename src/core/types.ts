@@ -188,9 +188,11 @@ export interface ContentElyfnRunnerBlock {
   baseUrl?: string;
   selectedFn?: string;
   payloadText?: string;
+  autoRefreshSec?: number;
   bindBaseUrl?: string;
   bindSelectedFn?: string;
   bindPayload?: string;
+  bindAutoRefresh?: string;
 }
 
 export interface ContentGitGatewayBlock {
@@ -199,9 +201,11 @@ export interface ContentGitGatewayBlock {
   baseUrl?: string;
   selectedRepo?: string;
   activeTab?: 'prs' | 'todo';
+  autoRefreshSec?: number;
   bindBaseUrl?: string;
   bindSelectedRepo?: string;
   bindTab?: string;
+  bindAutoRefresh?: string;
 }
 
 export type ContentLeafBlock =

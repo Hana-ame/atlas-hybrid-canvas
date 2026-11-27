@@ -2,12 +2,13 @@
  * @file ElyfnRunnerBlock.tsx
  * @description elyfn 函数目录与调用控件：
  * - 自动从 `GET <baseUrl>/catalog` 拉取已部署函数目录（只读，不含源码）；
+ * - 支持定时自动刷新目录（后台页签与离屏自动休眠）；
  * - 支持下拉选择函数、编辑 JSON 入参、可选 Bearer 执行密钥与一键调用 `POST /:folder/:fn`；
  * - 将执行结果同步写回节点 vars，供下游连线控件联动消费。
  */
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { KeyRound, Loader2, Play, RefreshCw, Terminal } from 'lucide-react';
+import { Clock, KeyRound, Loader2, Play, RefreshCw, Terminal } from 'lucide-react';
 
 export interface ElyfnCatalogItem {
   folder: string;
@@ -20,6 +21,7 @@ export interface ElyfnRunnerBlockProps {
   baseUrl?: string;
   selectedFn?: string;
   payloadText?: string;
+  autoRefreshSec?: number;
   lastStatus?: string;
   lastResult?: string;
   lastUpdatedAt?: string;
@@ -27,6 +29,7 @@ export interface ElyfnRunnerBlockProps {
   onChangeBaseUrl: (next: string) => void;
   onChangeSelectedFn: (next: string) => void;
   onChangePayload: (next: string) => void;
+  onChangeAutoRefreshSec?: (nextSec: number) => void;
   onRunResult: (result: {
     selectedFn: string;
     status: string;
@@ -36,8 +39,22 @@ export interface ElyfnRunnerBlockProps {
   }) => void;
 }
 
+const REFRESH_OPTIONS = [
+  { label: '关', value: 0 },
+  { label: '15s', value: 15 },
+  { label: '30s', value: 30 },
+  { label: '60s', value: 60 },
+  { label: '5m', value: 300 },
+];
+
 function normalizeBaseUrl(raw: string): string {
   return raw.trim().replace(/\/+$/, '');
+}
+
+function normalizeRefreshSec(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.max(5, Math.min(3600, Math.floor(n)));
 }
 
 function parseCatalogItems(data: unknown): ElyfnCatalogItem[] {
@@ -74,6 +91,7 @@ function ElyfnRunnerBlockInner({
   baseUrl = '',
   selectedFn = '',
   payloadText = '{}',
+  autoRefreshSec = 0,
   lastStatus = '',
   lastResult = '',
   lastUpdatedAt = '',
@@ -81,13 +99,18 @@ function ElyfnRunnerBlockInner({
   onChangeBaseUrl,
   onChangeSelectedFn,
   onChangePayload,
+  onChangeAutoRefreshSec,
   onRunResult,
 }: ElyfnRunnerBlockProps) {
   const [baseDraft, setBaseDraft] = useState(baseUrl);
   const [fnDraft, setFnDraft] = useState(selectedFn);
   const [payloadDraft, setPayloadDraft] = useState(payloadText || '{}');
+  const [refreshSec, setRefreshSec] = useState(() => normalizeRefreshSec(autoRefreshSec));
   const [execKey, setExecKey] = useState('');
   const [showKeyInput, setShowKeyInput] = useState(false);
+  const [pageVisible, setPageVisible] = useState(
+    typeof document === 'undefined' ? true : document.visibilityState !== 'hidden'
+  );
 
   const [catalog, setCatalog] = useState<ElyfnCatalogItem[]>([]);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
@@ -103,6 +126,13 @@ function ElyfnRunnerBlockInner({
   }, []);
 
   useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const onVis = () => setPageVisible(document.visibilityState !== 'hidden');
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, []);
+
+  useEffect(() => {
     setBaseDraft(baseUrl);
   }, [baseUrl]);
 
@@ -113,6 +143,10 @@ function ElyfnRunnerBlockInner({
   useEffect(() => {
     setPayloadDraft(payloadText || '{}');
   }, [payloadText]);
+
+  useEffect(() => {
+    setRefreshSec(normalizeRefreshSec(autoRefreshSec));
+  }, [autoRefreshSec]);
 
   const fetchCatalog = useCallback(async () => {
     setLoadingCatalog(true);
@@ -151,6 +185,15 @@ function ElyfnRunnerBlockInner({
     if (!mediaActive) return;
     void fetchCatalog();
   }, [mediaActive, fetchCatalog]);
+
+  // 定时自动刷新目录（离屏或后台页签自动休眠）
+  useEffect(() => {
+    if (!mediaActive || !pageVisible || refreshSec <= 0) return;
+    const timer = setInterval(() => {
+      void fetchCatalog();
+    }, refreshSec * 1000);
+    return () => clearInterval(timer);
+  }, [mediaActive, pageVisible, refreshSec, fetchCatalog]);
 
   const runFunction = useCallback(async () => {
     const target = fnDraft.trim().replace(/^\/+/, '');
@@ -230,8 +273,8 @@ function ElyfnRunnerBlockInner({
       onMouseDown={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      {/* 顶栏：目录拉取 + Key 切换 */}
-      <div className="flex items-center gap-1.5">
+      {/* 顶栏：目录拉取 + 定时刷新 + Key 切换 */}
+      <div className="flex items-center gap-1">
         <Terminal className="h-3.5 w-3.5 shrink-0 text-violet-600" />
         <select
           value={catalog.some((c) => c.id === fnDraft) ? fnDraft : ''}
@@ -251,9 +294,32 @@ function ElyfnRunnerBlockInner({
             </option>
           ))}
         </select>
+        <div
+          title="定时自动刷新目录间隔（离屏/后台自动暂停）"
+          className={`inline-flex items-center rounded border px-1 py-0.5 text-[10px] ${
+            refreshSec > 0 ? 'border-violet-400 bg-violet-100 text-violet-800' : 'border-slate-300 bg-white text-slate-600'
+          }`}
+        >
+          <Clock className="mr-0.5 h-3 w-3 shrink-0" />
+          <select
+            value={refreshSec}
+            onChange={(e) => {
+              const next = normalizeRefreshSec(e.target.value);
+              setRefreshSec(next);
+              onChangeAutoRefreshSec?.(next);
+            }}
+            className="bg-transparent text-[10px] outline-none"
+          >
+            {REFRESH_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
         <button
           type="button"
-          title="刷新函数目录 (/catalog)"
+          title="立即刷新函数目录 (/catalog)"
           disabled={loadingCatalog}
           onClick={() => void fetchCatalog()}
           className="inline-flex items-center justify-center rounded border border-slate-300 bg-white p-1.5 text-slate-700 hover:bg-slate-100 disabled:opacity-50"
@@ -272,7 +338,7 @@ function ElyfnRunnerBlockInner({
         </button>
       </div>
 
-      {/* 手动函数路径输入 + 可选基址/密钥 */}
+      {/* 手动函数路径输入 + 执行按钮 */}
       <div className="flex items-center gap-1.5">
         <input
           type="text"

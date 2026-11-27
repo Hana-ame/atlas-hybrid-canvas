@@ -31,6 +31,7 @@ export const BUILTIN_TEMPLATES: BlueprintTemplate[] = [
         fnBaseUrl: '',
         fnSelected: '',
         fnPayload: '{"x": 5}',
+        fnAutoRefreshSec: 0,
         fnLastStatus: '',
         fnLastResult: '',
         fnUpdatedAt: '',
@@ -41,7 +42,8 @@ export const BUILTIN_TEMPLATES: BlueprintTemplate[] = [
     id: 'elyfnRunner',
     bindBaseUrl: 'fnBaseUrl',
     bindSelectedFn: 'fnSelected',
-    bindPayload: 'fnPayload'
+    bindPayload: 'fnPayload',
+    bindAutoRefresh: 'fnAutoRefreshSec'
   }
 ];`,
     },
@@ -65,6 +67,7 @@ export const BUILTIN_TEMPLATES: BlueprintTemplate[] = [
         gitBaseUrl: '',
         gitRepo: '',
         gitTab: 'prs',
+        gitAutoRefreshSec: 30,
         gitOpenPrCount: 0,
         gitTodoPreview: '',
         gitUpdatedAt: '',
@@ -75,7 +78,8 @@ export const BUILTIN_TEMPLATES: BlueprintTemplate[] = [
     id: 'gitGatewayBoard',
     bindBaseUrl: 'gitBaseUrl',
     bindSelectedRepo: 'gitRepo',
-    bindTab: 'gitTab'
+    bindTab: 'gitTab',
+    bindAutoRefresh: 'gitAutoRefreshSec'
   }
 ];`,
     },
