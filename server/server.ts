@@ -36,7 +36,27 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 // 端口默认 8787：与前端 App.tsx 里 ws://localhost:8787/ws 的默认房间地址保持一致，
 // 让 `npm run dev` 起的就是"API + 协同房间"合一的单一进程，不需要再单独拉 room-go/。
-const PORT = Number(process.env.PORT || 8787);
+function parseBindAddr(raw?: string): { host: string; port: number } | null {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  if (s.startsWith('[')) {
+    const m = s.match(/^\[([^\]]+)\]:(\d+)$/);
+    if (m) return { host: m[1], port: Number(m[2]) };
+    return null;
+  }
+  const idx = s.lastIndexOf(':');
+  if (idx > 0 && idx < s.length - 1) {
+    const host = s.slice(0, idx).trim();
+    const port = Number(s.slice(idx + 1).trim());
+    if (host && Number.isFinite(port) && port >= 1 && port <= 65535) {
+      return { host, port: Math.floor(port) };
+    }
+  }
+  return null;
+}
+const parsedBind = parseBindAddr(process.env.ATLAS_ADDR || process.env.BIND_ADDR);
+const HOST = parsedBind?.host || String(process.env.ATLAS_HOST || process.env.HOST || '0.0.0.0').trim();
+const PORT = parsedBind?.port || Number(process.env.ATLAS_PORT || process.env.PORT || 8787);
 const IS_PROD = process.env.NODE_ENV === 'production';
 
 // PDF 上传单文件上限。走二进制直传，不再有 base64 的 4/3 膨胀，
@@ -1382,9 +1402,10 @@ async function startServer() {
     }
   );
 
-  const httpServer = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Atlas Hybrid Canvas] running at http://localhost:${PORT}`);
-    console.log(`[Atlas Hybrid Canvas] 协同房间 WebSocket: ws://localhost:${PORT}/ws`);
+  const httpServer = app.listen(PORT, HOST, () => {
+    const displayHost = HOST === '0.0.0.0' ? 'localhost' : HOST;
+    console.log(`[Atlas Hybrid Canvas] listening on ${HOST}:${PORT} (http://${displayHost}:${PORT})`);
+    console.log(`[Atlas Hybrid Canvas] 协同房间 WebSocket: ws://${displayHost}:${PORT}/ws`);
   });
 
   // 房间服务与 Express 共用同一个 HTTP server 与端口，靠 upgrade 事件按 /ws 分流。
