@@ -644,4 +644,36 @@ test('ElyfnRunnerBlock and GitGatewayBlock render controls and last state cleanl
   assert.ok(elyfnHtml.includes('dark:bg-slate-950'), 'ElyfnRunnerBlock result pre should override index.css bg-slate-900 blue rule in dark mode');
   assert.ok(elyfnHtml.includes('dark:bg-violet-950/35'), 'ElyfnRunnerBlock surface should adapt cleanly in dark mode');
   assert.ok(ggHtml.includes('dark:bg-emerald-950/35'), 'GitGatewayBlock surface should adapt cleanly in dark mode');
+
+  const textPreHtml = renderToStaticMarkup(
+    renderContentBlock(
+      { type: 'text', text: 'line1\nline2', box: true, mono: true },
+      {
+        entity: {
+          id: 'n1',
+          x: 0,
+          y: 0,
+          width: 300,
+          height: 200,
+          title: 'T',
+          body: '',
+          color: '#000',
+          defaultVars: {},
+          effectiveVars: {},
+          hasLocalOverride: false,
+          hasRuntimeVars: false,
+          rev: 1,
+          cid: 'test',
+        },
+        idx: 0,
+        inRow: false,
+        busyButtonKey: null,
+        mediaActive: true,
+        onRunScriptClick: noop,
+        onScriptInputChange: noop,
+        onScriptInputSubmit: noop,
+      }
+    ) as React.ReactElement
+  );
+  assert.ok(textPreHtml.includes('font-mono') && textPreHtml.includes('whitespace-pre'), 'box text block should render monospace preformatted code');
 });

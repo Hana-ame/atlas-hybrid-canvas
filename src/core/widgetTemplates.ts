@@ -14,77 +14,152 @@ export const USAGE_CHEATSHEET_SCRIPT = String.raw`const tab = String(vars.tab ||
 const count = Number(vars.demoCount || 0);
 const sliderVal = Number(vars.demoSlider ?? 60);
 const tabs = [
-  { id: 'blocks', label: 'UI声明块' },
-  { id: 'script', label: '脚本/事件' },
-  { id: 'graph', label: '联动/边通道' },
-  { id: 'agent', label: '正文/按钮/Agent' }
+  { id: 'blocks', label: 'UI 块' },
+  { id: 'script', label: '脚本 API' },
+  { id: 'graph', label: '联动/边' },
+  { id: 'agent', label: '正文/MCP' }
 ];
 
-const snippets = {
+const sections = {
   blocks: [
-    '【vars.contents 全部 14 种声明块 e.g.】',
-    '1) text / button / input / textarea / 行排布 [...]:',
-    '   { type: "text", text: "...", align: "center", color: "#1E40AF", fontSize: 12, bold: true }',
-    '   [{ type: "input", id: "inp", bind: "draft", placeholder: "..." }, { type: "button", id: "go", label: "确定", variant: "primary" }]',
-    '   { type: "textarea", id: "note", bind: "noteText" }',
-    '2) 交互控件 slider / pad2d / image_button:',
-    '   { type: "slider", id: "s1", bind: "v", min: 0, max: 100, step: 5, unit: "%" }',
-    '   { type: "pad2d", id: "p1", bindX: "px", bindY: "py", minX: -10, maxX: 10, minY: -10, maxY: 10 }',
-    '   { type: "image_button", id: "ib", bind: "armed", toggle: true, offImage: "...", onImage: "..." }',
-    '3) 媒体块 image / video / pdf:',
-    '   { type: "image", id: "im", bindUrl: "imgUrl", fit: "contain" }',
-    '   { type: "video", id: "vd", bindUrl: "vidUrl", loop: true, muted: true }',
-    '   { type: "pdf", id: "pf", bindUrl: "pdfUrl", bindPage: "pdfPage", height: 300 }',
-    '4) 工程服务块 api_poller / elyfn_runner / git_gateway / pi_agent:',
-    '   { type: "api_poller", id: "ap", bindUrl: "pollUrl", bindInterval: "pollSec", bindJsonPath: "pollPath" }',
-    '   { type: "elyfn_runner", id: "fn", bindSelectedFn: "fnSelected", bindPayload: "fnPayload" }',
-    '   { type: "git_gateway", id: "gg", bindSelectedRepo: "gitRepo", bindTab: "gitTab" }',
-    '   { type: "pi_agent", id: "pi", bindBaseUrl: "piBaseUrl" }'
-  ].join('\n'),
+    {
+      title: '1) 文本 / 按钮 / 输入框 / 横向行 [...]',
+      code: [
+        "{ type: 'text', text: '标题', bold: true, color: '#3B82F6' }",
+        "[",
+        "  { type: 'input', id: 'inp', bind: 'draft', placeholder: '回车提交' },",
+        "  { type: 'button', id: 'go', label: '确定', variant: 'primary' }",
+        "]",
+        "{ type: 'textarea', id: 'memo', bind: 'memoText' }"
+      ].join('\n')
+    },
+    {
+      title: '2) 滑块 / 2D面板 / 四态图片按钮',
+      code: [
+        "{ type: 'slider', id: 's1', bind: 'val', min: 0, max: 100, step: 5, unit: '%' }",
+        "{ type: 'pad2d', id: 'p1', bindX: 'px', bindY: 'py', minX: -10, maxX: 10 }",
+        "{ type: 'image_button', id: 'ib', bind: 'on', toggle: true, offImage: '...', onImage: '...' }"
+      ].join('\n')
+    },
+    {
+      title: '3) 媒体块：图片 / 视频 / PDF',
+      code: [
+        "{ type: 'image', id: 'im', bindUrl: 'imgUrl', fit: 'contain' }",
+        "{ type: 'video', id: 'vd', bindUrl: 'vidUrl', loop: true, muted: true }",
+        "{ type: 'pdf', id: 'pf', bindUrl: 'pdfUrl', bindPage: 'pdfPage', height: 300 }"
+      ].join('\n')
+    },
+    {
+      title: '4) 工程服务块：轮询 / elyfn / Git / Pi Agent',
+      code: [
+        "{ type: 'api_poller', id: 'ap', bindUrl: 'pollUrl', bindJsonPath: 'status' }",
+        "{ type: 'elyfn_runner', id: 'fn', bindSelectedFn: 'fnSelected', bindPayload: 'fnPayload' }",
+        "{ type: 'git_gateway', id: 'gg', bindSelectedRepo: 'gitRepo', bindTab: 'gitTab' }",
+        "{ type: 'pi_agent', id: 'pi', bindBaseUrl: 'piBaseUrl' }"
+      ].join('\n')
+    }
+  ],
   script: [
-    '【隔离沙箱 API 与事件钩子 e.g.】',
-    '• 读取上下文与变量: ctx.entity.id / title / width / x / y；读写 vars.foo',
-    '• 保留控制字段（实时改卡片外观与位置）:',
-    '  vars.title = "新标题"; vars.type = "TAG"; vars.color = "#DC2626";',
-    '  vars.width = 420; vars.height = 260; vars.pos = { x: 100, y: 200 };',
-    '• 工具函数: lib.inc("demoCount", 1); lib.now(); log("结果:", vars.demoCount);',
-    '• 按钮与输入事件: on("btnId", async () => { ... });  onSubmit("inpId", (val) => { ... });',
-    '• 变量响应钩子: onChange(["a", "b"], (info) => { vars.sum = Number(vars.a) + Number(vars.b); });',
-    '• 自定义连线校验: onValidateConnect((info) => info.source === info.target ? { ok: false, reason: "禁止自环" } : { ok: true });'
-  ].join('\n'),
+    {
+      title: '1) 上下文 & 实时改卡外观（保留 vars 字段）',
+      code: [
+        "const { id, title, x, y, width, height } = ctx.entity;",
+        "vars.title = '新标题';  vars.type = 'TAG';  vars.color = '#DC2626';",
+        "vars.width = 460;      vars.height = 320;  vars.pos = { x: 100, y: 200 };"
+      ].join('\n')
+    },
+    {
+      title: '2) 内置工具 & 按钮 / 回车事件',
+      code: [
+        "const n = lib.inc('demoCount', 1);",
+        "log('更新时间:', lib.now(), 'count=', n);",
+        "on('btnId', async () => { vars.demoStatus = 'clicked'; });",
+        "onSubmit('inpId', (val) => { vars.draft = ''; log('提交:', val); });"
+      ].join('\n')
+    },
+    {
+      title: '3) 响应式监听 & 自定义连线校验',
+      code: [
+        "onChange(['valA', 'valB'], () => {",
+        "  vars.sum = (Number(vars.valA) || 0) + (Number(vars.valB) || 0);",
+        "});",
+        "onValidateConnect((info) => (",
+        "  info.source === info.target ? { ok: false, reason: '禁止自环' } : { ok: true }",
+        "));"
+      ].join('\n')
+    }
+  ],
   graph: [
-    '【跨控件拓扑 · emit 消息 · 边通道 · 注释操作 e.g.】',
-    '• 读画布与端口: widgets.get(id) / widgets.vars(id) / widgets.list()',
-    '  widgets.inputs("in-1") / widgets.outputs("out-1") / widgets.edges()',
-    '• 动态造卡与拓扑: await widgets.create({ title: "子卡", dx: 380, dy: 0, connect: "标签", vars: {}, script: "..." })',
-    '  widgets.connect(fromId, toId, "label"); widgets.remove(id); widgets.checkDag(f, t); widgets.topoSort();',
-    '• 跨控件通信: await emit(targetId, "evt", { x: 1 }); await emitDownstream("ping", data); await broadcast("sync", data);',
-    '• 边通道状态传递 (详见 E/G 状态机与边通道模板):',
-    '  发送方: const e = (vars.output || [])[0]; e.msg = { ok: true }; e.flag = true; e.dashed = true; e.color = "#F59E0B"; e.tag = "待签收";',
-    '  接收方: const inEdge = (vars.input || []).find((e) => e.flag); inEdge.flag = false; inEdge.dashed = false; inEdge.color = "";',
-    '• 操作背景注释: canvas.setAnnotationBg("ann-zone-0", "#DBEAFE", 0.9); canvas.setAnnotationText(id, "..."); canvas.setAnnotationColor(id, "#1E3A8A");'
-  ].join('\n'),
+    {
+      title: '1) 读取周围控件 & 端口连线',
+      code: [
+        "const peer = widgets.get('target-id');",
+        "const ins  = widgets.inputs('in-1');   // 上游列表",
+        "const outs = widgets.outputs('out-1'); // 下游列表",
+        "widgets.checkDag(fromId, toId);        // 判环检测"
+      ].join('\n')
+    },
+    {
+      title: '2) 动态创建子卡 & 跨控件发消息',
+      code: [
+        "await widgets.create({ title: '子卡', dx: 480, dy: 0, connect: '连线标签', vars: {} });",
+        "await emit('target-id', 'evt', { x: 1 });",
+        "await emitDownstream('ping', { text: 'hi' }, 'out-1');",
+        "await broadcast('sync', { at: lib.now() });"
+      ].join('\n')
+    },
+    {
+      title: '3) 边通道状态流 (vars.output / vars.input) & 背景注释',
+      code: [
+        "const out = (vars.output || [])[0];",
+        "if (out) { out.msg = { ok: true }; out.flag = true; out.dashed = true; out.color = '#F59E0B'; out.tag = '待签收'; }",
+        "const ack = (vars.input || []).find((e) => e.flag);",
+        "if (ack) { ack.flag = false; ack.dashed = false; ack.color = ''; }",
+        "canvas.setAnnotationBg('ann-zone-0', '#DBEAFE', 0.9);"
+      ].join('\n')
+    }
+  ],
   agent: [
-    '【纯正文 Markdown · 静态按钮 · Agent/MCP 接口 e.g.】',
-    '• 纯正文卡 (不设置 vars.contents 时显示 body):',
-    '  支持任务复选框 - [ ] 待办 / - [x] 已完成（画布直接点击勾选同步）',
-    '• 静态按钮 buttons[] 支持两种动作:',
-    '  1) actionType: "script" -> 在安全沙箱执行 code（可用 lib/vars/canvas/log）',
-    '  2) actionType: "proxy_http" -> 经服务端 SSRF 白名单代理发 GET/POST 请求',
-    '• 外部 Agent / MCP 读写蓝图 API:',
-    '  GET /api/agent/schema · GET /api/agent/state?room=default',
-    '  POST /api/ops (header: X-Agent-Api-Key, 支持 dryRun / expectedRevision / create_from_template / patch_vars / connect_edge)',
-    '  标准 stdio MCP: server/mcpServer.ts (list_templates / get_state / apply_ops)'
-  ].join('\n')
+    {
+      title: '1) 纯正文 Markdown 卡（不写 vars.contents 时显示 body）',
+      code: [
+        "- [ ] 未完成任务（画布可直接点击勾选并实时同步）",
+        "- [x] 已完成任务"
+      ].join('\n')
+    },
+    {
+      title: '2) buttons[] 静态按钮：沙箱脚本 / 安全 HTTP 代理',
+      code: [
+        "{ id: 'b1', label: '+1', actionType: 'script', code: \"lib.inc('c', 1);\" }",
+        "{ id: 'b2', label: 'GET', actionType: 'proxy_http', proxyMethod: 'GET', proxyUrl: 'https://httpbin.org/get' }"
+      ].join('\n')
+    },
+    {
+      title: '3) 外部 Agent REST API & 内置 stdio MCP',
+      code: [
+        "GET  /api/agent/schema",
+        "GET  /api/agent/state?room=default   (Header: X-Agent-Api-Key)",
+        "POST /api/ops  { dryRun, expectedRevision, ops: [create_from_template | patch_vars | connect_edge] }",
+        "MCP: server/mcpServer.ts -> list_templates / get_state / apply_ops"
+      ].join('\n')
+    }
+  ]
 };
+
+const activeSections = sections[tab] || sections.blocks;
+const docBlocks = [];
+for (const sec of activeSections) {
+  docBlocks.push({ type: 'text', text: sec.title, fontSize: 11.5, bold: true, color: '#3B82F6' });
+  docBlocks.push({ type: 'text', text: sec.code, box: true, mono: true, fontSize: 10.5 });
+}
 
 vars.contents = [
   {
     type: 'text',
-    text: '点下方页签切换全量 e.g. · 点右上角 ⚙ 查看并复制本卡完整 script 源码',
+    text: '点页签切换速查 · 点右上角 ⚙ 可看本卡完整 script · 代码框可直接划选复制',
     align: 'center',
     color: '#3B82F6',
-    fontSize: 11.5,
+    fontSize: 11,
     bold: true
   },
   tabs.map((t) => ({
@@ -93,7 +168,7 @@ vars.contents = [
     label: t.label,
     variant: tab === t.id ? 'primary' : 'secondary'
   })),
-  { type: 'text', text: snippets[tab] || snippets.blocks, fontSize: 11 },
+  ...docBlocks,
   [
     { type: 'input', id: 'egInput', bind: 'demoDraft', placeholder: '试一下 onSubmit：输入后按回车…' },
     { type: 'button', id: 'egInc', label: '测试 +1 (' + count + ')', width: 108, variant: 'success' }
@@ -753,8 +828,8 @@ onSubmit('bcInput', async (v) => doBroadcast(v));`,
     kind: 'node',
     color: '#1D4ED8',
     nodePreset: {
-      width: 440,
-      height: 440,
+      width: 470,
+      height: 520,
       title: 'e.g. 全能控件用法百科',
       body: '',
       category: 'e.g.',

@@ -1259,16 +1259,16 @@ on('clearLog', () => {
     },
     // ==================== ZONE H：全量控件用法 e.g. 百科与工程卡 ====================
     'eg-all-in-one': nodeFromBuiltinTemplate('tpl-usage-cheatsheet', 'eg-all-in-one', 40, 865, {
-      width: 435,
-      height: 440,
+      width: 470,
+      height: 540,
       title: 'e.g. 全能控件用法百科（点页签切换）',
     }),
     'eg-markdown-buttons': {
       id: 'eg-markdown-buttons',
       x: 40,
-      y: 1330,
+      y: 1430,
       width: 435,
-      height: 280,
+      height: 315,
       title: 'e.g. 纯正文 Markdown + buttons[] 静态按钮卡',
       body: [
         '不写 script 的 vars.contents 时，卡片展示正文 + 下方 buttons[]：',
@@ -1303,34 +1303,34 @@ log('Markdown+Buttons clicked', vars.egClicks);`,
       rev: 1,
       cid: 'server-base',
     },
-    'eg-reactive-onchange': nodeFromBuiltinTemplate('tpl-reactive-onchange', 'eg-reactive-onchange', 40, 1635, {
+    'eg-reactive-onchange': nodeFromBuiltinTemplate('tpl-reactive-onchange', 'eg-reactive-onchange', 40, 1770, {
       width: 435,
       height: 285,
       title: 'e.g. textarea + onChange + onValidateConnect + broadcast',
     }),
-    'eg-edge-channel': nodeFromBuiltinTemplate('tpl-edge-channel-demo', 'eg-edge-channel', 40, 1945, {
+    'eg-edge-channel': nodeFromBuiltinTemplate('tpl-edge-channel-demo', 'eg-edge-channel', 40, 2080, {
       width: 435,
       height: 230,
       title: 'e.g. 边通道 vars.input / vars.output 状态流',
     }),
-    'eg-api-poller': nodeFromBuiltinTemplate('tpl-api-poller', 'eg-api-poller', 40, 2200, {
+    'eg-api-poller': nodeFromBuiltinTemplate('tpl-api-poller', 'eg-api-poller', 40, 2335, {
       width: 435,
       height: 325,
       title: 'e.g. API 轮询抓取器（api_poller）',
       defaultVarsPatch: { pollUrl: '/api/health', pollJsonPath: 'status', pollIntervalSec: 15 },
     }),
-    'eg-git-gateway': nodeFromBuiltinTemplate('tpl-git-gateway', 'eg-git-gateway', 40, 2550, {
+    'eg-git-gateway': nodeFromBuiltinTemplate('tpl-git-gateway', 'eg-git-gateway', 40, 2685, {
       width: 435,
       height: 380,
       title: 'e.g. git-gateway 仓库看板（git_gateway）',
     }),
-    'eg-elyfn-runner': nodeFromBuiltinTemplate('tpl-elyfn-runner', 'eg-elyfn-runner', 40, 2955, {
+    'eg-elyfn-runner': nodeFromBuiltinTemplate('tpl-elyfn-runner', 'eg-elyfn-runner', 40, 3090, {
       width: 435,
       height: 355,
       title: 'e.g. elyfn 函数调用卡（elyfn_runner）',
       defaultVarsPatch: { fnSelected: 'setup/check-pi-env', fnPayload: '{"dryRun": true}' },
     }),
-    'eg-pi-agent': nodeFromBuiltinTemplate('tpl-pi-agent', 'eg-pi-agent', 40, 3380, {
+    'eg-pi-agent': nodeFromBuiltinTemplate('tpl-pi-agent', 'eg-pi-agent', 40, 3515, {
       width: 435,
       height: 400,
       title: 'e.g. Pi Agent 运行卡（pi_agent）',
@@ -1445,7 +1445,7 @@ log('Markdown+Buttons clicked', vars.egClicks);`,
       kind: 'text',
       x: 40,
       y: 800,
-      width: 435,
+      width: 470,
       height: 48,
       text: 'ZONE H · 控件全量用法示例（所有 e.g.：点击交互 · 点 ⚙ 查看脚本/配置）',
       fontSize: 14,
@@ -1742,7 +1742,7 @@ log('Markdown+Buttons clicked', vars.egClicks);`,
         targetHandle: 'prompt',
         label: '函数结果 → Agent prompt',
         color: '#7C3AED',
-        controlPoints: [{ x: 482, y: 3132 }, { x: 482, y: 3345 }, { x: 20, y: 3345 }, { x: 20, y: 3580 }],
+        controlPoints: [{ x: 482, y: 3267 }, { x: 482, y: 3480 }, { x: 20, y: 3480 }, { x: 20, y: 3715 }],
         animated: true,
         rev: 1,
         cid: 'server-base',

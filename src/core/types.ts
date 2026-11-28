@@ -49,6 +49,8 @@ export interface ContentTextBlock {
   color?: string;
   fontSize?: number;
   bold?: boolean;
+  mono?: boolean;
+  box?: boolean;
 }
 
 export interface ContentButtonBlock {

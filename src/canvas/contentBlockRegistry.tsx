@@ -135,21 +135,31 @@ const renderInputBlock: BlockRenderer<Extract<ContentLeafBlock, { type: 'input' 
 export const CONTENT_BLOCK_REGISTRY: {
   [K in ContentLeafBlock['type']]: BlockRenderer<Extract<ContentLeafBlock, { type: K }>>;
 } = {
-  text: (block, { idx, inRow }) => (
-    <div
-      key={`txt-${idx}`}
-      className={`select-none ${!block.color ? 'text-slate-700 dark:text-slate-200' : ''} ${inRow ? 'flex-1' : 'w-full'}`}
-      style={{
-        textAlign: block.align ?? 'left',
-        ...(block.color ? { color: block.color } : {}),
-        fontSize: block.fontSize ?? 12,
-        fontWeight: block.bold ? 700 : 400,
-        lineHeight: 1.45,
-      }}
-    >
-      {String(block.text ?? '')}
-    </div>
-  ),
+  text: (block, { idx, inRow }) => {
+    const isBox = Boolean(block.box);
+    const isMono = Boolean(block.mono) || isBox;
+    const baseTextColor = !block.color ? 'text-slate-700 dark:text-slate-200' : '';
+    const boxCls = isBox
+      ? 'nodrag nopan nowheel cursor-text select-text rounded-md border border-slate-200 dark:border-slate-700/80 bg-slate-50/90 dark:bg-slate-950/90 px-2.5 py-1.5 overflow-x-auto whitespace-pre'
+      : 'select-none whitespace-pre-wrap break-words';
+    return (
+      <div
+        key={`txt-${idx}`}
+        onMouseDown={isBox ? (e) => e.stopPropagation() : undefined}
+        onPointerDown={isBox ? (e) => e.stopPropagation() : undefined}
+        className={`${boxCls} ${isMono ? 'font-mono' : ''} ${baseTextColor} ${inRow ? 'min-w-0 flex-1' : 'w-full'}`}
+        style={{
+          textAlign: block.align ?? 'left',
+          ...(block.color ? { color: block.color } : {}),
+          fontSize: block.fontSize ?? (isBox ? 10.5 : 12),
+          fontWeight: block.bold ? 700 : 400,
+          lineHeight: isBox ? 1.55 : 1.45,
+        }}
+      >
+        {String(block.text ?? '')}
+      </div>
+    );
+  },
 
   button: (block, { entity, idx, inRow, busyButtonKey, onRunScriptClick }) => {
     const btnKey = `${entity.id}:script:${block.id}`;
@@ -167,8 +177,8 @@ export const CONTENT_BLOCK_REGISTRY: {
           onRunScriptClick(entity.id, block.id);
         }}
         style={block.width ? { width: block.width } : undefined}
-        className={`nodrag nopan inline-flex items-center justify-center gap-1 rounded px-2.5 py-1.5 text-xs font-medium transition disabled:opacity-50 ${
-          inRow && !block.width ? 'flex-1' : ''
+        className={`nodrag nopan inline-flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-medium transition disabled:opacity-50 ${
+          inRow && !block.width ? 'min-w-0 flex-1' : ''
         } ${cls}`}
       >
         {isBusy ? (
