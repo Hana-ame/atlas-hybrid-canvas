@@ -128,6 +128,12 @@ function ElyfnRunnerBlockInner({
   const catalogSeqRef = useRef(0);
   const runAbortRef = useRef<AbortController | null>(null);
   const runSeqRef = useRef(0);
+  const fnDraftRef = useRef(fnDraft);
+  fnDraftRef.current = fnDraft;
+  const onChangeSelectedFnRef = useRef(onChangeSelectedFn);
+  onChangeSelectedFnRef.current = onChangeSelectedFn;
+  const onRunResultRef = useRef(onRunResult);
+  onRunResultRef.current = onRunResult;
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -185,9 +191,9 @@ function ElyfnRunnerBlockInner({
       }
       const items = parseCatalogItems(data);
       setCatalog(items);
-      if (!fnDraft.trim() && items.length > 0) {
+      if (!fnDraftRef.current.trim() && items.length > 0) {
         setFnDraft(items[0].id);
-        onChangeSelectedFn(items[0].id);
+        onChangeSelectedFnRef.current(items[0].id);
       }
     } catch (err) {
       if (!mountedRef.current || seq !== catalogSeqRef.current) return;
@@ -196,7 +202,7 @@ function ElyfnRunnerBlockInner({
     } finally {
       if (mountedRef.current && seq === catalogSeqRef.current) setLoadingCatalog(false);
     }
-  }, [baseDraft, execKey, fnDraft, onChangeSelectedFn]);
+  }, [baseDraft, execKey]);
 
   useEffect(() => {
     if (!mediaActive) return;
@@ -307,7 +313,7 @@ function ElyfnRunnerBlockInner({
         const updatedAt = new Date().toLocaleTimeString();
         setLivePollHint('');
         if (!ok) setErrorMsg(`后台执行失败：${String(finalJob.error || 'Async job failed')}`);
-        onRunResult({
+        onRunResultRef.current({
           selectedFn: target,
           status: statusText,
           result: outFormatted.slice(0, 4000),
@@ -324,7 +330,7 @@ function ElyfnRunnerBlockInner({
       if (!res.ok) {
         setErrorMsg(`执行失败 ${statusText}`);
       }
-      onRunResult({
+      onRunResultRef.current({
         selectedFn: target,
         status: statusText,
         result: formatted.slice(0, 4000),
@@ -337,7 +343,7 @@ function ElyfnRunnerBlockInner({
       const msg = err instanceof Error ? err.message : String(err);
       setLivePollHint('');
       setErrorMsg(`调用失败：${msg}`);
-      onRunResult({
+      onRunResultRef.current({
         selectedFn: target,
         status: 'ERR',
         result: '',
@@ -347,11 +353,11 @@ function ElyfnRunnerBlockInner({
     } finally {
       if (mountedRef.current && seq === runSeqRef.current) setRunning(false);
     }
-  }, [asyncDraft, baseDraft, execKey, fnDraft, onRunResult, payloadDraft]);
+  }, [asyncDraft, baseDraft, execKey, fnDraft, payloadDraft]);
 
   return (
     <div
-      className="nodrag nopan nowheel flex w-full flex-col gap-2 rounded-md border border-violet-200 bg-violet-50/40 p-2 text-xs text-slate-800"
+      className="nodrag nopan nowheel flex w-full flex-col gap-2 rounded-md border border-violet-200 dark:border-violet-500/40 bg-violet-50/40 dark:bg-violet-950/35 p-2 text-xs text-slate-800 dark:text-slate-100"
       onMouseDown={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
@@ -379,7 +385,9 @@ function ElyfnRunnerBlockInner({
         <div
           title="定时自动刷新目录间隔（离屏/后台自动暂停）"
           className={`inline-flex items-center rounded border px-1 py-0.5 text-[10px] ${
-            refreshSec > 0 ? 'border-violet-400 bg-violet-100 text-violet-800' : 'border-slate-300 bg-white text-slate-600'
+            refreshSec > 0
+              ? 'border-violet-400 dark:border-violet-500/50 bg-violet-100 dark:bg-violet-900/50 text-violet-800 dark:text-violet-200'
+              : 'border-slate-300 bg-white text-slate-600'
           }`}
         >
           <Clock className="mr-0.5 h-3 w-3 shrink-0" />
@@ -413,7 +421,9 @@ function ElyfnRunnerBlockInner({
           title="配置可选执行密钥 (Bearer EXEC_KEY)"
           onClick={() => setShowKeyInput((v) => !v)}
           className={`inline-flex items-center justify-center rounded border p-1.5 ${
-            execKey ? 'border-violet-400 bg-violet-100 text-violet-700' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-100'
+            execKey
+              ? 'border-violet-400 dark:border-violet-500/50 bg-violet-100 dark:bg-violet-900/50 text-violet-700 dark:text-violet-200'
+              : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-100'
           }`}
         >
           <KeyRound className="h-3.5 w-3.5" />
@@ -458,7 +468,7 @@ function ElyfnRunnerBlockInner({
       </div>
 
       {showKeyInput && (
-        <div className="flex flex-col gap-1 rounded border border-violet-200 bg-white p-1.5">
+        <div className="flex flex-col gap-1 rounded border border-violet-200 dark:border-violet-500/40 bg-white dark:bg-slate-900/90 p-1.5">
           <input
             type="text"
             value={baseDraft}
@@ -496,7 +506,7 @@ function ElyfnRunnerBlockInner({
         <span>{lastUpdatedAt ? `更新于 ${lastUpdatedAt}` : ''}</span>
       </div>
       {lastResult && (
-        <pre className="max-h-32 overflow-auto rounded border border-slate-200 bg-slate-900 p-2 font-mono text-[11px] leading-relaxed text-emerald-300">
+        <pre className="max-h-32 overflow-auto rounded border border-slate-200 dark:border-slate-700 bg-slate-900 dark:bg-slate-950 p-2 font-mono text-[11px] leading-relaxed text-emerald-300">
           {lastResult}
         </pre>
       )}

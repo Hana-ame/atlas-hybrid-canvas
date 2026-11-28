@@ -97,6 +97,12 @@ function GitGatewayBlockInner({
   const mountedRef = useRef(true);
   const detailAbortRef = useRef<AbortController | null>(null);
   const detailSeqRef = useRef(0);
+  const repoDraftRef = useRef(repoDraft);
+  repoDraftRef.current = repoDraft;
+  const onChangeSelectedRepoRef = useRef(onChangeSelectedRepo);
+  onChangeSelectedRepoRef.current = onChangeSelectedRepo;
+  const onSyncStateRef = useRef(onSyncState);
+  onSyncStateRef.current = onSyncState;
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -170,7 +176,7 @@ function GitGatewayBlockInner({
         if (!prsRes.ok && !todoRes.ok) {
           setErrorMsg(`加载仓库失败（PR:${prsRes.status} / TODO:${todoRes.status}）`);
         }
-        onSyncState({
+        onSyncStateRef.current({
           gitRepo: cleaned,
           gitOpenPrCount: nextPrs.length,
           gitTodoPreview: nextTodo.slice(0, 240),
@@ -184,7 +190,7 @@ function GitGatewayBlockInner({
         if (mountedRef.current && seq === detailSeqRef.current) setLoadingDetail(false);
       }
     },
-    [baseDraft, onSyncState]
+    [baseDraft]
   );
 
   const fetchRepos = useCallback(async () => {
@@ -201,11 +207,11 @@ function GitGatewayBlockInner({
       }
       const list = Array.isArray(data.repos) ? (data.repos as GitGatewayRepoItem[]) : [];
       setRepos(list);
-      const current = repoDraft.trim();
+      const current = repoDraftRef.current.trim();
       if (!current && list.length > 0) {
         const firstPath = list[0].path || list[0].id;
         setRepoDraft(firstPath);
-        onChangeSelectedRepo(firstPath);
+        onChangeSelectedRepoRef.current(firstPath);
         void fetchRepoDetail(firstPath);
       } else if (current) {
         void fetchRepoDetail(current);
@@ -216,7 +222,7 @@ function GitGatewayBlockInner({
     } finally {
       if (mountedRef.current) setLoadingRepos(false);
     }
-  }, [baseDraft, fetchRepoDetail, onChangeSelectedRepo, repoDraft]);
+  }, [baseDraft, fetchRepoDetail]);
 
   useEffect(() => {
     if (!mediaActive) return;
@@ -264,7 +270,7 @@ function GitGatewayBlockInner({
 
   return (
     <div
-      className="nodrag nopan nowheel flex w-full flex-col gap-2 rounded-md border border-emerald-200 bg-emerald-50/40 p-2 text-xs text-slate-800"
+      className="nodrag nopan nowheel flex w-full flex-col gap-2 rounded-md border border-emerald-200 dark:border-emerald-500/40 bg-emerald-50/40 dark:bg-emerald-950/35 p-2 text-xs text-slate-800 dark:text-slate-100"
       onMouseDown={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
@@ -296,7 +302,9 @@ function GitGatewayBlockInner({
         <div
           title="定时自动刷新看板间隔（离屏/后台自动暂停）"
           className={`inline-flex items-center rounded border px-1 py-0.5 text-[10px] ${
-            refreshSec > 0 ? 'border-emerald-400 bg-emerald-100 text-emerald-800' : 'border-slate-300 bg-white text-slate-600'
+            refreshSec > 0
+              ? 'border-emerald-400 dark:border-emerald-500/50 bg-emerald-100 dark:bg-emerald-900/50 text-emerald-800 dark:text-emerald-200'
+              : 'border-slate-300 bg-white text-slate-600'
           }`}
         >
           <Clock className="mr-0.5 h-3 w-3 shrink-0" />
@@ -442,7 +450,7 @@ function GitGatewayBlockInner({
             ))
           )}
           {ciLogs && (
-            <pre className="max-h-28 overflow-auto rounded bg-slate-900 p-1.5 font-mono text-[10px] text-amber-200">
+            <pre className="max-h-28 overflow-auto rounded border border-slate-700/60 bg-slate-900 dark:bg-slate-950 p-1.5 font-mono text-[10px] text-amber-200">
               {ciLogs}
             </pre>
           )}

@@ -83,7 +83,7 @@ vars.contents = [
     type: 'text',
     text: '点下方页签切换全量 e.g. · 点右上角 ⚙ 查看并复制本卡完整 script 源码',
     align: 'center',
-    color: '#1E40AF',
+    color: '#3B82F6',
     fontSize: 11.5,
     bold: true
   },
@@ -93,13 +93,13 @@ vars.contents = [
     label: t.label,
     variant: tab === t.id ? 'primary' : 'secondary'
   })),
-  { type: 'text', text: snippets[tab] || snippets.blocks, fontSize: 11, color: '#0F172A' },
+  { type: 'text', text: snippets[tab] || snippets.blocks, fontSize: 11 },
   [
     { type: 'input', id: 'egInput', bind: 'demoDraft', placeholder: '试一下 onSubmit：输入后按回车…' },
     { type: 'button', id: 'egInc', label: '测试 +1 (' + count + ')', width: 108, variant: 'success' }
   ],
   { type: 'slider', id: 'egSlider', bind: 'demoSlider', label: 'onChange 滑动试跑', min: 0, max: 100, step: 5, value: sliderVal, unit: '%' },
-  { type: 'text', text: vars.demoStatus || '就绪 · 滑动/输入/点按钮都会在右侧「脚本日志」打印 trace', fontSize: 10.5, color: '#475569' }
+  { type: 'text', text: vars.demoStatus || '就绪 · 滑动/输入/点按钮都会在右侧「脚本日志」打印 trace', fontSize: 10.5 }
 ];
 
 for (const t of tabs) {
@@ -138,16 +138,16 @@ const sum = Number(vars.sum ?? (valA + valB));
 const wireCheck = vars.allowConnect !== false;
 
 vars.contents = [
-  { type: 'text', text: 'e.g. textarea + onChange(["valA","valB"]) + onValidateConnect + broadcast', align: 'center', color: '#4338CA', fontSize: 11.5, bold: true },
+  { type: 'text', text: 'e.g. textarea + onChange(["valA","valB"]) + onValidateConnect + broadcast', align: 'center', color: '#6366F1', fontSize: 11.5, bold: true },
   { type: 'slider', id: 'sA', bind: 'valA', label: '变量 A', min: 0, max: 50, step: 1, value: valA },
   { type: 'slider', id: 'sB', bind: 'valB', label: '变量 B', min: 0, max: 50, step: 1, value: valB },
-  { type: 'text', text: '自动派生结果：A + B = ' + sum + ' · ' + (wireCheck ? '连线放行中' : '拒绝新入线'), fontSize: 11.5, color: '#0F766E', bold: true },
+  { type: 'text', text: '自动派生结果：A + B = ' + sum + ' · ' + (wireCheck ? '连线放行中' : '拒绝新入线'), fontSize: 11.5, color: '#10B981', bold: true },
   { type: 'textarea', id: 'noteArea', bind: 'memo', placeholder: 'textarea 多行输入绑定 vars.memo…' },
   [
     { type: 'button', id: 'toggleWire', label: wireCheck ? '切为拒接连线' : '恢复允许连线', variant: 'secondary' },
     { type: 'button', id: 'bcMemo', label: 'broadcast 广播', variant: 'primary' }
   ],
-  { type: 'text', text: vars.statusLine || '拖动 A/B 实时触发 onChange 派生求和；点右侧按钮测连线校验与全画布广播', fontSize: 10.5, color: '#475569' }
+  { type: 'text', text: vars.statusLine || '拖动 A/B 实时触发 onChange 派生求和；点右侧按钮测连线校验与全画布广播', fontSize: 10.5 }
 ];
 
 onChange(['valA', 'valB'], () => {
@@ -803,8 +803,8 @@ onSubmit('bcInput', async (v) => doBroadcast(v));`,
       script: String.raw`const outs = vars.output || [];
 const pendingIn = (vars.input || []).find((e) => e.flag);
 vars.contents = [
-  { type: 'text', text: pendingIn ? '收到待签收令牌：' + JSON.stringify(pendingIn.msg) : '出线数=' + outs.length + ' · 入线无待签收令牌', fontSize: 11.5, color: pendingIn ? '#B45309' : '#0F766E', bold: true },
-  { type: 'text', text: vars.lastReceived || '写法：const e = vars.output[0]; e.msg = {...}; e.flag = true; e.dashed = true; e.color = "#F59E0B";', fontSize: 10.5, color: '#475569' },
+  { type: 'text', text: pendingIn ? '收到待签收令牌：' + JSON.stringify(pendingIn.msg) : '出线数=' + outs.length + ' · 入线无待签收令牌', fontSize: 11.5, color: pendingIn ? '#F59E0B' : '#10B981', bold: true },
+  { type: 'text', text: vars.lastReceived || '写法：const e = vars.output[0]; e.msg = {...}; e.flag = true; e.dashed = true; e.color = "#F59E0B";', fontSize: 10.5 },
   [
     { type: 'button', id: 'sendEdge', label: '写入出线令牌', variant: 'primary', disabled: outs.length === 0 },
     { type: 'button', id: 'ackEdge', label: '签收入线令牌', variant: 'success', disabled: !pendingIn }

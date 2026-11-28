@@ -55,7 +55,7 @@ export function ScriptTrustModal({
                   {item.kind}
                 </span>
               </div>
-              <pre className="mt-1.5 max-h-60 overflow-auto whitespace-pre-wrap rounded bg-slate-900 p-2 font-mono text-[10.5px] text-emerald-300">
+              <pre className="mt-1.5 max-h-60 overflow-auto whitespace-pre-wrap rounded border border-slate-700/60 bg-slate-900 dark:bg-slate-950 p-2 font-mono text-[10.5px] text-emerald-300">
                 {expandedKeys.has(item.key) && item.fullCode ? item.fullCode : item.preview}
               </pre>
               {item.truncated && item.fullCode && (

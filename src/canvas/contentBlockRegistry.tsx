@@ -138,10 +138,10 @@ export const CONTENT_BLOCK_REGISTRY: {
   text: (block, { idx, inRow }) => (
     <div
       key={`txt-${idx}`}
-      className={`select-none ${inRow ? 'flex-1' : 'w-full'}`}
+      className={`select-none ${!block.color ? 'text-slate-700 dark:text-slate-200' : ''} ${inRow ? 'flex-1' : 'w-full'}`}
       style={{
         textAlign: block.align ?? 'left',
-        color: block.color || '#334155',
+        ...(block.color ? { color: block.color } : {}),
         fontSize: block.fontSize ?? 12,
         fontWeight: block.bold ? 700 : 400,
         lineHeight: 1.45,

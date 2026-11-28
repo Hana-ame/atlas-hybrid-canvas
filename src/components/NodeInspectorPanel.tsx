@@ -184,7 +184,7 @@ vars.updatedAt = lib.now();`,
             value={node.script ?? ''}
             onChange={(e) => onPatchNode(node.id, { script: e.target.value })}
             placeholder="支持 vars.contents / on(id, fn) / onSubmit(inp, fn) / widgets.create / emit / broadcast / canvas.setAnnotationBg"
-            className="w-full rounded-md border border-slate-200 bg-slate-900 p-2 font-mono text-[11px] leading-relaxed text-emerald-300 outline-none focus:border-blue-500"
+            className="w-full rounded-md border border-slate-200 dark:border-slate-700 bg-slate-900 dark:bg-slate-950 p-2 font-mono text-[11px] leading-relaxed text-emerald-300 outline-none focus:border-blue-500"
           />
           {(() => {
             const code = node.script ?? '';
@@ -440,7 +440,7 @@ vars.updatedAt = lib.now();`,
                     value={btn.code ?? ''}
                     onChange={(e) => handleUpdateButton(btn.id, { code: e.target.value })}
                     placeholder="如: lib.inc('count', 1); vars.note = 'done';"
-                    className="mt-2 w-full rounded border border-slate-200 bg-slate-900 p-2 font-mono text-[11px] text-emerald-300 outline-none focus:border-blue-500"
+                    className="mt-2 w-full rounded border border-slate-200 dark:border-slate-700 bg-slate-900 dark:bg-slate-950 p-2 font-mono text-[11px] text-emerald-300 outline-none focus:border-blue-500"
                   />
                 ) : (
                   <div className="mt-2 space-y-1.5">

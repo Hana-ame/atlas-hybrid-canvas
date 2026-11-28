@@ -641,4 +641,7 @@ test('ElyfnRunnerBlock and GitGatewayBlock render controls and last state cleanl
   );
   assert.ok(ggHtml.includes('PRs') || ggHtml.includes('TODO'), 'GitGatewayBlock should show PRs / TODO tabs');
   assert.ok(ggHtml.includes('60s'), 'GitGatewayBlock should expose auto-refresh interval options');
+  assert.ok(elyfnHtml.includes('dark:bg-slate-950'), 'ElyfnRunnerBlock result pre should override index.css bg-slate-900 blue rule in dark mode');
+  assert.ok(elyfnHtml.includes('dark:bg-violet-950/35'), 'ElyfnRunnerBlock surface should adapt cleanly in dark mode');
+  assert.ok(ggHtml.includes('dark:bg-emerald-950/35'), 'GitGatewayBlock surface should adapt cleanly in dark mode');
 });
