@@ -269,6 +269,7 @@ function validateLeafBlockSafety(block: unknown): string | null {
       break;
     case 'elyfn_runner':
     case 'git_gateway':
+    case 'pi_agent':
       if (typeof b.baseUrl === 'string' && b.baseUrl.trim() && !isSafePollUrl(b.baseUrl)) {
         return `${String(b.type)} 积木包含不安全的 baseUrl：${b.baseUrl}`;
       }

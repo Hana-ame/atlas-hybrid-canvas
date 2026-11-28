@@ -12,6 +12,43 @@ const CUSTOM_TEMPLATES_KEY = 'atlas-hybrid-custom-templates-v1';
 
 export const BUILTIN_TEMPLATES: BlueprintTemplate[] = [
   {
+    id: 'tpl-pi-agent',
+    name: 'Pi Agent 运行卡',
+    description: '连接 pi-runner 桥接服务，支持公开受限输入口模式与管理员完全权限（多轮/插话/中断/审批）模式',
+    group: '工程与运维',
+    kind: 'node',
+    color: '#2563EB',
+    nodePreset: {
+      width: 410,
+      height: 410,
+      title: 'Pi Agent 运行卡',
+      body: '',
+      category: 'Agent',
+      color: '#2563EB',
+      inputPorts: [{ id: 'prompt', label: '指定输入口 (prompt)' }],
+      outputPorts: [{ id: 'out-1', label: 'Agent 输出' }],
+      defaultVars: {
+        piBaseUrl: '',
+        piPublicEnabled: false,
+        piAllowedInputPorts: ['prompt'],
+        piPromptTemplate: '{{prompt}}',
+        piToolProfile: 'readonly',
+        piProvider: '',
+        piModel: '',
+        piLastStatus: 'idle',
+        piLastOutput: '',
+        piUpdatedAt: '',
+      },
+      script: String.raw`vars.contents = [
+  {
+    type: 'pi_agent',
+    id: 'piAgent',
+    bindBaseUrl: 'piBaseUrl'
+  }
+];`,
+    },
+  },
+  {
     id: 'tpl-elyfn-runner',
     name: 'elyfn 函数调用卡',
     description: '自动拉取 /catalog 只读函数目录、选择函数、传 JSON 入参一键执行并将结果输出给下游节点',

@@ -303,7 +303,7 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
           cy={sourceY}
           r={isActive ? 5 : 3.8}
           fill={stroke}
-          stroke="#FFFFFF"
+          stroke="var(--atlas-edge-dot-stroke, #FFFFFF)"
           strokeWidth={1.6}
           pointerEvents="none"
         />
@@ -332,7 +332,7 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
             <circle r={12} fill="transparent" pointerEvents="all" />
             <circle
               r={6}
-              fill="#FFFFFF"
+              fill="var(--atlas-edge-handle-bg, #FFFFFF)"
               stroke={stroke}
               strokeWidth={2.4}
               pointerEvents="all"
@@ -380,7 +380,7 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
               <circle r={10} fill="transparent" pointerEvents="all" />
               <circle
                 r={5.5}
-                fill="#FFFFFF"
+                fill="var(--atlas-edge-handle-bg, #FFFFFF)"
                 fillOpacity={0.95}
                 stroke={stroke}
                 strokeWidth={1.5}
@@ -455,9 +455,9 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
                 position: 'absolute',
                 transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
                 pointerEvents: 'all',
-                borderColor: edgeFlag ? '#F59E0B' : (isActive ? stroke : '#CBD5E1'),
-                color: edgeFlag ? '#B45309' : (isActive ? stroke : '#334155'),
-                backgroundColor: edgeFlag ? '#FFFBEB' : 'rgba(255,255,255,0.95)',
+                borderColor: edgeFlag ? '#F59E0B' : (isActive ? stroke : 'var(--atlas-edge-label-border, #CBD5E1)'),
+                color: edgeFlag ? 'var(--atlas-edge-flag-text, #B45309)' : (isActive ? stroke : 'var(--atlas-edge-label-text, #334155)'),
+                backgroundColor: edgeFlag ? 'var(--atlas-edge-flag-bg, #FFFBEB)' : 'var(--atlas-edge-label-bg, rgba(255,255,255,0.95))',
               }}
               className="nodrag nopan inline-flex select-none items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold shadow-sm transition-colors"
             >

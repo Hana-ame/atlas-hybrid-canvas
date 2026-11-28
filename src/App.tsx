@@ -43,11 +43,13 @@ import {
   LayoutGrid,
   Layers,
   Link2,
+  Moon,
   Plus,
   Redo2,
   RotateCcw,
   Save,
   Search,
+  Sun,
   Undo2,
   Upload,
   Users,
@@ -65,6 +67,7 @@ import { getReactiveTargetNodeIds } from './core/edgeGraph';
 import { useCanvasShortcuts } from './hooks/useCanvasShortcuts';
 import { useRoomCollaboration } from './hooks/useRoomCollaboration';
 import { useBlueprintIO } from './hooks/useBlueprintIO';
+import { useTheme } from './hooks/useTheme';
 
 // 弹窗与右侧属性面板按需分包，降低首屏主包体积
 const NodeInspectorPanel = lazy(() =>
@@ -394,6 +397,7 @@ function HybridCanvasWorkspace() {
   const rfNodesRef = useRef<Node[]>(rfNodes);
   rfNodesRef.current = rfNodes;
 
+  const { preference: themePreference, resolvedTheme, isDark, toggleTheme, resetToSystem } = useTheme();
   const [lod, setLod] = useState<LODLevel>('micro');
   const rf = useReactFlow();
   const rfStore = useStoreApi();
@@ -429,6 +433,10 @@ function HybridCanvasWorkspace() {
 
   const chunkManagerRef = useRef<ChunkManager | null>(null);
   const tileCacheRef = useRef(new ChunkTileCache(160));
+  useEffect(() => {
+    tileCacheRef.current.clear();
+    setRenderVersion((v) => v + 1);
+  }, [isDark]);
   const draggingNodeIdsRef = useRef<Set<string>>(new Set());
 
   const allTemplates = useMemo(
@@ -2746,6 +2754,38 @@ function HybridCanvasWorkspace() {
 
           <button
             type="button"
+            title={
+              themePreference === 'system'
+                ? `当前跟随系统（${isDark ? '夜间' : '浅色'}）· 点击手动切换，右键或 Alt+点击恢复跟随系统`
+                : `当前${isDark ? '夜间' : '浅色'}模式 · 点击切换，右键或 Alt+点击恢复跟随系统`
+            }
+            aria-label={isDark ? '切换为浅色模式' : '切换为夜间模式'}
+            onClick={(ev) => {
+              if (ev.altKey) {
+                const next = resetToSystem();
+                setStatusLog(`主题已恢复跟随系统（当前：${next === 'dark' ? '夜间' : '浅色'}）`);
+                return;
+              }
+              const next = toggleTheme();
+              setStatusLog(next === 'dark' ? '已切换为夜间模式' : '已切换为浅色模式');
+            }}
+            onContextMenu={(ev) => {
+              ev.preventDefault();
+              const next = resetToSystem();
+              setStatusLog(`主题已恢复跟随系统（当前：${next === 'dark' ? '夜间' : '浅色'}）`);
+            }}
+            className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium ${
+              isDark
+                ? 'border-amber-400/40 bg-amber-500/15 text-amber-200 hover:bg-amber-500/25'
+                : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            {isDark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+            {isDark ? '浅色' : '夜间'}
+          </button>
+
+          <button
+            type="button"
             onClick={handleSpawnStress}
             className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-800 hover:bg-blue-100"
           >
@@ -2861,6 +2901,7 @@ function HybridCanvasWorkspace() {
 
       {/* 上层 React Flow + 底层同步 Canvas 瓦片层 */}
       <ReactFlow
+        colorMode={resolvedTheme}
         nodes={rfNodes}
         edges={rfEdges}
         panOnDrag
@@ -2916,6 +2957,7 @@ function HybridCanvasWorkspace() {
           showChunkGrid={showChunkGrid}
           annotationEditMode={annotationEditMode}
           renderVersion={renderVersion}
+          isDark={isDark}
         />
         <Controls position="bottom-right" showInteractive={false} />
       </ReactFlow>

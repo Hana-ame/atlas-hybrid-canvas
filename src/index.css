@@ -1,6 +1,29 @@
 @import "tailwindcss";
 @import "@xyflow/react/dist/style.css";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --atlas-edge-dot-stroke: #ffffff;
+  --atlas-edge-handle-bg: #ffffff;
+  --atlas-edge-label-bg: rgba(255, 255, 255, 0.95);
+  --atlas-edge-label-border: #cbd5e1;
+  --atlas-edge-label-text: #334155;
+  --atlas-edge-flag-bg: #fffbeb;
+  --atlas-edge-flag-text: #b45309;
+}
+
+html.dark {
+  color-scheme: dark;
+  --atlas-edge-dot-stroke: #0f172a;
+  --atlas-edge-handle-bg: #0f172a;
+  --atlas-edge-label-bg: rgba(15, 23, 42, 0.94);
+  --atlas-edge-label-border: #475569;
+  --atlas-edge-label-text: #e2e8f0;
+  --atlas-edge-flag-bg: rgba(120, 53, 15, 0.88);
+  --atlas-edge-flag-text: #fde68a;
+}
+
 html, body, #root {
   width: 100%;
   height: 100%;
@@ -67,6 +90,16 @@ html, body, #root {
   background: rgba(100, 116, 139, 0.8);
 }
 
+html.dark .vars-scroll-row {
+  scrollbar-color: rgba(100, 116, 139, 0.65) transparent;
+}
+html.dark .vars-scroll-row::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.55);
+}
+html.dark .vars-scroll-row::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.75);
+}
+
 /* 缩放器大碰撞箱：视觉细巧、命中宽大；角点压在边线之上，连线端口保持最高层级 */
 .react-flow__resize-control.line {
   z-index: 12;
@@ -103,6 +136,207 @@ html, body, #root {
 
 .react-flow__handle {
   z-index: 30;
+}
+
+/* ==========================================================================
+   夜间模式语义表面与组件适配（仅作用于未显式声明 dark:* 的基础类，零冲突）
+   ========================================================================== */
+
+html.dark .bg-white:not([class*="dark:bg-"]) {
+  background-color: #0f172a;
+}
+html.dark .bg-white\/95:not([class*="dark:bg-"]) {
+  background-color: rgba(15, 23, 42, 0.95);
+}
+html.dark .bg-white\/92:not([class*="dark:bg-"]) {
+  background-color: rgba(15, 23, 42, 0.92);
+}
+html.dark .bg-white\/90:not([class*="dark:bg-"]) {
+  background-color: rgba(15, 23, 42, 0.9);
+}
+html.dark .bg-white\/80:not([class*="dark:bg-"]) {
+  background-color: rgba(15, 23, 42, 0.82);
+}
+
+html.dark .bg-slate-50:not([class*="dark:bg-"]) {
+  background-color: #162033;
+}
+html.dark .bg-slate-50\/80:not([class*="dark:bg-"]),
+html.dark .bg-slate-50\/60:not([class*="dark:bg-"]) {
+  background-color: rgba(22, 32, 51, 0.82);
+}
+html.dark .bg-slate-100:not([class*="dark:bg-"]) {
+  background-color: #1e293b;
+}
+html.dark .bg-slate-200:not([class*="dark:bg-"]) {
+  background-color: #334155;
+}
+html.dark .bg-slate-900:not([class*="dark:bg-"]) {
+  background-color: #2563eb;
+}
+html.dark .bg-slate-900\/90:not([class*="dark:bg-"]) {
+  background-color: rgba(30, 41, 59, 0.95);
+}
+html.dark .bg-slate-900\/40:not([class*="dark:bg-"]) {
+  background-color: rgba(2, 6, 23, 0.68);
+}
+
+/* 文字层级适配 */
+html.dark .text-slate-900:not([class*="dark:text-"]) {
+  color: #f1f5f9;
+}
+html.dark .text-slate-800:not([class*="dark:text-"]) {
+  color: #e2e8f0;
+}
+html.dark .text-slate-700:not([class*="dark:text-"]) {
+  color: #cbd5e1;
+}
+html.dark .text-slate-600:not([class*="dark:text-"]) {
+  color: #94a3b8;
+}
+html.dark .text-slate-500:not([class*="dark:text-"]) {
+  color: #94a3b8;
+}
+html.dark .text-slate-400:not([class*="dark:text-"]) {
+  color: #64748b;
+}
+
+/* 边框适配 */
+html.dark .border-slate-100:not([class*="dark:border-"]) {
+  border-color: rgba(51, 65, 85, 0.65);
+}
+html.dark .border-slate-200:not([class*="dark:border-"]) {
+  border-color: #334155;
+}
+html.dark .border-slate-300:not([class*="dark:border-"]) {
+  border-color: #475569;
+}
+html.dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #334155;
+}
+
+/* 语义浅底徽章 / 提示卡片在夜间模式下的深色透底适配 */
+html.dark .bg-blue-50:not([class*="dark:bg-"]) {
+  background-color: rgba(30, 58, 138, 0.35);
+}
+html.dark .border-blue-200:not([class*="dark:border-"]),
+html.dark .border-blue-300:not([class*="dark:border-"]) {
+  border-color: rgba(59, 130, 246, 0.45);
+}
+html.dark .text-blue-700:not([class*="dark:text-"]),
+html.dark .text-blue-800:not([class*="dark:text-"]) {
+  color: #93c5fd;
+}
+
+html.dark .bg-amber-50:not([class*="dark:bg-"]) {
+  background-color: rgba(120, 53, 15, 0.35);
+}
+html.dark .border-amber-200:not([class*="dark:border-"]),
+html.dark .border-amber-300:not([class*="dark:border-"]) {
+  border-color: rgba(245, 158, 11, 0.45);
+}
+html.dark .text-amber-800:not([class*="dark:text-"]),
+html.dark .text-amber-900:not([class*="dark:text-"]) {
+  color: #fde68a;
+}
+
+html.dark .bg-emerald-50:not([class*="dark:bg-"]) {
+  background-color: rgba(6, 78, 59, 0.38);
+}
+html.dark .border-emerald-200:not([class*="dark:border-"]),
+html.dark .border-emerald-300:not([class*="dark:border-"]) {
+  border-color: rgba(16, 185, 129, 0.45);
+}
+html.dark .text-emerald-700:not([class*="dark:text-"]),
+html.dark .text-emerald-800:not([class*="dark:text-"]) {
+  color: #6ee7b7;
+}
+
+html.dark .bg-rose-50:not([class*="dark:bg-"]) {
+  background-color: rgba(136, 19, 55, 0.38);
+}
+html.dark .border-rose-200:not([class*="dark:border-"]),
+html.dark .border-rose-300:not([class*="dark:border-"]) {
+  border-color: rgba(244, 63, 94, 0.45);
+}
+html.dark .text-rose-700:not([class*="dark:text-"]),
+html.dark .text-rose-800:not([class*="dark:text-"]) {
+  color: #fda4af;
+}
+
+html.dark .bg-teal-50:not([class*="dark:bg-"]),
+html.dark .bg-teal-50\/40:not([class*="dark:bg-"]),
+html.dark .bg-teal-50\/80:not([class*="dark:bg-"]) {
+  background-color: rgba(19, 78, 74, 0.35);
+}
+html.dark .text-teal-700:not([class*="dark:text-"]),
+html.dark .text-teal-800:not([class*="dark:text-"]) {
+  color: #5eead4;
+}
+
+html.dark .bg-indigo-50:not([class*="dark:bg-"]) {
+  background-color: rgba(49, 46, 129, 0.38);
+}
+html.dark .text-indigo-700:not([class*="dark:text-"]),
+html.dark .text-indigo-800:not([class*="dark:text-"]) {
+  color: #a5b4fc;
+}
+
+/* 悬停态适配 */
+html.dark .hover\:bg-slate-50:not([class*="dark:hover:bg-"]):hover,
+html.dark .hover\:bg-slate-100:not([class*="dark:hover:bg-"]):hover {
+  background-color: #1e293b;
+}
+html.dark .hover\:bg-slate-200:not([class*="dark:hover:bg-"]):hover {
+  background-color: #334155;
+}
+html.dark .hover\:bg-slate-700:not([class*="dark:hover:bg-"]):hover {
+  background-color: #1d4ed8;
+}
+html.dark .hover\:bg-blue-50:not([class*="dark:hover:bg-"]):hover,
+html.dark .hover\:bg-blue-100:not([class*="dark:hover:bg-"]):hover {
+  background-color: rgba(30, 58, 138, 0.52);
+}
+html.dark .hover\:bg-rose-100:not([class*="dark:hover:bg-"]):hover {
+  background-color: rgba(136, 19, 55, 0.55);
+}
+
+/* 表单控件夜间默认态 */
+html.dark input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+html.dark textarea,
+html.dark select {
+  background-color: #0b1120;
+  color: #f1f5f9;
+  border-color: #334155;
+}
+html.dark input::placeholder,
+html.dark textarea::placeholder {
+  color: #64748b;
+}
+
+/* React Flow 控件栏与句柄夜间样式 */
+html.dark .react-flow__controls {
+  background-color: rgba(15, 23, 42, 0.92);
+  border: 1px solid #334155;
+  box-shadow: 0 8px 20px rgba(2, 6, 23, 0.5);
+}
+html.dark .react-flow__controls-button {
+  background-color: transparent;
+  border-bottom-color: #334155;
+  color: #cbd5e1;
+  fill: #cbd5e1;
+}
+html.dark .react-flow__controls-button:hover {
+  background-color: #1e293b;
+  color: #f8fafc;
+  fill: #f8fafc;
+}
+html.dark .react-flow__handle {
+  border-color: #0f172a !important;
+}
+html.dark .react-flow__resize-control.handle {
+  background-color: #0f172a !important;
 }
 
 /* 触屏设备（手机 / 平板）进一步增大端口锚点、缩放手柄与右下角控件的触控热区 */

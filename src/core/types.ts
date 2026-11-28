@@ -210,6 +210,20 @@ export interface ContentGitGatewayBlock {
   bindAutoRefresh?: string;
 }
 
+export interface ContentPiAgentBlock {
+  type: 'pi_agent';
+  id: string;
+  baseUrl?: string;
+  publicEnabled?: boolean;
+  allowedInputPorts?: string[];
+  promptTemplate?: string;
+  provider?: string;
+  model?: string;
+  toolProfile?: string;
+  maxInputChars?: number;
+  bindBaseUrl?: string;
+}
+
 export type ContentLeafBlock =
   | ContentTextBlock
   | ContentButtonBlock
@@ -222,7 +236,8 @@ export type ContentLeafBlock =
   | ContentPad2DBlock
   | ContentImageButtonBlock
   | ContentElyfnRunnerBlock
-  | ContentGitGatewayBlock;
+  | ContentGitGatewayBlock
+  | ContentPiAgentBlock;
 export type ContentFlowItem = ContentLeafBlock | ContentLeafBlock[];
 
 export interface BlueprintNode {

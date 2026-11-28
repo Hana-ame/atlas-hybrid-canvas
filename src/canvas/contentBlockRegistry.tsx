@@ -29,6 +29,9 @@ const ElyfnRunnerBlock = lazy(() =>
 const GitGatewayBlock = lazy(() =>
   import('./GitGatewayBlock').then((m) => ({ default: m.GitGatewayBlock }))
 );
+const PiAgentBlock = lazy(() =>
+  import('./PiAgentBlock').then((m) => ({ default: m.PiAgentBlock }))
+);
 
 const VARIANT_CLASSES: Record<string, string> = {
   primary: 'bg-slate-900 text-white hover:bg-slate-700',
@@ -560,6 +563,54 @@ export const CONTENT_BLOCK_REGISTRY: {
             } else {
               for (const [k, v] of Object.entries(patch)) {
                 onScriptInputChange(entity.id, k, String(v));
+              }
+            }
+          }}
+        />
+      </Suspense>
+    );
+  },
+
+  pi_agent: (block, { entity, idx, onScriptInputChange, onBatchUpdateVars }) => {
+    const baseKey = block.bindBaseUrl || 'piBaseUrl';
+    const curBase =
+      entity.effectiveVars?.[baseKey] !== undefined
+        ? String(entity.effectiveVars[baseKey])
+        : String(block.baseUrl ?? '');
+    const rawPublic = entity.effectiveVars?.piPublicEnabled ?? block.publicEnabled ?? false;
+    const rawPorts = entity.effectiveVars?.piAllowedInputPorts ?? block.allowedInputPorts;
+    const allowedInputPorts = Array.isArray(rawPorts)
+      ? rawPorts.map((p) => String(p))
+      : typeof rawPorts === 'string' && rawPorts.trim()
+        ? rawPorts.split(',').map((s) => s.trim()).filter(Boolean)
+        : ['prompt'];
+    return (
+      <Suspense key={`pi-agent-${block.id}-${idx}`} fallback={LazyFallback}>
+        <PiAgentBlock
+          nodeId={entity.id}
+          baseUrl={curBase}
+          publicEnabled={parseVarBoolean(rawPublic)}
+          allowedInputPorts={allowedInputPorts}
+          provider={String(entity.effectiveVars?.piProvider ?? block.provider ?? '')}
+          model={String(entity.effectiveVars?.piModel ?? block.model ?? '')}
+          upstreamInput={entity.effectiveVars?.input !== undefined ? String(entity.effectiveVars.input) : ''}
+          lastStatus={entity.effectiveVars?.piLastStatus !== undefined ? String(entity.effectiveVars.piLastStatus) : ''}
+          lastOutput={entity.effectiveVars?.piLastOutput !== undefined ? String(entity.effectiveVars.piLastOutput) : ''}
+          lastUpdatedAt={entity.effectiveVars?.piUpdatedAt !== undefined ? String(entity.effectiveVars.piUpdatedAt) : ''}
+          onChangeBaseUrl={(next) => onScriptInputChange(entity.id, baseKey, next)}
+          onRunResult={({ status, output, updatedAt, error }) => {
+            const patch = {
+              piLastStatus: status,
+              piLastOutput: output,
+              output,
+              piUpdatedAt: updatedAt,
+              piError: error,
+            };
+            if (onBatchUpdateVars) {
+              onBatchUpdateVars(entity.id, patch, true);
+            } else {
+              for (const [k, v] of Object.entries(patch)) {
+                onScriptInputChange(entity.id, k, v);
               }
             }
           }}

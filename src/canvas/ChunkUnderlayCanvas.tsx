@@ -2,6 +2,7 @@ import { memo, useEffect, useRef } from 'react';
 import { useStoreApi } from '@xyflow/react';
 import type { ChunkManager } from '../core/chunkManager';
 import { formatTaskTextForCanvas } from '../core/taskList';
+import { adaptAnnotationTextColor, getCanvasThemePalette } from '../core/theme';
 import type { ChunkTileCache } from '../core/chunkTileCache';
 import { computeControlPointBezierSegments, evalCubicBezier, resolveNodePortY } from '../core/edgePath';
 import type {
@@ -21,6 +22,7 @@ interface ChunkUnderlayCanvasProps {
   showChunkGrid: boolean;
   annotationEditMode: boolean;
   renderVersion: number;
+  isDark?: boolean;
 }
 
 const MAX_BAKES_PER_FRAME = 6;
@@ -117,6 +119,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
     let lastTy = NaN;
     let lastZoom = NaN;
     let lastVersion = -1;
+    let lastIsDark: boolean | null = null;
 
     const getLoadedImage = (url: string): HTMLImageElement | null => {
       const cache = imgCacheRef.current;
@@ -159,13 +162,14 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
             bctx.fill();
           }
         } else {
-          drawAnnotation(bctx, ann);
+          drawAnnotation(bctx, ann, Boolean(cur.isDark));
         }
       }
       for (const nodeId of chunk.nodeIds) {
         const n = cur.nodes[nodeId];
         if (!n) continue;
-        bctx.fillStyle = `${n.color}26`;
+        const pal = getCanvasThemePalette(Boolean(cur.isDark));
+        bctx.fillStyle = `${n.color}${pal.macroNodeFillAlpha}`;
         bctx.strokeStyle = n.color;
         bctx.lineWidth = 3;
         bctx.fillRect(n.x, n.y, n.width, n.height);
@@ -173,7 +177,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
       }
     };
 
-    const drawAnnotation = (bctx: CanvasRenderingContext2D, ann: CanvasAnnotation) => {
+    const drawAnnotation = (bctx: CanvasRenderingContext2D, ann: CanvasAnnotation, isDark: boolean) => {
       const h = ann.height || Math.max(48, ann.fontSize * 2.5);
       const fill = hexToRgba(ann.bgColor, ann.bgOpacity ?? 0.85);
       if (fill) {
@@ -200,7 +204,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
       }
 
       const pad = 10;
-      bctx.fillStyle = ann.color;
+      bctx.fillStyle = adaptAnnotationTextColor(ann.color, ann.bgColor, ann.bgOpacity, isDark);
       bctx.font = `${ann.weight === 'bold' ? '700' : '400'} ${ann.fontSize}px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif`;
       bctx.textBaseline = 'top';
       const lines = wrapTextLines(bctx, formatTaskTextForCanvas(ann.text), Math.max(24, ann.width - pad * 2));
@@ -271,12 +275,14 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
 
       const [tx, ty, zoom] = store.getState().transform;
       const p = propsRef.current;
+      const isDark = Boolean(p.isDark);
       if (
         !force &&
         tx === lastTx &&
         ty === lastTy &&
         zoom === lastZoom &&
-        p.renderVersion === lastVersion
+        p.renderVersion === lastVersion &&
+        isDark === lastIsDark
       ) {
         return;
       }
@@ -284,6 +290,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
       lastTy = ty;
       lastZoom = zoom;
       lastVersion = p.renderVersion;
+      lastIsDark = isDark;
 
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const width = parent.clientWidth;
@@ -300,8 +307,9 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
+      const palette = getCanvasThemePalette(isDark);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.fillStyle = '#F8FAFC';
+      ctx.fillStyle = palette.canvasBg;
       ctx.fillRect(0, 0, width, height);
 
       ctx.save();
@@ -322,7 +330,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
         const minCy = Math.floor(worldBounds.minY / cs);
         const maxCy = Math.floor(worldBounds.maxY / cs);
 
-        ctx.strokeStyle = 'rgba(148, 163, 184, 0.28)';
+        ctx.strokeStyle = palette.gridStroke;
         ctx.lineWidth = Math.max(1 / zoom, 0.8);
         ctx.beginPath();
         for (let cx = minCx; cx <= maxCx + 1; cx++) {
@@ -335,7 +343,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
         }
         ctx.stroke();
 
-        ctx.fillStyle = 'rgba(100, 116, 139, 0.55)';
+        ctx.fillStyle = palette.gridCoordText;
         ctx.font = `500 ${Math.max(11, Math.min(24, 11 / zoom))}px ui-monospace, SFMono-Regular, monospace`;
         ctx.textBaseline = 'top';
         for (let cy = minCy; cy <= maxCy; cy++) {
@@ -385,7 +393,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
             drawnAnns.add(annId);
             const ann = p.annotations[annId];
             if (!ann) continue;
-            drawAnnotation(ctx, ann);
+            drawAnnotation(ctx, ann, Boolean(p.isDark));
           }
         }
       }
@@ -403,7 +411,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
           const sy = resolveNodePortY(src, edge.sourceHandle, 'output');
           const tx2 = tgt.x;
           const ty2 = resolveNodePortY(tgt, edge.targetHandle, 'input');
-          const stroke = edge.color || '#64748B';
+          const stroke = edge.color || palette.defaultEdgeStroke;
           const segs = computeControlPointBezierSegments(sx, sy, tx2, ty2, edge.controlPoints);
 
           ctx.save();
@@ -471,10 +479,10 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
 
             const txPos = n.x + padX;
             const tyPos = n.y + n.height * 0.5;
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.92)';
+            ctx.strokeStyle = palette.macroTitleHalo;
             ctx.lineWidth = haloWidth;
             ctx.strokeText(label, txPos, tyPos);
-            ctx.fillStyle = '#0F172A';
+            ctx.fillStyle = palette.macroTitleFill;
             ctx.fillText(label, txPos, tyPos);
           }
         }
@@ -494,10 +502,10 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
             const label = truncateTextToWidth(ctx, firstLine, Math.max(ann.width, cs - 24));
             if (!label) continue;
 
-            ctx.strokeStyle = 'rgba(248, 250, 252, 0.95)';
+            ctx.strokeStyle = palette.macroAnnHalo;
             ctx.lineWidth = 4 / zoom;
             ctx.strokeText(label, ann.x + 8, ann.y + 8);
-            ctx.fillStyle = ann.color;
+            ctx.fillStyle = adaptAnnotationTextColor(ann.color, ann.bgColor, ann.bgOpacity, isDark);
             ctx.fillText(label, ann.x + 8, ann.y + 8);
           }
         }
@@ -535,7 +543,7 @@ function ChunkUnderlayCanvasInner(props: ChunkUnderlayCanvasProps) {
 
   useEffect(() => {
     drawRef.current?.();
-  }, [props.renderVersion, props.lod, props.showChunkGrid, props.annotationEditMode, props.annotations, props.edges]);
+  }, [props.renderVersion, props.lod, props.showChunkGrid, props.annotationEditMode, props.annotations, props.edges, props.isDark]);
 
   return (
     <canvas
