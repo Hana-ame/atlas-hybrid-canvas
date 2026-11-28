@@ -58,7 +58,7 @@ export function useOverlaySync(
 
   // 关闭/隐藏页签前兜底立即刷盘
   useEffect(() => {
-    const onUnload = () => flushLocalOverlaySave();
+    const onUnload = () => flushLocalOverlaySave({ fromUnload: true });
     window.addEventListener('beforeunload', onUnload);
     window.addEventListener('pagehide', onUnload);
     return () => {
@@ -70,14 +70,17 @@ export function useOverlaySync(
   // 订阅同浏览器其他标签页的本地更新，按最新指纹去重后合并
   useEffect(() => {
     if (!isReady) return;
-    return subscribeCrossTabOverlay((remoteOverlay) => {
+    return subscribeCrossTabOverlay((remoteOverlay, meta) => {
       const fp = fingerprintOverlay(remoteOverlay);
       if (fp && fp === lastSyncedFingerprintRef.current) return;
       cancelPendingLocalOverlaySave();
       lastSyncedFingerprintRef.current = fp;
       setOverlay(remoteOverlay);
       onRemoteApplied?.();
-      onRemoteNotice?.('已自动同步同一浏览器其他标签页的本地修改');
+      // 单页签刷新 / 关闭前兜底刷盘会异步触发 BroadcastChannel，不应误报为"打开了多个标签页"
+      if (!meta.fromUnload && !meta.isSameTabReload) {
+        onRemoteNotice?.('已自动同步同一浏览器其他标签页的本地修改');
+      }
     }, roomPath);
   }, [isReady, setOverlay, onRemoteNotice, onRemoteApplied, roomPath]);
 }

@@ -76,11 +76,34 @@ export async function loadLocalOverlay(roomPath?: string): Promise<LocalOverlayS
 }
 
 const SYNC_CHANNEL_NAME = 'atlas-hybrid-canvas-sync-v1';
+const RELOADING_TAB_KEY = 'atlas-hybrid-canvas:reloading-tab-id';
 const TAB_ID = `tab-${Math.random().toString(36).slice(2, 10)}`;
 let pendingSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingOverlay: LocalOverlayState | null = null;
 let pendingRoomPath: string | undefined = undefined;
 let syncChannel: BroadcastChannel | null = null;
+
+function readAndClearPrevReloadTabId(): string | null {
+  try {
+    if (typeof window === 'undefined' || !window.sessionStorage) return null;
+    const prev = window.sessionStorage.getItem(RELOADING_TAB_KEY);
+    if (prev) window.sessionStorage.removeItem(RELOADING_TAB_KEY);
+    return prev || null;
+  } catch {
+    return null;
+  }
+}
+
+const PREV_RELOAD_TAB_ID = readAndClearPrevReloadTabId();
+
+function markTabUnloading(): void {
+  try {
+    if (typeof window === 'undefined' || !window.sessionStorage) return;
+    window.sessionStorage.setItem(RELOADING_TAB_KEY, TAB_ID);
+  } catch {
+    // 忽略无痕或受限容器下的存储异常
+  }
+}
 
 function getSyncChannel(): BroadcastChannel | null {
   if (typeof BroadcastChannel === 'undefined') return null;
@@ -94,13 +117,28 @@ function getSyncChannel(): BroadcastChannel | null {
   return syncChannel;
 }
 
-export async function saveLocalOverlay(overlay: LocalOverlayState, roomPath?: string): Promise<void> {
+export interface CrossTabOverlayMeta {
+  fromUnload: boolean;
+  isSameTabReload: boolean;
+}
+
+export async function saveLocalOverlay(
+  overlay: LocalOverlayState,
+  roomPath?: string,
+  opts?: { fromUnload?: boolean }
+): Promise<void> {
   const storageKey = getOverlayStorageKey(roomPath);
   await idbSet(storageKey, overlay);
   const ch = getSyncChannel();
   if (ch) {
     try {
-      ch.postMessage({ type: 'overlay_updated', tabId: TAB_ID, storageKey, overlay });
+      ch.postMessage({
+        type: 'overlay_updated',
+        tabId: TAB_ID,
+        fromUnload: Boolean(opts?.fromUnload),
+        storageKey,
+        overlay,
+      });
     } catch {
       // 忽略克隆或关闭通道异常
     }
@@ -140,7 +178,10 @@ export function cancelPendingLocalOverlaySave(): void {
 }
 
 /** 页面关闭前兜底立即刷盘 */
-export function flushLocalOverlaySave(): void {
+export function flushLocalOverlaySave(opts?: { fromUnload?: boolean }): void {
+  if (opts?.fromUnload) {
+    markTabUnloading();
+  }
   if (pendingSaveTimer) {
     clearTimeout(pendingSaveTimer);
     pendingSaveTimer = null;
@@ -150,7 +191,7 @@ export function flushLocalOverlaySave(): void {
   pendingOverlay = null;
   pendingRoomPath = undefined;
   if (toFlush) {
-    void saveLocalOverlay(toFlush, targetRoom);
+    void saveLocalOverlay(toFlush, targetRoom, { fromUnload: opts?.fromUnload });
   }
 }
 
@@ -158,19 +199,29 @@ export function flushLocalOverlaySave(): void {
  * 订阅同一浏览器其他标签页的本地叠加层变更，避免双开页签静默互相覆盖。
  */
 export function subscribeCrossTabOverlay(
-  onRemoteOverlay: (overlay: LocalOverlayState) => void,
+  onRemoteOverlay: (overlay: LocalOverlayState, meta: CrossTabOverlayMeta) => void,
   roomPath?: string
 ): () => void {
   const ch = getSyncChannel();
   if (!ch) return () => {};
   const expectedKey = getOverlayStorageKey(roomPath);
   const handler = (
-    ev: MessageEvent<{ type?: string; tabId?: string; storageKey?: string; overlay?: LocalOverlayState }>
+    ev: MessageEvent<{
+      type?: string;
+      tabId?: string;
+      fromUnload?: boolean;
+      storageKey?: string;
+      overlay?: LocalOverlayState;
+    }>
   ) => {
     const data = ev.data;
     if (!data || data.type !== 'overlay_updated' || data.tabId === TAB_ID || !data.overlay) return;
     if (data.storageKey !== expectedKey) return;
-    onRemoteOverlay(data.overlay);
+    const isSameTabReload = Boolean(PREV_RELOAD_TAB_ID && data.tabId === PREV_RELOAD_TAB_ID);
+    onRemoteOverlay(data.overlay, {
+      fromUnload: Boolean(data.fromUnload),
+      isSameTabReload,
+    });
   };
   ch.addEventListener('message', handler);
   return () => ch.removeEventListener('message', handler);
