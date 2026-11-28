@@ -1,4 +1,39 @@
 import type { BaseBlueprint, BlueprintNode, CanvasAnnotation } from './types';
+import { BUILTIN_TEMPLATES } from './widgetTemplates';
+
+function nodeFromBuiltinTemplate(
+  templateId: string,
+  id: string,
+  x: number,
+  y: number,
+  overrides: Partial<BlueprintNode> & { defaultVarsPatch?: Record<string, unknown> } = {}
+): BlueprintNode {
+  const tpl = BUILTIN_TEMPLATES.find((t) => t.id === templateId);
+  if (!tpl || tpl.kind !== 'node' || !tpl.nodePreset) {
+    throw new Error(`Missing built-in node template: ${templateId}`);
+  }
+  const p = tpl.nodePreset;
+  const { defaultVarsPatch, ...restOverrides } = overrides;
+  return {
+    id,
+    x,
+    y,
+    width: p.width,
+    height: p.height,
+    title: p.title,
+    body: p.body,
+    category: p.category,
+    color: p.color,
+    script: p.script,
+    inputPorts: p.inputPorts ? p.inputPorts.map((port) => ({ ...port })) : undefined,
+    outputPorts: p.outputPorts ? p.outputPorts.map((port) => ({ ...port })) : undefined,
+    defaultVars: { ...p.defaultVars, ...(defaultVarsPatch ?? {}) },
+    buttons: p.buttons ? p.buttons.map((b) => ({ ...b })) : undefined,
+    rev: 1,
+    cid: 'server-base',
+    ...restOverrides,
+  };
+}
 
 export function createSeedBlueprint(): BaseBlueprint {
   const nodes: Record<string, BlueprintNode> = {
@@ -1222,6 +1257,84 @@ on('clearLog', () => {
       rev: 1,
       cid: 'server-base',
     },
+    // ==================== ZONE H：全量控件用法 e.g. 百科与工程卡 ====================
+    'eg-all-in-one': nodeFromBuiltinTemplate('tpl-usage-cheatsheet', 'eg-all-in-one', 40, 865, {
+      width: 435,
+      height: 440,
+      title: 'e.g. 全能控件用法百科（点页签切换）',
+    }),
+    'eg-markdown-buttons': {
+      id: 'eg-markdown-buttons',
+      x: 40,
+      y: 1330,
+      width: 435,
+      height: 280,
+      title: 'e.g. 纯正文 Markdown + buttons[] 静态按钮卡',
+      body: [
+        '不写 script 的 vars.contents 时，卡片展示正文 + 下方 buttons[]：',
+        '- [x] 支持点击勾选任务行（- [ ] / - [x]）实时同步',
+        '- [ ] button actionType="script"：在隔离沙箱跑 lib/vars/canvas',
+        '- [ ] button actionType="proxy_http"：经服务端代理发 GET/POST',
+        '💡 点右上角 ⚙ 可直接编辑本卡 defaultVars / buttons[] 源码',
+      ].join('\n'),
+      category: '正文/按钮',
+      color: '#0369A1',
+      defaultVars: { egClicks: 0, lastClick: '-' },
+      buttons: [
+        {
+          id: 'eg-btn-script',
+          label: 'script 按钮 (+1 & 改区色)',
+          variant: 'primary',
+          actionType: 'script',
+          code: `lib.inc('egClicks', 1);
+vars.lastClick = lib.now();
+canvas.setAnnotationBg('ann-zone-examples', '#FEF3C7', 0.9);
+log('Markdown+Buttons clicked', vars.egClicks);`,
+        },
+        {
+          id: 'eg-btn-http',
+          label: 'proxy_http GET 测试',
+          variant: 'secondary',
+          actionType: 'proxy_http',
+          proxyUrl: 'https://httpbin.org/get?source=atlas-eg',
+          proxyMethod: 'GET',
+        },
+      ],
+      rev: 1,
+      cid: 'server-base',
+    },
+    'eg-reactive-onchange': nodeFromBuiltinTemplate('tpl-reactive-onchange', 'eg-reactive-onchange', 40, 1635, {
+      width: 435,
+      height: 285,
+      title: 'e.g. textarea + onChange + onValidateConnect + broadcast',
+    }),
+    'eg-edge-channel': nodeFromBuiltinTemplate('tpl-edge-channel-demo', 'eg-edge-channel', 40, 1945, {
+      width: 435,
+      height: 230,
+      title: 'e.g. 边通道 vars.input / vars.output 状态流',
+    }),
+    'eg-api-poller': nodeFromBuiltinTemplate('tpl-api-poller', 'eg-api-poller', 40, 2200, {
+      width: 435,
+      height: 325,
+      title: 'e.g. API 轮询抓取器（api_poller）',
+      defaultVarsPatch: { pollUrl: '/api/health', pollJsonPath: 'status', pollIntervalSec: 15 },
+    }),
+    'eg-git-gateway': nodeFromBuiltinTemplate('tpl-git-gateway', 'eg-git-gateway', 40, 2550, {
+      width: 435,
+      height: 380,
+      title: 'e.g. git-gateway 仓库看板（git_gateway）',
+    }),
+    'eg-elyfn-runner': nodeFromBuiltinTemplate('tpl-elyfn-runner', 'eg-elyfn-runner', 40, 2955, {
+      width: 435,
+      height: 355,
+      title: 'e.g. elyfn 函数调用卡（elyfn_runner）',
+      defaultVarsPatch: { fnSelected: 'smoke/square', fnPayload: '{"x": 7}' },
+    }),
+    'eg-pi-agent': nodeFromBuiltinTemplate('tpl-pi-agent', 'eg-pi-agent', 40, 3335, {
+      width: 435,
+      height: 400,
+      title: 'e.g. Pi Agent 运行卡（pi_agent）',
+    }),
   };
 
   const annotations: Record<string, CanvasAnnotation> = {
@@ -1322,6 +1435,23 @@ on('clearLog', () => {
       color: '#1E293B',
       bgColor: '#FEF3C7',
       bgOpacity: 0.88,
+      weight: 'bold',
+      nonInteractive: true,
+      rev: 1,
+      cid: 'server-base',
+    },
+    'ann-zone-examples': {
+      id: 'ann-zone-examples',
+      kind: 'text',
+      x: 40,
+      y: 800,
+      width: 435,
+      height: 48,
+      text: 'ZONE H · 控件全量用法示例（所有 e.g.：点击交互 · 点 ⚙ 查看脚本/配置）',
+      fontSize: 14,
+      color: '#1E3A8A',
+      bgColor: '#E0F2FE',
+      bgOpacity: 0.9,
       weight: 'bold',
       nonInteractive: true,
       rev: 1,
@@ -1601,6 +1731,19 @@ on('clearLog', () => {
         label: 'restart',
         color: '#4F46E5',
         controlPoints: [{ x: 1690, y: 2910 }, { x: 1690, y: 3360 }, { x: 488, y: 3360 }, { x: 488, y: 2955 }],
+        rev: 1,
+        cid: 'server-base',
+      },
+      'edge-eg-elyfn-pi': {
+        id: 'edge-eg-elyfn-pi',
+        source: 'eg-elyfn-runner',
+        target: 'eg-pi-agent',
+        sourceHandle: 'out-1',
+        targetHandle: 'prompt',
+        label: '函数结果 → Agent prompt',
+        color: '#7C3AED',
+        controlPoints: [{ x: 482, y: 3132 }, { x: 482, y: 3322 }, { x: 20, y: 3322 }, { x: 20, y: 3535 }],
+        animated: true,
         rev: 1,
         cid: 'server-base',
       },

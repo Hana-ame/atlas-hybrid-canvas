@@ -10,6 +10,184 @@ import type { BlueprintNode, BlueprintTemplate } from './types';
 
 const CUSTOM_TEMPLATES_KEY = 'atlas-hybrid-custom-templates-v1';
 
+export const USAGE_CHEATSHEET_SCRIPT = String.raw`const tab = String(vars.tab || 'blocks');
+const count = Number(vars.demoCount || 0);
+const sliderVal = Number(vars.demoSlider ?? 60);
+const tabs = [
+  { id: 'blocks', label: 'UI声明块' },
+  { id: 'script', label: '脚本/事件' },
+  { id: 'graph', label: '联动/边通道' },
+  { id: 'agent', label: '正文/按钮/Agent' }
+];
+
+const snippets = {
+  blocks: [
+    '【vars.contents 全部 14 种声明块 e.g.】',
+    '1) text / button / input / textarea / 行排布 [...]:',
+    '   { type: "text", text: "...", align: "center", color: "#1E40AF", fontSize: 12, bold: true }',
+    '   [{ type: "input", id: "inp", bind: "draft", placeholder: "..." }, { type: "button", id: "go", label: "确定", variant: "primary" }]',
+    '   { type: "textarea", id: "note", bind: "noteText" }',
+    '2) 交互控件 slider / pad2d / image_button:',
+    '   { type: "slider", id: "s1", bind: "v", min: 0, max: 100, step: 5, unit: "%" }',
+    '   { type: "pad2d", id: "p1", bindX: "px", bindY: "py", minX: -10, maxX: 10, minY: -10, maxY: 10 }',
+    '   { type: "image_button", id: "ib", bind: "armed", toggle: true, offImage: "...", onImage: "..." }',
+    '3) 媒体块 image / video / pdf:',
+    '   { type: "image", id: "im", bindUrl: "imgUrl", fit: "contain" }',
+    '   { type: "video", id: "vd", bindUrl: "vidUrl", loop: true, muted: true }',
+    '   { type: "pdf", id: "pf", bindUrl: "pdfUrl", bindPage: "pdfPage", height: 300 }',
+    '4) 工程服务块 api_poller / elyfn_runner / git_gateway / pi_agent:',
+    '   { type: "api_poller", id: "ap", bindUrl: "pollUrl", bindInterval: "pollSec", bindJsonPath: "pollPath" }',
+    '   { type: "elyfn_runner", id: "fn", bindSelectedFn: "fnSelected", bindPayload: "fnPayload" }',
+    '   { type: "git_gateway", id: "gg", bindSelectedRepo: "gitRepo", bindTab: "gitTab" }',
+    '   { type: "pi_agent", id: "pi", bindBaseUrl: "piBaseUrl" }'
+  ].join('\n'),
+  script: [
+    '【隔离沙箱 API 与事件钩子 e.g.】',
+    '• 读取上下文与变量: ctx.entity.id / title / width / x / y；读写 vars.foo',
+    '• 保留控制字段（实时改卡片外观与位置）:',
+    '  vars.title = "新标题"; vars.type = "TAG"; vars.color = "#DC2626";',
+    '  vars.width = 420; vars.height = 260; vars.pos = { x: 100, y: 200 };',
+    '• 工具函数: lib.inc("demoCount", 1); lib.now(); log("结果:", vars.demoCount);',
+    '• 按钮与输入事件: on("btnId", async () => { ... });  onSubmit("inpId", (val) => { ... });',
+    '• 变量响应钩子: onChange(["a", "b"], (info) => { vars.sum = Number(vars.a) + Number(vars.b); });',
+    '• 自定义连线校验: onValidateConnect((info) => info.source === info.target ? { ok: false, reason: "禁止自环" } : { ok: true });'
+  ].join('\n'),
+  graph: [
+    '【跨控件拓扑 · emit 消息 · 边通道 · 注释操作 e.g.】',
+    '• 读画布与端口: widgets.get(id) / widgets.vars(id) / widgets.list()',
+    '  widgets.inputs("in-1") / widgets.outputs("out-1") / widgets.edges()',
+    '• 动态造卡与拓扑: await widgets.create({ title: "子卡", dx: 380, dy: 0, connect: "标签", vars: {}, script: "..." })',
+    '  widgets.connect(fromId, toId, "label"); widgets.remove(id); widgets.checkDag(f, t); widgets.topoSort();',
+    '• 跨控件通信: await emit(targetId, "evt", { x: 1 }); await emitDownstream("ping", data); await broadcast("sync", data);',
+    '• 边通道状态传递 (详见 E/G 状态机与边通道模板):',
+    '  发送方: const e = (vars.output || [])[0]; e.msg = { ok: true }; e.flag = true; e.dashed = true; e.color = "#F59E0B"; e.tag = "待签收";',
+    '  接收方: const inEdge = (vars.input || []).find((e) => e.flag); inEdge.flag = false; inEdge.dashed = false; inEdge.color = "";',
+    '• 操作背景注释: canvas.setAnnotationBg("ann-zone-0", "#DBEAFE", 0.9); canvas.setAnnotationText(id, "..."); canvas.setAnnotationColor(id, "#1E3A8A");'
+  ].join('\n'),
+  agent: [
+    '【纯正文 Markdown · 静态按钮 · Agent/MCP 接口 e.g.】',
+    '• 纯正文卡 (不设置 vars.contents 时显示 body):',
+    '  支持任务复选框 - [ ] 待办 / - [x] 已完成（画布直接点击勾选同步）',
+    '• 静态按钮 buttons[] 支持两种动作:',
+    '  1) actionType: "script" -> 在安全沙箱执行 code（可用 lib/vars/canvas/log）',
+    '  2) actionType: "proxy_http" -> 经服务端 SSRF 白名单代理发 GET/POST 请求',
+    '• 外部 Agent / MCP 读写蓝图 API:',
+    '  GET /api/agent/schema · GET /api/agent/state?room=default',
+    '  POST /api/ops (header: X-Agent-Api-Key, 支持 dryRun / expectedRevision / create_from_template / patch_vars / connect_edge)',
+    '  标准 stdio MCP: server/mcpServer.ts (list_templates / get_state / apply_ops)'
+  ].join('\n')
+};
+
+vars.contents = [
+  {
+    type: 'text',
+    text: '点下方页签切换全量 e.g. · 点右上角 ⚙ 查看并复制本卡完整 script 源码',
+    align: 'center',
+    color: '#1E40AF',
+    fontSize: 11.5,
+    bold: true
+  },
+  tabs.map((t) => ({
+    type: 'button',
+    id: 'tab_' + t.id,
+    label: t.label,
+    variant: tab === t.id ? 'primary' : 'secondary'
+  })),
+  { type: 'text', text: snippets[tab] || snippets.blocks, fontSize: 11, color: '#0F172A' },
+  [
+    { type: 'input', id: 'egInput', bind: 'demoDraft', placeholder: '试一下 onSubmit：输入后按回车…' },
+    { type: 'button', id: 'egInc', label: '测试 +1 (' + count + ')', width: 108, variant: 'success' }
+  ],
+  { type: 'slider', id: 'egSlider', bind: 'demoSlider', label: 'onChange 滑动试跑', min: 0, max: 100, step: 5, value: sliderVal, unit: '%' },
+  { type: 'text', text: vars.demoStatus || '就绪 · 滑动/输入/点按钮都会在右侧「脚本日志」打印 trace', fontSize: 10.5, color: '#475569' }
+];
+
+for (const t of tabs) {
+  on('tab_' + t.id, () => {
+    vars.tab = t.id;
+    vars.demoStatus = '已切换速查页签：' + t.label;
+  });
+}
+on('egInc', () => {
+  const next = lib.inc('demoCount', 1);
+  vars.demoStatus = 'on("egInc") 触发 -> demoCount=' + next + ' @ ' + lib.now();
+  log('egInc triggered', { count: next });
+});
+onSubmit('egInput', (val) => {
+  const txt = String(val || '').trim();
+  if (!txt) return;
+  vars.demoDraft = '';
+  vars.demoStatus = 'onSubmit("egInput") 收到：' + txt + ' @ ' + lib.now();
+  log('egInput submit:', txt);
+});
+onChange('demoSlider', (info) => {
+  vars.demoStatus = 'onChange("demoSlider") -> ' + info.value + '%';
+});`;
+
+export const USAGE_CHEATSHEET_DEFAULT_VARS: Record<string, unknown> = {
+  tab: 'blocks',
+  demoCount: 0,
+  demoDraft: '',
+  demoSlider: 60,
+  demoStatus: '',
+};
+
+export const REACTIVE_ONCHANGE_SCRIPT = String.raw`const valA = Number(vars.valA ?? 12);
+const valB = Number(vars.valB ?? 8);
+const sum = Number(vars.sum ?? (valA + valB));
+const wireCheck = vars.allowConnect !== false;
+
+vars.contents = [
+  { type: 'text', text: 'e.g. textarea + onChange(["valA","valB"]) + onValidateConnect + broadcast', align: 'center', color: '#4338CA', fontSize: 11.5, bold: true },
+  { type: 'slider', id: 'sA', bind: 'valA', label: '变量 A', min: 0, max: 50, step: 1, value: valA },
+  { type: 'slider', id: 'sB', bind: 'valB', label: '变量 B', min: 0, max: 50, step: 1, value: valB },
+  { type: 'text', text: '自动派生结果：A + B = ' + sum + ' · ' + (wireCheck ? '连线放行中' : '拒绝新入线'), fontSize: 11.5, color: '#0F766E', bold: true },
+  { type: 'textarea', id: 'noteArea', bind: 'memo', placeholder: 'textarea 多行输入绑定 vars.memo…' },
+  [
+    { type: 'button', id: 'toggleWire', label: wireCheck ? '切为拒接连线' : '恢复允许连线', variant: 'secondary' },
+    { type: 'button', id: 'bcMemo', label: 'broadcast 广播', variant: 'primary' }
+  ],
+  { type: 'text', text: vars.statusLine || '拖动 A/B 实时触发 onChange 派生求和；点右侧按钮测连线校验与全画布广播', fontSize: 10.5, color: '#475569' }
+];
+
+onChange(['valA', 'valB'], () => {
+  const nextSum = (Number(vars.valA) || 0) + (Number(vars.valB) || 0);
+  vars.sum = nextSum;
+  vars.statusLine = 'onChange(["valA","valB"]) 自动算出 sum=' + nextSum;
+});
+
+on('toggleWire', () => {
+  vars.allowConnect = !Boolean(vars.allowConnect !== false);
+  vars.statusLine = vars.allowConnect ? 'onValidateConnect 已切换为放行' : 'onValidateConnect 将拦截新连线';
+});
+
+on('bcMemo', async () => {
+  const text = String(vars.memo || ('A+B=' + sum)).trim();
+  await broadcast('ping', { text });
+  vars.statusLine = 'broadcast("ping") 已广播：' + text;
+  log('broadcast:', text);
+});
+
+onValidateConnect((info) => {
+  if (vars.allowConnect === false) {
+    return { ok: false, reason: '该控件已通过 onValidateConnect 开关拦截连线' };
+  }
+  const dag = widgets.checkDag(info.source, info.target);
+  if (!dag.ok) {
+    return { ok: false, reason: '检测到有向环：' + dag.cyclePath.join(' → ') };
+  }
+  return { ok: true };
+});`;
+
+export const REACTIVE_ONCHANGE_DEFAULT_VARS: Record<string, unknown> = {
+  valA: 12,
+  valB: 8,
+  sum: 20,
+  memo: '多行 textarea 示例内容',
+  allowConnect: true,
+  statusLine: '',
+};
+
 export const BUILTIN_TEMPLATES: BlueprintTemplate[] = [
   {
     id: 'tpl-pi-agent',
@@ -565,6 +743,91 @@ async function doBroadcast(raw) {
 }
 on('bcSend', async () => doBroadcast(vars.draft));
 onSubmit('bcInput', async (v) => doBroadcast(v));`,
+    },
+  },
+  {
+    id: 'tpl-usage-cheatsheet',
+    name: '全能控件用法示例卡 (e.g.)',
+    description: '一卡切换速查所有 14 种 vars.contents 声明块、沙箱事件 API、跨控件通信与 Agent/MCP 用法',
+    group: '知识地图',
+    kind: 'node',
+    color: '#1D4ED8',
+    nodePreset: {
+      width: 440,
+      height: 440,
+      title: 'e.g. 全能控件用法百科',
+      body: '',
+      category: 'e.g.',
+      color: '#1D4ED8',
+      defaultVars: { ...USAGE_CHEATSHEET_DEFAULT_VARS },
+      script: USAGE_CHEATSHEET_SCRIPT,
+    },
+  },
+  {
+    id: 'tpl-reactive-onchange',
+    name: '响应式与校验示例 (onChange / onValidateConnect)',
+    description: '演示 textarea 多行输入、onChange 多键派生、broadcast 全局广播与 onValidateConnect 连线拦截',
+    group: '工程与运维',
+    kind: 'node',
+    color: '#4338CA',
+    nodePreset: {
+      width: 410,
+      height: 285,
+      title: '响应式与连线校验示例',
+      body: '',
+      category: '脚本API',
+      color: '#4338CA',
+      inputPorts: [{ id: 'in-1', label: '校验入口' }],
+      outputPorts: [{ id: 'out-1', label: '派生出口' }],
+      defaultVars: { ...REACTIVE_ONCHANGE_DEFAULT_VARS },
+      script: REACTIVE_ONCHANGE_SCRIPT,
+    },
+  },
+  {
+    id: 'tpl-edge-channel-demo',
+    name: '连线通道消息示例 (vars.input / vars.output)',
+    description: '演示直接读写边寄存器 edge.msg / flag / dashed / color / tag 实现有向带样式状态流转',
+    group: '工程与运维',
+    kind: 'node',
+    color: '#0F766E',
+    nodePreset: {
+      width: 380,
+      height: 230,
+      title: '连线通道收发示例',
+      body: '',
+      category: '边通道',
+      color: '#0F766E',
+      inputPorts: [{ id: 'in-1', label: '令牌入口' }],
+      outputPorts: [{ id: 'out-1', label: '令牌出口' }],
+      defaultVars: { lastReceived: '' },
+      script: String.raw`const outs = vars.output || [];
+const pendingIn = (vars.input || []).find((e) => e.flag);
+vars.contents = [
+  { type: 'text', text: pendingIn ? '收到待签收令牌：' + JSON.stringify(pendingIn.msg) : '出线数=' + outs.length + ' · 入线无待签收令牌', fontSize: 11.5, color: pendingIn ? '#B45309' : '#0F766E', bold: true },
+  { type: 'text', text: vars.lastReceived || '写法：const e = vars.output[0]; e.msg = {...}; e.flag = true; e.dashed = true; e.color = "#F59E0B";', fontSize: 10.5, color: '#475569' },
+  [
+    { type: 'button', id: 'sendEdge', label: '写入出线令牌', variant: 'primary', disabled: outs.length === 0 },
+    { type: 'button', id: 'ackEdge', label: '签收入线令牌', variant: 'success', disabled: !pendingIn }
+  ]
+];
+on('sendEdge', () => {
+  const edge = (vars.output || [])[0];
+  if (!edge) return;
+  edge.msg = { from: ctx.entity.title, at: lib.now() };
+  edge.flag = true;
+  edge.dashed = true;
+  edge.color = '#F59E0B';
+  edge.tag = '待签收';
+});
+on('ackEdge', () => {
+  const edge = (vars.input || []).find((e) => e.flag);
+  if (!edge) return;
+  vars.lastReceived = '已签收 @ ' + lib.now() + '：' + JSON.stringify(edge.msg);
+  edge.flag = false;
+  edge.dashed = false;
+  edge.color = '';
+  edge.tag = '已签收';
+});`,
     },
   },
 

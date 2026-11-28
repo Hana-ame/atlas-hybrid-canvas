@@ -492,15 +492,16 @@ function PiAgentBlockInner({
       const data = await resp.json().catch(() => ({ ok: false }));
       if (resp.ok && data.ok) {
         setAtlasMcpInjected(Boolean(data.atlasMcpInjected));
-        adminStreamAbortRef.current?.abort();
-        adminStreamAbortRef.current = null;
+        muxUnsubRef.current?.();
+        muxUnsubRef.current = null;
+        ensureAdminStream(key);
       } else {
         setErrorText(String(data.error || `HTTP ${resp.status}`));
       }
     } finally {
       setMcpBusy(false);
     }
-  }, [adminKey, atlasMcpInjected, encodedNode, encodedRoom, mcpBusy, prefix]);
+  }, [adminKey, atlasMcpInjected, encodedNode, encodedRoom, ensureAdminStream, mcpBusy, prefix]);
 
   const handleAbort = useCallback(async () => {
     const key = adminKey.trim();

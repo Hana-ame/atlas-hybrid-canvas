@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSeedBlueprint } from '../src/core/seedBlueprint.ts';
+import { BUILTIN_TEMPLATES } from '../src/core/widgetTemplates.ts';
 import { isBoxIntersecting } from '../src/core/viewportCulling.ts';
 import { buildControlPointEdgePath, computeControlPointBezierSegments, evalCubicBezier, resolveNodePortY } from '../src/core/edgePath.ts';
 
@@ -119,5 +120,28 @@ test('ZONE F FSM edges have zero node occlusion and well-separated labels', () =
       const dist = Math.hypot(labels[i].x - labels[j].x, labels[i].y - labels[j].y);
       assert.ok(dist >= 36, `FSM edge labels ${labels[i].id} and ${labels[j].id} too close: ${dist.toFixed(1)}px`);
     }
+  }
+});
+
+test('createSeedBlueprint() and BUILTIN_TEMPLATES cover all ZONE H e.g. widgets', () => {
+  const bp = createSeedBlueprint();
+  const zoneHIds = [
+    'eg-all-in-one',
+    'eg-markdown-buttons',
+    'eg-reactive-onchange',
+    'eg-edge-channel',
+    'eg-api-poller',
+    'eg-elyfn-runner',
+    'eg-git-gateway',
+    'eg-pi-agent',
+  ];
+  for (const id of zoneHIds) {
+    assert.ok(bp.nodes[id], `Missing ZONE H e.g. node: ${id}`);
+  }
+  assert.ok(bp.annotations['ann-zone-examples'], 'Missing ZONE H annotation');
+  assert.ok(bp.edges['edge-eg-elyfn-pi'], 'Missing ZONE H elyfn->pi edge');
+
+  for (const tplId of ['tpl-usage-cheatsheet', 'tpl-reactive-onchange', 'tpl-edge-channel-demo']) {
+    assert.ok(BUILTIN_TEMPLATES.some((t) => t.id === tplId), `Missing template: ${tplId}`);
   }
 });

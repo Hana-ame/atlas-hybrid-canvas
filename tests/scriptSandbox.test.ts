@@ -314,3 +314,56 @@ test('validateScriptSafety() blocks dynamic import() exfiltration', () => {
   assert.equal(res.ok, false);
   assert.match(String(res.reason || ''), /import/);
 });
+
+test('Worker sandbox executes ZONE H e.g. widgets (tab switch, onChange, onValidateConnect, edge channel)', async () => {
+  const bp = createSeedBlueprint();
+  const egAll = bp.nodes['eg-all-in-one'];
+  const tabRes = await runWorkerBootstrapInNode({
+    code: egAll.script,
+    initialVars: egAll.defaultVars,
+    selfEntity: { id: egAll.id, title: egAll.title, label: egAll.title, body: '', x: egAll.x, y: egAll.y, width: egAll.width, height: egAll.height, color: egAll.color, vars: egAll.defaultVars },
+    peers: {},
+    edges: [],
+    trigger: { kind: 'click', buttonId: 'tab_script' },
+  });
+  assert.equal(tabRes.ok, true, String(tabRes.error || ''));
+  assert.equal((tabRes.updatedVars as Record<string, unknown>).tab, 'script');
+
+  const incRes = await runWorkerBootstrapInNode({
+    code: egAll.script,
+    initialVars: tabRes.updatedVars,
+    selfEntity: { id: egAll.id, title: egAll.title, label: egAll.title, body: '', x: egAll.x, y: egAll.y, width: egAll.width, height: egAll.height, color: egAll.color, vars: tabRes.updatedVars },
+    peers: {},
+    edges: [],
+    trigger: { kind: 'click', buttonId: 'egInc' },
+  });
+  assert.equal(incRes.ok, true, String(incRes.error || ''));
+  assert.equal((incRes.updatedVars as Record<string, unknown>).demoCount, 1);
+
+  const reactive = bp.nodes['eg-reactive-onchange'];
+  const onChangeRes = await runWorkerBootstrapInNode({
+    code: reactive.script,
+    initialVars: { ...reactive.defaultVars, valA: 30, valB: 15 },
+    selfEntity: { id: reactive.id, title: reactive.title, label: reactive.title, body: '', x: reactive.x, y: reactive.y, width: reactive.width, height: reactive.height, color: reactive.color, vars: reactive.defaultVars },
+    peers: {},
+    edges: [],
+    trigger: { kind: 'varsChanged', changedKeys: ['valA'] },
+  });
+  assert.equal(onChangeRes.ok, true, String(onChangeRes.error || ''));
+  assert.equal((onChangeRes.updatedVars as Record<string, unknown>).sum, 45);
+
+  const edgeNode = bp.nodes['eg-edge-channel'];
+  const edgeSendRes = await runWorkerBootstrapInNode({
+    code: edgeNode.script,
+    initialVars: edgeNode.defaultVars,
+    selfEntity: { id: edgeNode.id, title: edgeNode.title, label: edgeNode.title, body: '', x: edgeNode.x, y: edgeNode.y, width: edgeNode.width, height: edgeNode.height, color: edgeNode.color, vars: edgeNode.defaultVars },
+    peers: {},
+    edges: [{ id: 'e-demo', source: edgeNode.id, target: 'dst', sourceHandle: 'out-1', targetHandle: 'in-1' }],
+    trigger: { kind: 'click', buttonId: 'sendEdge' },
+  });
+  assert.equal(edgeSendRes.ok, true, String(edgeSendRes.error || ''));
+  const edgeOps = edgeSendRes.edgeOps as Array<{ edgeId: string; flag?: boolean; dashed?: boolean }>;
+  assert.equal(edgeOps.length, 1);
+  assert.equal(edgeOps[0].flag, true);
+  assert.equal(edgeOps[0].dashed, true);
+});
