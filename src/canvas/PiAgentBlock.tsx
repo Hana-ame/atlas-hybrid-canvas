@@ -24,6 +24,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import { extractRoomPathFromBrowserLocation } from '../core/roomPath';
+import { subscribePiMux } from '../core/piMuxStream';
 
 const SESSION_ADMIN_KEY_STORAGE = 'atlas-pi-admin-key';
 const SESSION_LLM_KEY_STORAGE = 'atlas-pi-llm-key';
@@ -171,7 +172,7 @@ function PiAgentBlockInner({
   const [installingPi, setInstallingPi] = useState(false);
 
   const esRef = useRef<EventSource | null>(null);
-  const adminStreamAbortRef = useRef<AbortController | null>(null);
+  const muxUnsubRef = useRef<(() => void) | null>(null);
   const outputRef = useRef(fullOutput);
   outputRef.current = fullOutput;
   const lastUpstreamRef = useRef(upstreamInput);
@@ -194,8 +195,8 @@ function PiAgentBlockInner({
     return () => {
       esRef.current?.close();
       esRef.current = null;
-      adminStreamAbortRef.current?.abort();
-      adminStreamAbortRef.current = null;
+      muxUnsubRef.current?.();
+      muxUnsubRef.current = null;
     };
   }, []);
 
@@ -292,61 +293,33 @@ function PiAgentBlockInner({
   );
 
   const ensureAdminStream = useCallback(
-    async (key: string) => {
-      if (adminStreamAbortRef.current) return;
-      const ac = new AbortController();
-      adminStreamAbortRef.current = ac;
-      try {
-        const resp = await fetch(`${prefix}/pi/admin/${encodedRoom}/${encodedNode}/stream`, {
-          method: 'GET',
-          headers: { 'X-Pi-Admin-Key': key },
-          signal: ac.signal,
-        });
-        if (!resp.ok || !resp.body) {
-          adminStreamAbortRef.current = null;
-          return;
+    (key: string) => {
+      if (muxUnsubRef.current) return;
+      muxUnsubRef.current = subscribePiMux(prefix, key, roomPath, nodeId, (env) => {
+        if (env.eventName === 'pi_event') {
+          applyPiEvent(env.payload);
+        } else if (env.eventName === 'session_exit') {
+          setRunning(false);
+          setStatusText('exited');
         }
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder('utf-8');
-        let buffer = '';
-        let currentEvent = 'message';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let idx;
-          while ((idx = buffer.indexOf('\n')) !== -1) {
-            const rawLine = buffer.slice(0, idx).replace(/\r$/, '');
-            buffer = buffer.slice(idx + 1);
-            if (!rawLine) {
-              currentEvent = 'message';
-              continue;
-            }
-            if (rawLine.startsWith(':')) continue;
-            if (rawLine.startsWith('event:')) {
-              currentEvent = rawLine.slice(6).trim();
-            } else if (rawLine.startsWith('data:')) {
-              try {
-                const parsed = JSON.parse(rawLine.slice(5).trim()) as Record<string, unknown>;
-                if (currentEvent === 'pi_event') applyPiEvent(parsed);
-                else if (currentEvent === 'session_exit') {
-                  setRunning(false);
-                  setStatusText('exited');
-                }
-              } catch {
-                // ignore malformed chunk
-              }
-            }
-          }
-        }
-      } catch {
-        // aborted or closed
-      } finally {
-        if (adminStreamAbortRef.current === ac) adminStreamAbortRef.current = null;
-      }
+      });
     },
-    [applyPiEvent, encodedNode, encodedRoom, prefix]
+    [applyPiEvent, nodeId, prefix, roomPath]
   );
+
+  // Auto-subscribe to shared multiplexed SSE stream whenever adminKey is present
+  useEffect(() => {
+    if (mode !== 'admin' || !adminKey.trim()) {
+      muxUnsubRef.current?.();
+      muxUnsubRef.current = null;
+      return;
+    }
+    ensureAdminStream(adminKey.trim());
+    return () => {
+      muxUnsubRef.current?.();
+      muxUnsubRef.current = null;
+    };
+  }, [adminKey, ensureAdminStream, mode]);
 
   const handlePublicRun = useCallback(
     async (overrideInputs?: Record<string, string>) => {
@@ -431,7 +404,7 @@ function PiAgentBlockInner({
       setToolCount(0);
       setStatusText('running');
 
-      void ensureAdminStream(key);
+      ensureAdminStream(key);
 
       const stopCondition: Record<string, unknown> = { autoApproveUi };
       if (Number(maxTurns) > 0) stopCondition.maxTurns = Number(maxTurns);
