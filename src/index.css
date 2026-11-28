@@ -20,8 +20,8 @@ html.dark {
   --atlas-edge-label-bg: rgba(15, 23, 42, 0.94);
   --atlas-edge-label-border: #475569;
   --atlas-edge-label-text: #e2e8f0;
-  --atlas-edge-flag-bg: rgba(120, 53, 15, 0.88);
-  --atlas-edge-flag-text: #fde68a;
+  --atlas-edge-flag-bg: #451a03;
+  --atlas-edge-flag-text: #fef3c7;
 }
 
 html, body, #root {
@@ -362,4 +362,100 @@ html.dark .react-flow__resize-control.handle {
     width: 36px !important;
     height: 36px !important;
   }
+}
+
+/* Edge unplug / reconnect endpoint handle affordance */
+.react-flow__edgeupdater {
+  cursor: grab;
+  transition: fill 120ms ease, stroke 120ms ease;
+}
+.react-flow__edgeupdater:hover {
+  fill: rgba(37, 99, 235, 0.28);
+  stroke: #2563EB;
+  stroke-width: 1.5;
+}
+.react-flow__edgeupdater:active {
+  cursor: grabbing;
+}
+
+/* 补齐遗漏的半透明浅色表面与悬停态（Tailwind v4 dark 兜底） */
+html.dark .bg-white\/97:not([class*="dark:bg-"]),
+html.dark .bg-white\/98:not([class*="dark:bg-"]) {
+  background-color: rgba(15, 23, 42, 0.96);
+}
+html.dark .bg-slate-50\/75:not([class*="dark:bg-"]),
+html.dark .bg-slate-50\/70:not([class*="dark:bg-"]) {
+  background-color: rgba(15, 23, 42, 0.92);
+}
+html.dark .hover\:bg-slate-50\/70:not([class*="dark:hover:bg-"]):hover,
+html.dark .hover\:bg-slate-50\/50:not([class*="dark:hover:bg-"]):hover,
+html.dark .hover\:bg-slate-100\/90:not([class*="dark:hover:bg-"]):hover {
+  background-color: rgba(30, 41, 59, 0.85);
+}
+html.dark .hover\:bg-amber-100:not([class*="dark:hover:bg-"]):hover {
+  background-color: rgba(146, 64, 14, 0.65);
+}
+
+/* 夜间模式：柔和暗色细滚动条，消除刺眼亮灰原生滚动条 */
+html.dark * {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
+}
+html.dark *::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+html.dark *::-webkit-scrollbar-track {
+  background: transparent;
+}
+html.dark *::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.42);
+  border-radius: 9999px;
+}
+html.dark *::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.65);
+}
+
+/* 夜间模式：内置浅马卡龙底色注释横幅自动转为低饱和深色透底，文字高亮 */
+html.dark .atlas-annotation-node[data-ann-bg="#FEF3C7"] {
+  background-color: rgba(120, 53, 15, 0.42) !important;
+}
+html.dark .atlas-annotation-node[data-ann-bg="#FEF3C7"] [data-ann-text] {
+  color: #fde68a !important;
+}
+html.dark .atlas-annotation-node[data-ann-bg="#DBEAFE"] {
+  background-color: rgba(30, 58, 138, 0.45) !important;
+}
+html.dark .atlas-annotation-node[data-ann-bg="#DBEAFE"] [data-ann-text] {
+  color: #bfdbfe !important;
+}
+html.dark .atlas-annotation-node[data-ann-bg="#CCFBF1"] {
+  background-color: rgba(19, 78, 74, 0.45) !important;
+}
+html.dark .atlas-annotation-node[data-ann-bg="#CCFBF1"] [data-ann-text] {
+  color: #99f6e4 !important;
+}
+html.dark .atlas-annotation-node[data-ann-bg="#DCFCE7"] {
+  background-color: rgba(6, 78, 59, 0.45) !important;
+}
+html.dark .atlas-annotation-node[data-ann-bg="#DCFCE7"] [data-ann-text] {
+  color: #a7f3d0 !important;
+}
+html.dark .atlas-annotation-node[data-ann-bg="#FCE7F3"] {
+  background-color: rgba(131, 24, 67, 0.42) !important;
+}
+html.dark .atlas-annotation-node[data-ann-bg="#FCE7F3"] [data-ann-text] {
+  color: #fbcfe8 !important;
+}
+html.dark .atlas-annotation-node[data-ann-bg="#EDE9FE"] {
+  background-color: rgba(76, 29, 149, 0.45) !important;
+}
+html.dark .atlas-annotation-node[data-ann-bg="#EDE9FE"] [data-ann-text] {
+  color: #ddd6fe !important;
+}
+html.dark .atlas-annotation-node[data-ann-bg="#E2E8F0"] {
+  background-color: rgba(30, 41, 59, 0.78) !important;
+}
+html.dark .atlas-annotation-node[data-ann-bg="#E2E8F0"] [data-ann-text] {
+  color: #e2e8f0 !important;
 }

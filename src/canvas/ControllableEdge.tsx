@@ -455,6 +455,7 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
                 position: 'absolute',
                 transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
                 pointerEvents: 'all',
+                zIndex: 25,
                 borderColor: edgeFlag ? '#F59E0B' : (isActive ? stroke : 'var(--atlas-edge-label-border, #CBD5E1)'),
                 color: edgeFlag ? 'var(--atlas-edge-flag-text, #B45309)' : (isActive ? stroke : 'var(--atlas-edge-label-text, #334155)'),
                 backgroundColor: edgeFlag ? 'var(--atlas-edge-flag-bg, #FFFBEB)' : 'var(--atlas-edge-label-bg, rgba(255,255,255,0.95))',
@@ -464,7 +465,7 @@ export const ControllableEdge = React.memo(function ControllableEdge(props: Edge
               {edgeFlag && <span className="inline-block h-2 w-2 rounded-full bg-amber-500 animate-pulse" />}
               {(Boolean(label) || edgeFlag) && <span>{label ? String(label) : 'NEW'}</span>}
               {edgeFlag && edgeMsgPreview && (
-                <span className="max-w-[110px] truncate font-mono text-[10px] font-normal text-amber-800">
+                <span className="max-w-[110px] truncate font-mono text-[10px] font-normal text-amber-800 dark:text-amber-200">
                   {edgeMsgPreview}
                 </span>
               )}

@@ -74,7 +74,8 @@ function AnnotationNodeInner({ data, selected }: NodeProps) {
   };
   return (
     <div
-      className={`group relative rounded-lg transition-shadow ${
+      data-ann-bg={String(bgCss || 'transparent').trim().toUpperCase()}
+      className={`atlas-annotation-node group relative rounded-lg transition-shadow ${
         selected ? 'ring-2 ring-amber-500' : 'ring-1 ring-dashed ring-amber-500/70'
       }`}
       style={{
@@ -88,7 +89,7 @@ function AnnotationNodeInner({ data, selected }: NodeProps) {
         minWidth={100}
         minHeight={isImage ? 80 : 40}
         lineClassName="!border-amber-500"
-        handleClassName="!rounded-sm !border-2 !border-amber-600 !bg-white shadow-sm"
+        handleClassName="!rounded-sm !border-2 !border-amber-600 !bg-white dark:!bg-slate-900 shadow-sm"
         onResize={(_ev, params) => {
           setLiveSize({ width: Math.round(params.width), height: Math.round(params.height) });
         }}
@@ -270,6 +271,7 @@ function AnnotationNodeInner({ data, selected }: NodeProps) {
             setEditingText(true);
           }}
           title="按住任意处拖动 · 双击编辑文字（支持 - [] / - [ ] / - [x] 复选框）"
+          data-ann-text="1"
           className="h-full w-full cursor-grab select-none overflow-hidden break-words rounded-lg p-2.5 leading-snug active:cursor-grabbing"
           style={{
             fontSize: annotation.fontSize,

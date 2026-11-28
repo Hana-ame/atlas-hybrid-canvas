@@ -2217,6 +2217,7 @@ function HybridCanvasWorkspace() {
         target: e.target,
         sourceHandle: e.sourceHandle ?? undefined,
         targetHandle: e.targetHandle ?? undefined,
+        reconnectable: true,
         selected: selectedEdgeIds.has(e.id),
         label: effectiveLabel,
         animated: effectiveAnimated,
@@ -2441,9 +2442,112 @@ function HybridCanvasWorkspace() {
       if (effectiveNodesRef.current[target]?.script) {
         void executeUnifiedWidgetScript(target, { kind: 'render' }, undefined, 1, undefined, nextEdges);
       }
-      setStatusLog('已建立节点连线并同步下游数据通路（选中连线按 Delete 可删除）');
+      setStatusLog('已建立节点连线并同步下游数据通路（可拖拽连线端点拔出/改连，或选中按 Delete 删除）');
     })();
   }, [executeUnifiedWidgetScript, pushHistory, validateConnectionByWidgets]);
+
+  const edgeReconnectSuccessfulRef = useRef(true);
+
+  const onReconnectStart = useCallback(() => {
+    edgeReconnectSuccessfulRef.current = false;
+  }, []);
+
+  const onReconnect = useCallback((oldEdge: Edge, newConn: Connection) => {
+    edgeReconnectSuccessfulRef.current = true;
+    if (!newConn.source || !newConn.target) return;
+    const prevEdge = edgesRef.current[oldEdge.id];
+    if (!prevEdge) return;
+
+    const nextSource = newConn.source;
+    const nextTarget = newConn.target;
+    const nextSourceHandle = newConn.sourceHandle ?? undefined;
+    const nextTargetHandle = newConn.targetHandle ?? undefined;
+
+    // No-op if dropped back onto the exact same ports
+    if (
+      prevEdge.source === nextSource &&
+      prevEdge.target === nextTarget &&
+      (prevEdge.sourceHandle ?? undefined) === nextSourceHandle &&
+      (prevEdge.targetHandle ?? undefined) === nextTargetHandle
+    ) {
+      return;
+    }
+
+    const fromPort = nextSourceHandle ?? 'out-1';
+    const toPort = nextTargetHandle ?? 'in-1';
+    void (async () => {
+      const edgesWithoutOld = { ...edgesRef.current };
+      delete edgesWithoutOld[oldEdge.id];
+      const check = await validateConnectionByWidgets(nextSource, nextTarget, fromPort, toPort, edgesWithoutOld);
+      if (!check.ok) {
+        setStatusLog(check.reason || '控件自定义校验拒绝了此重连');
+        return;
+      }
+
+      pushHistory();
+      const updatedEdge: BlueprintEdge = {
+        ...prevEdge,
+        source: nextSource,
+        target: nextTarget,
+        sourceHandle: nextSourceHandle,
+        targetHandle: nextTargetHandle,
+        rev: prevEdge.rev + 1,
+        cid: SELF_CID,
+      };
+      const nextEdges = { ...edgesRef.current, [oldEdge.id]: updatedEdge };
+      edgesRef.current = nextEdges;
+      setBase((prev) => {
+        if (!prev.edges[oldEdge.id]) return prev;
+        return {
+          ...prev,
+          version: prev.version + 1,
+          edges: {
+            ...prev.edges,
+            [oldEdge.id]: updatedEdge,
+          },
+        };
+      });
+
+      const affectedTargets = new Set<string>([prevEdge.target, nextTarget]);
+      for (const tid of affectedTargets) {
+        if (effectiveNodesRef.current[tid]?.script) {
+          void executeUnifiedWidgetScript(tid, { kind: 'render' }, undefined, 1, undefined, nextEdges);
+        }
+      }
+      setStatusLog('已拖拽改连节点连线并刷新下游数据通路');
+    })();
+  }, [executeUnifiedWidgetScript, pushHistory, validateConnectionByWidgets]);
+
+  const onReconnectEnd = useCallback((_event: MouseEvent | TouchEvent, edge: Edge) => {
+    if (!edgeReconnectSuccessfulRef.current) {
+      const existing = edgesRef.current[edge.id];
+      if (existing) {
+        setSelectedEdgeIds((prev) => {
+          if (!prev.has(edge.id)) return prev;
+          const next = new Set(prev);
+          next.delete(edge.id);
+          return next;
+        });
+        setEditingEdgeLabelId((cur) => (cur === edge.id ? null : cur));
+        setInspectingEdgeId((cur) => (cur === edge.id ? null : cur));
+        pushHistory();
+        const nextEdges = { ...edgesRef.current };
+        delete nextEdges[edge.id];
+        edgesRef.current = nextEdges;
+        setBase((prev) => {
+          if (!prev.edges[edge.id]) return prev;
+          const updated = { ...prev.edges };
+          delete updated[edge.id];
+          return { ...prev, version: prev.version + 1, edges: updated };
+        });
+        if (existing.target && effectiveNodesRef.current[existing.target]?.script) {
+          void executeUnifiedWidgetScript(existing.target, { kind: 'render' }, undefined, 1, undefined, nextEdges);
+        }
+        setStatusLog('已拖拽拔出并断开连线，已刷新下游汇总');
+      }
+    }
+    edgeReconnectSuccessfulRef.current = true;
+  }, [executeUnifiedWidgetScript, pushHistory]);
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
     const selectChanges = changes.filter(
@@ -2909,9 +3013,14 @@ function HybridCanvasWorkspace() {
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         elevateEdgesOnSelect
+        edgesReconnectable
+        reconnectRadius={24}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onReconnectStart={onReconnectStart}
+        onReconnect={onReconnect}
+        onReconnectEnd={onReconnectEnd}
         onEdgeContextMenu={(ev, edge) => {
           ev.preventDefault();
           const initial = baseRef.current.edges[edge.id];

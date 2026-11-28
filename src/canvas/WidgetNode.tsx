@@ -181,7 +181,7 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
         minWidth={220}
         minHeight={120}
         lineClassName="!border-blue-500"
-        handleClassName="!rounded-sm !border-2 !border-blue-600 !bg-white shadow-sm"
+        handleClassName="!rounded-sm !border-2 !border-blue-600 !bg-white dark:!bg-slate-900 shadow-sm"
         onResize={(_ev, params) => {
           setLiveSize({ width: Math.round(params.width), height: Math.round(params.height) });
         }}
@@ -267,7 +267,7 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
         {/* 平时右上角固定保留 History 与 Lock 两个常驻按钮；z-[25] 高于缩放角点热区(z-20) */}
         <div className="nodrag nopan relative z-[25] flex shrink-0 items-center gap-0.5">
           <div
-            className={`absolute right-12 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 bg-gradient-to-r from-transparent via-white via-20% to-white pl-3 pr-0.5 transition-opacity ${
+            className={`absolute right-12 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 bg-gradient-to-r from-transparent via-white via-20% to-white dark:via-slate-900 dark:to-slate-900 pl-3 pr-0.5 transition-opacity ${
               selected
                 ? 'pointer-events-auto opacity-100'
                 : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100'
@@ -281,7 +281,7 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
                   e.stopPropagation();
                   onResetLocal(entity.id);
                 }}
-                className="flex items-center gap-0.5 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap text-amber-800 hover:bg-amber-100"
+                className="flex items-center gap-0.5 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap text-amber-800 hover:bg-amber-100 dark:bg-amber-950/90 dark:text-amber-200 dark:border dark:border-amber-500/40 dark:hover:bg-amber-900/80"
               >
                 <RotateCcw className="h-3 w-3" />
                 还原
@@ -515,7 +515,7 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
 
       {!hasScriptContents && (varEntries.length > 0 || (entity.buttons && entity.buttons.length > 0)) && (
         <div
-          className={`nodrag nopan nowheel vars-scroll-row flex h-8 shrink-0 select-none items-center gap-1.5 overflow-x-auto overflow-y-hidden rounded-b-lg border-t border-slate-100 bg-slate-50/75 px-3 ${
+          className={`nodrag nopan nowheel vars-scroll-row flex h-8 shrink-0 select-none items-center gap-1.5 overflow-x-auto overflow-y-hidden rounded-b-lg border-t border-slate-100 bg-slate-50/75 dark:border-slate-800 dark:bg-slate-900/90 px-3 ${
             varEntries.length > 0 ? (draggingVars ? 'cursor-grabbing' : 'cursor-grab') : ''
           }`}
           onPointerDown={(e) => {
@@ -561,7 +561,7 @@ function WidgetNodeInner({ data, selected }: NodeProps) {
             varEntries.map(([k, v]) => (
               <span
                 key={k}
-                className="shrink-0 select-none whitespace-nowrap rounded border border-slate-200/80 bg-white px-1.5 py-0.5 font-mono text-[10px] text-slate-700"
+                className="shrink-0 select-none whitespace-nowrap rounded border border-slate-200/80 bg-white px-1.5 py-0.5 font-mono text-[10px] text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
               >
                 {k}={typeof v === 'object' ? JSON.stringify(v) : String(v)}
               </span>
